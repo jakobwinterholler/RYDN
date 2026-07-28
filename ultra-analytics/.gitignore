@@ -1,0 +1,15 @@
+backend/.venv/
+backend/sample_data/
+backend/data/
+backend/.env
+.env
+!.env.example
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+.tunnel-url
+.tunnel.log
+.DS_Store

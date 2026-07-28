@@ -1,0 +1,12 @@
+# Fallback when Railway Root Directory = ultra-analytics.
+# Prefer the repo-root railway.toml + Dockerfile (no Root Directory needed).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

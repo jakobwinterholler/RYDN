@@ -19,6 +19,8 @@ env/
 # Environment & secrets
 .env
 .env.*
+!.env.example
+!**/.env.example
 
 # Generated app data & caches
 .run/
@@ -53,3 +55,5 @@ tools/route-preview-poc/output/
 tmp/
 temp/
 .env*
+!.env.example
+!**/.env.example

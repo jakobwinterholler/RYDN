@@ -1,0 +1,6 @@
+"""
+Optional local entrypoint — Railway uses the Dockerfile CMD.
+
+  cd ultra-analytics/backend
+  ULTRA_ENV=development uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8100} --reload
+"""

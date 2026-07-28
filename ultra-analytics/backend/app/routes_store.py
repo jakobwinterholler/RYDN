@@ -1,0 +1,298 @@
+"""Planned Routes — separate from completed Rides.
+
+Routes are planning objects (imported GPX courses). They must never appear in
+the Ride Library, Ultra membership, analytics totals, or achievements.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import time
+import uuid
+from typing import Any, Dict, List, Optional
+
+from .analysis.route_analysis import analyze_planned_route
+from .analysis.route_elevation import ensure_analysis_track, track_has_elevation
+from .parsing.route_gpx import downsample_latlon, downsample_track, parse_route_gpx
+from .paths import users_dir
+
+_USERS_DIR = users_dir()
+PREPARATION_DEFAULTS = {
+    "routeUnderstood": False,
+    "stopsVerified": False,
+    "keyClimbsReviewed": False,
+    "stagesPlanned": False,
+    "notes": "",
+}
+
+REVIEW_STATUSES = ("verified", "rejected", "skipped", "unreviewed")
+
+
+
+def _routes_dir(uid: str) -> str:
+    return os.path.join(_USERS_DIR, uid, "routes")
+
+
+def _path(uid: str, route_id: str) -> str:
+    return os.path.join(_routes_dir(uid), f"{route_id}.json")
+
+
+def _gpx_path(uid: str, route_id: str) -> str:
+    return os.path.join(_routes_dir(uid), f"{route_id}.gpx")
+
+
+def _analysis_path(uid: str, route_id: str) -> str:
+    return os.path.join(_routes_dir(uid), f"{route_id}.analysis.json")
+
+
+def _ensure_dir(uid: str) -> None:
+    os.makedirs(_routes_dir(uid), exist_ok=True)
+
+
+def _summary(route: dict) -> dict:
+    prep = route.get("preparation") or {}
+    checks = ["routeUnderstood", "stopsVerified", "keyClimbsReviewed", "stagesPlanned"]
+    done = sum(1 for k in checks if prep.get(k))
+    return {
+        "id": route["id"],
+        "createdAt": route.get("createdAt"),
+        "updatedAt": route.get("updatedAt"),
+        "name": route.get("name") or "Untitled route",
+        "sourceFilename": route.get("sourceFilename"),
+        "distanceKm": route.get("distanceKm") or 0,
+        "elevationGainM": route.get("elevationGainM") or 0,
+        "pointCount": route.get("pointCount") or 0,
+        "hasTimestamps": bool(route.get("hasTimestamps")),
+        "status": route.get("status") or "planning",
+        "dateStart": route.get("dateStart"),
+        "dateEnd": route.get("dateEnd"),
+        "verificationProgress": {"done": done, "total": len(checks)},
+        "objectType": "route",
+        "hasAnalysis": bool(route.get("hasAnalysis")),
+    }
+
+
+def list_routes(uid: str) -> List[dict]:
+    d = _routes_dir(uid)
+    if not os.path.isdir(d):
+        return []
+    out: List[dict] = []
+    for fname in os.listdir(d):
+        if not fname.endswith(".json") or fname.endswith(".analysis.json"):
+            continue
+        try:
+            with open(os.path.join(d, fname), "r", encoding="utf-8") as f:
+                route = json.load(f)
+            out.append(_summary(route))
+        except (OSError, json.JSONDecodeError):
+            continue
+    out.sort(key=lambda r: r.get("updatedAt") or r.get("createdAt") or 0, reverse=True)
+    return out
+
+
+def get_route(uid: str, route_id: str) -> Optional[dict]:
+    path = _path(uid, route_id)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _save(uid: str, route: dict) -> dict:
+    _ensure_dir(uid)
+    route["updatedAt"] = time.time()
+    path = _path(uid, route["id"])
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(route, f)
+    os.replace(tmp, path)
+    return route
+
+
+def create_route_from_gpx(
+    uid: str,
+    *,
+    gpx_path: str,
+    filename: str,
+    name: Optional[str] = None,
+) -> dict:
+    parsed = parse_route_gpx(gpx_path)
+    now = time.time()
+    stem = os.path.splitext(filename or "route")[0].replace("_", " ").replace("-", " ").strip()
+    route_id = uuid.uuid4().hex[:12]
+    track = downsample_track(parsed.points)
+    route = {
+        "id": route_id,
+        "createdAt": now,
+        "updatedAt": now,
+        "objectType": "route",
+        "name": (name or parsed.name or stem or "Untitled route").strip(),
+        "sourceFilename": filename,
+        "distanceKm": parsed.distance_km,
+        "elevationGainM": parsed.elevation_gain_m,
+        "pointCount": parsed.point_count,
+        "hasTimestamps": parsed.has_timestamps,
+        "status": "planning",
+        "dateStart": None,
+        "dateEnd": None,
+        "points": downsample_latlon(parsed.points),
+        "track": track,
+        "preparation": dict(PREPARATION_DEFAULTS),
+        "stopReviews": {},
+        "hasAnalysis": False,
+    }
+    _ensure_dir(uid)
+    try:
+        shutil.copyfile(gpx_path, _gpx_path(uid, route_id))
+    except OSError:
+        pass
+    _save(uid, route)
+    # Eager local analysis (climbs/stages); POIs may hit Overpass.
+    try:
+        get_route_analysis(uid, route_id, force=True)
+    except Exception:
+        pass
+    return _summary(get_route(uid, route_id) or route)
+
+
+def update_route(uid: str, route_id: str, patch: Dict[str, Any]) -> Optional[dict]:
+    route = get_route(uid, route_id)
+    if not route:
+        return None
+    if "name" in patch and isinstance(patch["name"], str):
+        route["name"] = patch["name"].strip() or route["name"]
+    if "status" in patch and patch["status"] in ("planning", "ready", "archived"):
+        route["status"] = patch["status"]
+    for key in ("dateStart", "dateEnd"):
+        if key in patch:
+            val = patch[key]
+            route[key] = str(val)[:10] if val else None
+    if "preparation" in patch and isinstance(patch["preparation"], dict):
+        prep = dict(route.get("preparation") or PREPARATION_DEFAULTS)
+        for key, default in PREPARATION_DEFAULTS.items():
+            if key not in patch["preparation"]:
+                continue
+            val = patch["preparation"][key]
+            if key == "notes":
+                prep[key] = str(val or "")[:4000]
+            else:
+                prep[key] = bool(val)
+        route["preparation"] = prep
+        checks = ["routeUnderstood", "stopsVerified", "keyClimbsReviewed", "stagesPlanned"]
+        if all(prep.get(k) for k in checks) and route.get("status") == "planning":
+            route["status"] = "ready"
+    if "stopReviews" in patch and isinstance(patch["stopReviews"], dict):
+        reviews = dict(route.get("stopReviews") or {})
+        for sid, status in patch["stopReviews"].items():
+            key = str(sid)[:64]
+            if status in (None, "", "unreviewed"):
+                reviews.pop(key, None)
+            elif status in REVIEW_STATUSES:
+                reviews[key] = status
+        route["stopReviews"] = reviews
+        # Invalidate analysis so recommendations reflect reviews.
+        try:
+            cache = _analysis_path(uid, route_id)
+            if os.path.isfile(cache):
+                os.unlink(cache)
+        except OSError:
+            pass
+    if "notes" in patch:
+        prep = dict(route.get("preparation") or PREPARATION_DEFAULTS)
+        prep["notes"] = str(patch["notes"] or "")[:4000]
+        route["preparation"] = prep
+    _save(uid, route)
+    return get_route_detail(uid, route_id)
+
+
+def get_route_detail(uid: str, route_id: str) -> Optional[dict]:
+    route = get_route(uid, route_id)
+    if not route:
+        return None
+    return {
+        **_summary(route),
+        "points": route.get("points") or [],
+        "preparation": route.get("preparation") or dict(PREPARATION_DEFAULTS),
+        "stopReviews": route.get("stopReviews") or {},
+        "dateStart": route.get("dateStart"),
+        "dateEnd": route.get("dateEnd"),
+    }
+
+
+def get_route_analysis(
+    uid: str, route_id: str, *, force: bool = False, target_stage_km: float = 250.0
+) -> Optional[dict]:
+    route = get_route(uid, route_id)
+    if not route:
+        return None
+    cache = _analysis_path(uid, route_id)
+
+    # Stale/empty climb caches on high-elevation courses must be recomputed.
+    if not force and os.path.isfile(cache):
+        try:
+            with open(cache, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            elev = int(route.get("elevationGainM") or 0)
+            climbs = int((cached.get("summary") or {}).get("climbCount") or 0)
+            schema_ok = cached.get("schemaVersion", 0) >= 2
+            target_ok = abs(float(cached.get("targetStageKm") or 250) - float(target_stage_km)) < 0.5
+            suspicious = elev >= 800 and climbs == 0
+            if target_ok and schema_ok and not suspicious:
+                return cached
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    # Legacy routes without track / without elevation: rebuild from GPX or DEM.
+    if not route.get("track"):
+        gpx = _gpx_path(uid, route_id)
+        if os.path.isfile(gpx):
+            parsed = parse_route_gpx(gpx)
+            route["track"] = downsample_track(parsed.points)
+            route["points"] = downsample_latlon(parsed.points)
+            route["distanceKm"] = parsed.distance_km
+            route["elevationGainM"] = parsed.elevation_gain_m
+            _save(uid, route)
+
+    route, heal_meta = ensure_analysis_track(route)
+    if heal_meta.get("healed"):
+        _save(uid, route)
+
+    analysis = analyze_planned_route(
+        route, force_refresh=force, target_stage_km=target_stage_km
+    )
+    analysis["schemaVersion"] = 2
+    analysis["elevationSource"] = heal_meta.get("source") or (
+        "gpx" if track_has_elevation(route.get("track") or []) else "none"
+    )
+    if heal_meta.get("source") == "dem":
+        analysis["insights"] = [
+            "Elevation healed from terrain data (original GPX elev was missing) — climbs estimated from DEM.",
+            *list(analysis.get("insights") or []),
+        ]
+    try:
+        with open(cache, "w", encoding="utf-8") as f:
+            json.dump(analysis, f)
+        route["hasAnalysis"] = True
+        _save(uid, route)
+    except OSError:
+        pass
+    return analysis
+
+
+def delete_route(uid: str, route_id: str) -> bool:
+    path = _path(uid, route_id)
+    if not os.path.isfile(path):
+        return False
+    try:
+        os.unlink(path)
+        for extra in (_gpx_path(uid, route_id), _analysis_path(uid, route_id)):
+            if os.path.isfile(extra):
+                os.unlink(extra)
+        return True
+    except OSError:
+        return False

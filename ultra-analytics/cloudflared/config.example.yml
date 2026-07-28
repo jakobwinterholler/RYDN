@@ -1,0 +1,19 @@
+# Cloudflare Tunnel — named tunnel for Ultra local dev
+#
+# Copy to:  ~/.cloudflared/config.yml
+# (after: cloudflared tunnel login && cloudflared tunnel create ultra-local)
+#
+# Replace TUNNEL_UUID with the UUID printed by `cloudflared tunnel create ultra-local`
+# or shown by `cloudflared tunnel list`.
+
+tunnel: ultra-local
+credentials-file: /Users/REPLACE_ME/.cloudflared/TUNNEL_UUID.json
+
+ingress:
+  # Public site → Vite (proxies /api → backend :8100)
+  - hostname: rydn.bike
+    service: http://127.0.0.1:5180
+  # Optional www
+  - hostname: www.rydn.bike
+    service: http://127.0.0.1:5180
+  - service: http_status:404

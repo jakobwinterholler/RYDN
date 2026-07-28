@@ -1,5 +1,10 @@
 # Ultra Roadbook
 
+**Status:** Product vision superseded by **`ULTRA_BRAIN.md`** (July 2026) — Ultra is now
+one **experience platform**: Completed Ultras (trophy cabinet) + experience-based
+planning. This file remains the source of truth for the *existing* Roadbook +
+Companion implementation until Plan/Ride fold into the unified app.
+
 > **Living document.** Update this file whenever a significant feature, architectural change, UX decision, or roadmap shift is completed. Append to history; do not erase past decisions.
 
 **Current state (July 2026):** Desktop **0.5.0** · Companion **0.5.0** · Pipeline **0.15** · Bundle schema **v5** · Branch `feature/coros-export-v3` · Production companion: https://companion-flax.vercel.app
