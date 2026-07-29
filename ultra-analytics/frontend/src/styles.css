@@ -5605,16 +5605,91 @@ input {
   cursor: default;
 }
 
-.plan-nearest {
+/* Top stack — search chip + nearest card as one family (no overlap). */
+.plan-map-top {
   position: absolute;
-  top: 12px;
+  top: max(10px, env(safe-area-inset-top, 0px));
   left: 12px;
+  right: 12px;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.plan-map-top > * {
+  pointer-events: auto;
+}
+
+.plan-search-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  min-width: 168px;
+  max-width: min(320px, 100%);
+  padding: 0 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper-elevated) 96%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  animation: plan-search-chip-in 0.18s ease;
+}
+
+@keyframes plan-search-chip-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.plan-search-chip--action {
+  cursor: pointer;
+  appearance: none;
+  font: inherit;
+}
+
+.plan-search-chip--action:active {
+  transform: scale(0.98);
+}
+
+.plan-search-chip--busy {
+  opacity: 0.92;
+  cursor: default;
+}
+
+.plan-search-chip--hint {
+  color: var(--ink-secondary);
+  font-weight: 600;
+  cursor: default;
+}
+
+.plan-nearest {
+  position: relative;
+  top: auto;
+  left: auto;
   z-index: 8;
-  width: min(240px, calc(100% - 88px));
+  width: min(280px, 100%);
   padding: 10px 12px;
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   background: color-mix(in srgb, var(--paper-elevated) 94%, transparent);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
@@ -5659,31 +5734,9 @@ input {
   white-space: nowrap;
 }
 
+/* Legacy class kept inert — chip lives in .plan-map-top now. */
 .plan-search-area {
-  position: absolute;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 9;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 44px;
-  min-width: 148px;
-  padding: 0 18px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: var(--paper-elevated);
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-
-.plan-search-area:disabled {
-  opacity: 0.6;
+  display: none;
 }
 
 /* Floating status only — never reserves permanent header space. */
@@ -6073,11 +6126,17 @@ input {
   display: none;
 }
 
-.plan-workspace--ride .plan-nearest {
+.plan-workspace--ride .plan-map-top {
   top: auto;
   bottom: 78px;
   left: 12px;
-  width: min(220px, calc(100% - 24px));
+  right: auto;
+  align-items: flex-start;
+  width: min(240px, calc(100% - 24px));
+}
+
+.plan-workspace--ride .plan-nearest {
+  width: 100%;
 }
 
 .plan-sheet {
@@ -6281,7 +6340,8 @@ input {
   position: absolute;
   left: 12px;
   right: 12px;
-  top: 48px;
+  /* Sit below the top search chip stack */
+  top: max(64px, calc(env(safe-area-inset-top, 0px) + 56px));
   z-index: 30;
 }
 
@@ -6317,7 +6377,7 @@ input {
     border-left: 1px solid var(--line-strong);
   }
 
-  .plan-nearest {
+  .plan-map-top {
     top: 16px;
   }
 

@@ -39,6 +39,11 @@ import {
   type PlanMarker,
   type QuickActionId,
 } from "./plan/planLayers";
+import {
+  bboxSpanTooLarge,
+  isZoomInSearchError,
+  resolvePlanSearchChip,
+} from "./plan/planSearchUi";
 
 function mapViewportPoi(p: {
   id: string;
@@ -261,10 +266,10 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number } | null>(null);
   const [mapBbox, setMapBbox] = useState<PlanMapBBox | null>(null);
-  const [showSearchArea, setShowSearchArea] = useState(false);
+  /** User moved map since last finished search — gates Google Maps-style chip. */
+  const [searchPrompted, setSearchPrompted] = useState(false);
   const [searchingArea, setSearchingArea] = useState(false);
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
-  const [searchHasMore, setSearchHasMore] = useState(false);
   const [areaPois, setAreaPois] = useState<RecommendedStop[]>([]);
   const reviewTimers = useRef<number[]>([]);
   const analysisRef = useRef<RouteAnalysis | null>(null);
@@ -337,6 +342,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     setQa(null);
     setSelectedId(null);
     setOverflowOpen(false);
+    setSearchPrompted(false);
     if (mode === "ride") {
       setLayersOpen(false);
       setBriefingOpen(false);
@@ -776,13 +782,26 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   ) => {
     setMapCenter(center);
     setMapBbox(bbox);
-    if (userMoved && mode === "plan") setShowSearchArea(true);
+    // Google Maps: chip appears only after the user moves the map.
+    if (userMoved && mode === "plan" && !searchingArea) setSearchPrompted(true);
   };
+
+  const searchChip = resolvePlanSearchChip({
+    mode,
+    searching: searchingArea,
+    prompted: searchPrompted,
+    bbox: mapBbox,
+  });
 
   const searchThisArea = async () => {
     if (!mapBbox || !route || searchingArea) return;
-    // Visible bbox only — never the full route envelope.
     const bbox = mapBbox;
+    // Too zoomed out — never hit the API; exclusive zoomIn chip only.
+    if (bboxSpanTooLarge(bbox)) {
+      setSearchPrompted(true);
+      return;
+    }
+
     const gen = ++searchGenRef.current;
     searchAbortRef.current?.abort();
     const ac = new AbortController();
@@ -792,9 +811,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     const SEARCH_BATCH = searchLimitForQa(qa, bbox);
     const activeQa = qa;
     setSearchingArea(true);
-    setError(null);
-    // Keep button mounted; label switches to Searching… while disabled.
-    setShowSearchArea(true);
+    // Clear banner errors that are not search-zoom (zoom is the chip, not a banner).
+    setError((prev) => (isZoomInSearchError(prev) ? null : prev));
     let statusStep = 0;
     setSearchStatus(searchStatusForQa(activeQa, 0));
     if (searchStatusTimerRef.current != null) window.clearInterval(searchStatusTimerRef.current);
@@ -810,7 +828,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       if (s.reviewStatus === "verified") excludeBase.push(s.id);
     }
 
-    // Progressive: north + south halves of the *current* viewport only.
     const midLat = (bbox.south + bbox.north) / 2;
     const tiles: PlanMapBBox[] = [
       { south: bbox.south, west: bbox.west, north: midLat, east: bbox.east },
@@ -818,12 +835,12 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     ];
     const perTile = Math.ceil(SEARCH_BATCH / tiles.length);
     let added = 0;
-    let anyMore = false;
+    let searchOk = false;
 
     const absorb = (res: Awaited<ReturnType<typeof searchRouteViewportPois>>) => {
       if (gen !== searchGenRef.current) return;
-      if (res.error) setError(res.error);
-      if (res.hasMore) anyMore = true;
+      // Zoom-in errors stay on the exclusive chip — never a second banner.
+      if (res.error && !isZoomInSearchError(res.error)) setError(res.error);
       const mapped = (res.pois || [])
         .filter((p) => !seenSearchIdsRef.current.has(p.id))
         .map(mapViewportPoi)
@@ -867,33 +884,33 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         });
         absorb(res);
       }
-      if (gen === searchGenRef.current) {
-        setSearchHasMore(anyMore || added >= SEARCH_BATCH);
-      }
+      searchOk = !ac.signal.aborted;
     } catch (e) {
       if (gen !== searchGenRef.current) return;
       if (ac.signal.aborted) {
-        setError("Search timed out — zoom in a bit and try again.");
+        setError("Search timed out — try again.");
       } else {
-        setError((e as Error).message);
+        const msg = (e as Error).message;
+        if (!isZoomInSearchError(msg)) setError(msg);
       }
+      searchOk = false;
     } finally {
       window.clearTimeout(timeoutId);
       if (searchStatusTimerRef.current != null) {
         window.clearInterval(searchStatusTimerRef.current);
         searchStatusTimerRef.current = null;
       }
-      // Always clear loading for this generation — never leave Searching… stuck.
       if (gen === searchGenRef.current) {
         setSearchingArea(false);
         setSearchStatus(null);
-        setShowSearchArea(true);
+        // Success → hide until next pan (Google Maps). Error → keep prompted for retry.
+        setSearchPrompted(!searchOk);
         if (searchAbortRef.current === ac) searchAbortRef.current = null;
       }
     }
   };
 
-  // Progressive: when a Quick Action turns on, search in background once bbox is ready
+  // Progressive: when a Quick Action turns on, search once bbox is ready (and not zoomed out)
   useEffect(() => {
     if (!qa || mode !== "plan") {
       autoSearchQaRef.current = null;
@@ -901,6 +918,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     }
     if (autoSearchQaRef.current !== qa) return;
     if (!mapBbox || !route || searchingArea) return;
+    if (bboxSpanTooLarge(mapBbox)) {
+      setSearchPrompted(true);
+      autoSearchQaRef.current = null;
+      return;
+    }
     autoSearchQaRef.current = null;
     void searchThisArea();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per QA activation when bbox ready
@@ -980,51 +1002,64 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </div>
         )}
 
-        {/* Nearest hint — only while a Quick Action is active */}
-        {nearest && qa && analysis && (
-          <aside className="plan-nearest" aria-label="Nearest for quick action">
-            <p className="plan-nearest__label">
-              Nearest {QUICK_ACTIONS.find((a) => a.id === qa)?.label || ""} ·{" "}
-              {mode === "ride" ? "route progress" : "map center"}
-            </p>
+        {/* Top chrome: exclusive search chip + nearest card (never overlapping states). */}
+        <div className="plan-map-top" data-testid="plan-map-top">
+          {searchChip === "zoomIn" && (
+            <div
+              className="plan-search-chip plan-search-chip--hint"
+              data-search-chip="zoomIn"
+              role="status"
+            >
+              Zoom in to search this area
+            </div>
+          )}
+          {searchChip === "ready" && (
             <button
               type="button"
-              className="plan-nearest__row"
-              onClick={() => {
-                setSelectedId(nearest.marker.id);
-                // Card → map: highlight + fly camera to the same stop
-                setFocusIds([nearest.marker.id]);
-              }}
+              className="plan-search-chip plan-search-chip--action"
+              data-search-chip="ready"
+              onClick={() => void searchThisArea()}
             >
-              <span>{nearest.marker.name || nearest.marker.category || "Stop"}</span>
-              <span>
-                {nearest.km < 1
-                  ? `${Math.round(nearest.km * 1000)} m`
-                  : `${nearest.km.toFixed(1)} km`}
-              </span>
+              Search this area
             </button>
-          </aside>
-        )}
+          )}
+          {searchChip === "searching" && (
+            <div
+              className="plan-search-chip plan-search-chip--busy"
+              data-search-chip="searching"
+              role="status"
+              aria-live="polite"
+              aria-busy="true"
+            >
+              <span className="plan-qa__spinner" aria-hidden />
+              Searching…
+            </div>
+          )}
 
-        {mode === "plan" && (searchingArea || showSearchArea || searchHasMore) && (
-          <button
-            type="button"
-            className="plan-search-area"
-            disabled={searchingArea}
-            onClick={() => void searchThisArea()}
-          >
-            {searchingArea ? (
-              <>
-                <span className="plan-qa__spinner" aria-hidden />
-                Searching…
-              </>
-            ) : searchHasMore && seenSearchIdsRef.current.size > 0 ? (
-              "Search again"
-            ) : (
-              "Search this area"
-            )}
-          </button>
-        )}
+          {nearest && qa && analysis && (
+            <aside className="plan-nearest" aria-label="Nearest for quick action">
+              <p className="plan-nearest__label">
+                Nearest {QUICK_ACTIONS.find((a) => a.id === qa)?.label || ""} ·{" "}
+                {mode === "ride" ? "route progress" : "map center"}
+              </p>
+              <button
+                type="button"
+                className="plan-nearest__row"
+                onClick={() => {
+                  setSelectedId(nearest.marker.id);
+                  setFocusIds([nearest.marker.id]);
+                }}
+              >
+                <span>{nearest.marker.name || nearest.marker.category || "Stop"}</span>
+                <span>
+                  {nearest.km < 1
+                    ? `${Math.round(nearest.km * 1000)} m`
+                    : `${nearest.km.toFixed(1)} km`}
+                </span>
+              </button>
+            </aside>
+          )}
+        </div>
 
         {/* Floating right stack — Layers sits with zoom controls */}
         {mode === "plan" && (
@@ -1079,17 +1114,16 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             >
               {analyzing ? "Refreshing…" : "Refresh"}
             </button>
-            {(showSearchArea || searchHasMore) && (
+            {searchChip === "ready" && (
               <button
                 type="button"
                 className="plan-overflow__item"
-                disabled={searchingArea}
                 onClick={() => {
                   setOverflowOpen(false);
                   void searchThisArea();
                 }}
               >
-                Search area
+                Search this area
               </button>
             )}
           </aside>
@@ -1612,7 +1646,9 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         </aside>
       )}
 
-      {error && <div className="banner banner--err plan-workspace__err">{error}</div>}
+      {error && !isZoomInSearchError(error) && (
+        <div className="banner banner--err plan-workspace__err">{error}</div>
+      )}
     </div>
   );
 }
