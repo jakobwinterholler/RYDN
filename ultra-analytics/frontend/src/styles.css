@@ -5755,6 +5755,65 @@ input {
   color: var(--accent);
 }
 
+.plan-ride-panel--minimal {
+  max-width: 280px;
+  padding: 10px 12px;
+}
+
+.plan-ride-panel__next {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 0 2px;
+  min-height: 36px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.plan-sheet--compact {
+  max-height: min(42vh, 340px);
+  padding: 8px 16px 84px;
+}
+
+.plan-sheet__meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.plan-sheet__badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.plan-sheet__badge--ok {
+  color: var(--accent);
+}
+
+.plan-workspace--ride .plan-workspace__top-actions .btn--ghost {
+  display: none;
+}
+
+.plan-workspace--ride .plan-nearest {
+  top: auto;
+  bottom: 78px;
+  left: 12px;
+  width: min(220px, calc(100% - 24px));
+}
+
 .plan-sheet {
   position: absolute;
   left: 0;

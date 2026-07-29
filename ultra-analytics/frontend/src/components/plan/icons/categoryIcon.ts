@@ -34,7 +34,8 @@ export function iconForCategory(category?: string | null, group?: string | null)
   if (grp === "service") return "mechanic";
   if (grp === "emergency") return "emergency";
 
-  return "pin";
+  // Prefer a family glyph over a generic GIS pin
+  return "resupply";
 }
 
 export function iconForMarker(m: PlanMarker): PlanIconId {

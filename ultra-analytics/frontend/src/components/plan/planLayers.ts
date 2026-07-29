@@ -1,4 +1,13 @@
-/** Planning map layers + Quick Action filters. */
+/** Planning map layers + Quick Action filters.
+ *
+ * Interaction model (not GIS dump):
+ * - Default calm map: route + verified + major warnings (remote) + selected.
+ * - Quick Actions: show ONLY that category; emphasize nearest 5; cap the rest.
+ *
+ * Nearest reference (documented default):
+ * - Plan mode → map viewport center (falls back to route start).
+ * - Ride mode → rider progress along the route (rideKm), else map center.
+ */
 
 export type PlanLayerId =
   | "water"
@@ -38,36 +47,42 @@ export interface PlanMarker {
   name?: string | null;
   qualityStars?: number;
   distanceOffRouteM?: number;
+  /** 1 = nearest-N highlight under active Quick Action */
+  emphasize?: boolean;
+  /** Dim non-nearest extras while QA is active */
+  dimmed?: boolean;
 }
 
+/** How many nearest POIs get full emphasis under a Quick Action. */
+export const QA_NEAREST_N = 5;
+
+/** Soft cap for non-emphasized extras while a Quick Action is on (clustered on map). */
+export const QA_EXTRA_CAP = 28;
+
+/**
+ * Calm default — answer nothing until asked.
+ * Visible: verified stops, remote/critical warnings. Service layers off.
+ */
 export const DEFAULT_LAYERS: Record<PlanLayerId, boolean> = {
-  water: true,
-  food: true,
-  fuel: true,
+  water: false,
+  food: false,
+  fuel: false,
   h24: false,
-  bike: true,
+  bike: false,
   sleep: false,
   pharmacy: false,
   verified: true,
   rejected: false,
-  climbs: true,
+  climbs: false,
   remote: true,
-  stages: true,
+  stages: false,
 };
 
-/** Ride Mode: verified + essentials only. */
+/** Ride Mode: same calm baseline — essentials appear via Quick Actions. */
 export const RIDE_LAYERS: Record<PlanLayerId, boolean> = {
-  water: true,
-  food: true,
-  fuel: true,
-  h24: true,
-  bike: true,
-  sleep: true,
-  pharmacy: true,
-  verified: true,
-  rejected: false,
-  climbs: false,
+  ...DEFAULT_LAYERS,
   remote: false,
+  climbs: false,
   stages: false,
 };
 
@@ -140,35 +155,57 @@ export function stopMatchesLayer(m: PlanMarker, layer: PlanLayerId): boolean {
   }
 }
 
-/** Independent layer visibility, with optional Quick Action emphasis. */
+/**
+ * Independent layer visibility, with Quick Action exclusivity.
+ * When `qa` is set: hide unrelated service POIs; only that category (+ selected).
+ */
 export function markerVisible(
   m: PlanMarker,
   layers: Record<PlanLayerId, boolean>,
   qa: QuickActionId | null,
+  selectedId?: string | null,
 ): boolean {
+  if (selectedId && m.id === selectedId) return true;
+
   if (m.status === "rejected" && !layers.rejected) return false;
 
-  if (m.kind === "climb" || m.kind === "decision") return layers.climbs;
-  if (m.kind === "remote") return layers.remote;
-  if (m.kind === "stage") return layers.stages;
-  if (m.kind === "sleep" || m.group === "sleep") {
-    if (!layers.sleep && qa !== "sleep") return false;
-    if (qa === "sleep") return true;
-    return layers.sleep;
+  // Warnings / structure — never flooded by QA unless they match
+  if (m.kind === "decision") {
+    // Critical decisions stay on the calm map (major warnings)
+    if (qa) return false;
+    return true;
+  }
+  if (m.kind === "climb") {
+    if (qa) return false;
+    return layers.climbs;
+  }
+  if (m.kind === "remote") {
+    if (qa) return false;
+    return layers.remote;
+  }
+  if (m.kind === "stage") {
+    if (qa) return false;
+    return layers.stages;
   }
 
-  // POI / area stops — match at least one active service layer
-  const serviceLayers: PlanLayerId[] = ["water", "food", "fuel", "h24", "bike", "pharmacy", "sleep"];
-  const matchesService = serviceLayers.some((id) => layers[id] && stopMatchesLayer(m, id));
-  const isVerified = m.status === "verified";
-
-  if (qa === "verified") return isVerified;
+  // Quick Action: exclusive category filter
+  if (qa === "verified") return m.status === "verified";
   if (qa) {
     return stopMatchesLayer(m, qa) && (layers.rejected || m.status !== "rejected");
   }
 
+  // Calm default: verified service stops only (+ sleep only if layer on)
+  if (m.kind === "sleep" || m.group === "sleep") {
+    if (m.status === "verified" && layers.verified) return true;
+    return layers.sleep;
+  }
+
+  const isVerified = m.status === "verified";
   if (isVerified && layers.verified) return true;
-  return matchesService;
+
+  // Explicit layer toggles (Layers panel) can still surface unverified services
+  const serviceLayers: PlanLayerId[] = ["water", "food", "fuel", "h24", "bike", "pharmacy", "sleep"];
+  return serviceLayers.some((id) => layers[id] && stopMatchesLayer(m, id));
 }
 
 export function haversineKm(aLat: number, aLon: number, bLat: number, bLon: number): number {
@@ -188,11 +225,84 @@ export function nearestOf(
   lon: number,
   pred: (m: PlanMarker) => boolean,
 ): { marker: PlanMarker; km: number } | null {
-  let best: { marker: PlanMarker; km: number } | null = null;
-  for (const m of markers) {
-    if (!pred(m)) continue;
-    const km = haversineKm(lat, lon, m.lat, m.lon);
-    if (!best || km < best.km) best = { marker: m, km };
+  const list = nearestN(markers, lat, lon, pred, 1);
+  if (!list.length) return null;
+  return { marker: list[0], km: haversineKm(lat, lon, list[0].lat, list[0].lon) };
+}
+
+/** Nearest N markers matching `pred`, sorted ascending by distance. */
+export function nearestN(
+  markers: PlanMarker[],
+  lat: number,
+  lon: number,
+  pred: (m: PlanMarker) => boolean,
+  n = QA_NEAREST_N,
+): PlanMarker[] {
+  return markers
+    .filter(pred)
+    .map((m) => ({ m, km: haversineKm(lat, lon, m.lat, m.lon) }))
+    .sort((a, b) => a.km - b.km)
+    .slice(0, Math.max(0, n))
+    .map((x) => x.m);
+}
+
+/**
+ * Apply Quick Action emphasis: nearest N highlighted, extras capped + dimmed.
+ * Without QA, returns markers unchanged (calm set already filtered by markerVisible).
+ */
+export function applyQuickActionEmphasis(
+  markers: PlanMarker[],
+  qa: QuickActionId | null,
+  ref: { lat: number; lon: number } | null,
+  selectedId?: string | null,
+): PlanMarker[] {
+  if (!qa || !ref) {
+    return markers.map((m) => ({ ...m, emphasize: false, dimmed: false }));
   }
-  return best;
+
+  const pred = (m: PlanMarker) =>
+    qa === "verified" ? m.status === "verified" : stopMatchesLayer(m, qa);
+
+  const ranked = markers
+    .filter(pred)
+    .map((m) => ({ m, km: haversineKm(ref.lat, ref.lon, m.lat, m.lon) }))
+    .sort((a, b) => a.km - b.km);
+
+  const nearestIds = new Set(ranked.slice(0, QA_NEAREST_N).map((x) => x.m.id));
+  const kept = ranked.slice(0, QA_NEAREST_N + QA_EXTRA_CAP).map((x) => x.m);
+
+  // Always keep selection even if outside cap
+  const selected = selectedId ? markers.find((m) => m.id === selectedId) : null;
+  if (selected && !kept.some((m) => m.id === selected.id)) kept.push(selected);
+
+  return kept.map((m) => ({
+    ...m,
+    emphasize: nearestIds.has(m.id) || m.id === selectedId,
+    dimmed: !nearestIds.has(m.id) && m.id !== selectedId,
+  }));
+}
+
+/** Interpolate a lat/lon along route points by distance fraction (ride progress). */
+export function pointAlongRoute(
+  points: number[][],
+  distanceKm: number,
+  totalKm: number,
+): { lat: number; lon: number } | null {
+  const pts = (points || []).filter(
+    (p) => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]),
+  );
+  if (pts.length < 1) return null;
+  if (pts.length === 1 || !totalKm || totalKm <= 0) {
+    return { lat: pts[0][0], lon: pts[0][1] };
+  }
+  const t = Math.max(0, Math.min(1, distanceKm / totalKm));
+  const target = t * (pts.length - 1);
+  const i = Math.floor(target);
+  const f = target - i;
+  const a = pts[Math.min(i, pts.length - 1)];
+  const b = pts[Math.min(i + 1, pts.length - 1)];
+  return {
+    lat: a[0] + (b[0] - a[0]) * f,
+    lon: a[1] + (b[1] - a[1]) * f,
+  };
 }

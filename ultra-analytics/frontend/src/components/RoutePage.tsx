@@ -26,10 +26,13 @@ import { RydnPlanIcon, iconForCategory, iconForQuickAction } from "./plan/icons"
 import {
   DEFAULT_LAYERS,
   LAYER_TOGGLES,
+  QA_NEAREST_N,
   QUICK_ACTIONS,
   RIDE_LAYERS,
+  applyQuickActionEmphasis,
   markerVisible,
   nearestOf,
+  pointAlongRoute,
   stopMatchesLayer,
   type PlanLayerId,
   type PlanMarker,
@@ -247,12 +250,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
   useEffect(() => {
     setLayers(mode === "ride" ? RIDE_LAYERS : DEFAULT_LAYERS);
+    setQa(null);
+    setSelectedId(null);
     if (mode === "ride") {
-      setQa("verified");
       setLayersOpen(false);
       setBriefingOpen(false);
-    } else {
-      setQa(null);
     }
   }, [mode]);
 
@@ -524,10 +526,48 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     return out;
   }, [analysis, recommended, decisions, areaPois]);
 
-  const visibleMarkers = useMemo(
-    () => allMarkers.filter((m) => markerVisible(m, layers, qa)),
-    [allMarkers, layers, qa],
-  );
+  const nearestRef = useMemo(() => {
+    if (mode === "ride" && route) {
+      return (
+        pointAlongRoute(route.points, rideKm, route.distanceKm) ||
+        mapCenter ||
+        (route.points?.[0] ? { lat: route.points[0][0], lon: route.points[0][1] } : null)
+      );
+    }
+    return (
+      mapCenter ||
+      (route?.points?.[0] ? { lat: route.points[0][0], lon: route.points[0][1] } : null)
+    );
+  }, [mode, route, rideKm, mapCenter]);
+
+  const nearestRefLive = useRef(nearestRef);
+  useEffect(() => {
+    nearestRefLive.current = nearestRef;
+  }, [nearestRef]);
+
+  const visibleMarkers = useMemo(() => {
+    const base = allMarkers.filter((m) => markerVisible(m, layers, qa, selectedId));
+    return applyQuickActionEmphasis(base, qa, nearestRef, selectedId);
+  }, [allMarkers, layers, qa, nearestRef, selectedId]);
+
+  /** Camera focus — snap once when Quick Action changes, not on every pan. */
+  const [focusIds, setFocusIds] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (!qa) {
+      setFocusIds(null);
+      return;
+    }
+    const ref = nearestRefLive.current;
+    const base = allMarkers.filter((m) => markerVisible(m, layers, qa, selectedId));
+    const ranked = applyQuickActionEmphasis(base, qa, ref, selectedId);
+    setFocusIds(
+      ranked
+        .filter((m) => m.emphasize)
+        .map((m) => m.id)
+        .slice(0, QA_NEAREST_N),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-focus on QA toggle
+  }, [qa]);
 
   const selectedStop: RecommendedStop | null = useMemo(() => {
     if (!selectedId) return null;
@@ -549,20 +589,12 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   }, [selectedId, analysis, selectedStop, decisions]);
 
   const nearest = useMemo(() => {
-    const center =
-      mapCenter ||
-      (route?.points?.[0]
-        ? { lat: route.points[0][0], lon: route.points[0][1] }
-        : null);
-    if (!center) return null;
-    // Nearest relative to map center (updates on pan). Falls back to route start before first view.
-    return {
-      verified: nearestOf(allMarkers, center.lat, center.lon, (m) => m.status === "verified"),
-      water: nearestOf(allMarkers, center.lat, center.lon, (m) => stopMatchesLayer(m, "water")),
-      food: nearestOf(allMarkers, center.lat, center.lon, (m) => stopMatchesLayer(m, "food")),
-      fuel: nearestOf(allMarkers, center.lat, center.lon, (m) => stopMatchesLayer(m, "fuel")),
-    };
-  }, [allMarkers, mapCenter, route]);
+    if (!nearestRef || !qa) return null;
+    // Nearest under active Quick Action — Plan: map center · Ride: route progress
+    return nearestOf(allMarkers, nearestRef.lat, nearestRef.lon, (m) =>
+      qa === "verified" ? m.status === "verified" : stopMatchesLayer(m, qa),
+    );
+  }, [allMarkers, nearestRef, qa]);
 
   const rideGlance = useMemo(() => {
     const verified = recommended.filter((s) => s.reviewStatus === "verified");
@@ -597,11 +629,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
   const toggleQa = (id: QuickActionId) => {
     setQa((prev) => (prev === id ? null : id));
-    if (id === "verified") {
-      setLayers((L) => ({ ...L, verified: true }));
-    } else {
-      setLayers((L) => ({ ...L, [id]: true }));
-    }
+    // Quick Actions are exclusive filters — do not flood Layers toggles on.
   };
 
   const clearQaPress = () => {
@@ -813,6 +841,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             markers={visibleMarkers}
             selectedId={selectedId}
             fitKey={route.id}
+            focusIds={focusIds}
             searching={searchingArea}
             onSelectMarker={onSelectMarker}
             onViewChange={onViewChange}
@@ -820,33 +849,25 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           />
         )}
 
-        {/* Nearest — relative to map center */}
-        {mode === "plan" && nearest && analysis && (
-          <aside className="plan-nearest" aria-label="Nearest services">
-            <p className="plan-nearest__label">Nearest · map center</p>
-            {(
-              [
-                ["Verified", nearest.verified],
-                ["Water", nearest.water],
-                ["Food", nearest.food],
-                ["Fuel", nearest.fuel],
-              ] as const
-            ).map(([label, hit]) => (
-              <button
-                key={label}
-                type="button"
-                className="plan-nearest__row"
-                disabled={!hit}
-                onClick={() => hit && setSelectedId(hit.marker.id)}
-              >
-                <span>{label}</span>
-                <span>
-                  {hit
-                    ? `${hit.km < 1 ? `${Math.round(hit.km * 1000)} m` : `${hit.km.toFixed(1)} km`} · ${hit.marker.name || hit.marker.category || "Stop"}`
-                    : "—"}
-                </span>
-              </button>
-            ))}
+        {/* Nearest hint — only while a Quick Action is active */}
+        {nearest && qa && analysis && (
+          <aside className="plan-nearest" aria-label="Nearest for quick action">
+            <p className="plan-nearest__label">
+              Nearest {QUICK_ACTIONS.find((a) => a.id === qa)?.label || ""} ·{" "}
+              {mode === "ride" ? "route progress" : "map center"}
+            </p>
+            <button
+              type="button"
+              className="plan-nearest__row"
+              onClick={() => setSelectedId(nearest.marker.id)}
+            >
+              <span>{nearest.marker.name || nearest.marker.category || "Stop"}</span>
+              <span>
+                {nearest.km < 1
+                  ? `${Math.round(nearest.km * 1000)} m`
+                  : `${nearest.km.toFixed(1)} km`}
+              </span>
+            </button>
           </aside>
         )}
 
@@ -908,15 +929,18 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                 </label>
               ))}
             </div>
-            <p className="plan-layers__note">{PLAN_MAP_STYLE_NOTE}</p>
+            <p className="plan-layers__note">
+              Default is calm (verified + remote). Use Quick Actions for services. Layers here are
+              advanced overrides. {PLAN_MAP_STYLE_NOTE}
+            </p>
           </aside>
         )}
 
-        {/* Ride Mode glance */}
+        {/* Ride Mode — position only; essentials via Quick Actions */}
         {mode === "ride" && (
-          <aside className="plan-ride-panel" aria-label="Ride mode">
+          <aside className="plan-ride-panel plan-ride-panel--minimal" aria-label="Ride mode">
             <label className="field plan-ride-panel__pos">
-              <span>Position · km {rideKm.toFixed(0)}</span>
+              <span>Km {rideKm.toFixed(0)} · tap Water / Food / Fuel / Sleep</span>
               <input
                 type="range"
                 min={0}
@@ -926,65 +950,23 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                 onChange={(e) => setRideKm(Number(e.target.value))}
               />
             </label>
-            <div className="plan-ride-panel__list">
-              {(
-                [
-                  ["Water", rideGlance.water, "waterFountain" as const],
-                  ["Fuel", rideGlance.gas24, "gasStation" as const],
-                  ["Market", rideGlance.supermarket, "supermarket" as const],
-                  ["Pharmacy", rideGlance.pharmacy, "pharmacy" as const],
-                  ["Bike", rideGlance.bike, "bikeShop" as const],
-                  ["Sleep", rideGlance.sleep, "sleepSpot" as const],
-                ] as const
-              ).map(([label, stop, iconId]) => {
-                const aheadKm = stop ? stop.distanceAlongKm - rideKm : null;
-                return (
-                  <div key={label} className="plan-ride-panel__item">
-                    <button
-                      type="button"
-                      className="plan-ride-panel__row"
-                      disabled={!stop}
-                      onClick={() => stop && setSelectedId(stop.id)}
-                    >
-                      <span className="plan-ride-panel__label">
-                        <RydnPlanIcon id={iconId} size={16} />
-                        {label}
-                      </span>
-                      <span>
-                        {stop && aheadKm != null
-                          ? `${aheadKm.toFixed(0)} km · ${fmtEtaFromKm(aheadKm)} · ${stop.name || stop.category}`
-                          : "None verified"}
-                      </span>
-                    </button>
-                    {stop && (
-                      <div className="plan-ride-panel__nav">
-                        <a
-                          href={mapsLinks(stop.lat, stop.lon, stop.name).google}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Google
-                        </a>
-                        <a
-                          href={mapsLinks(stop.lat, stop.lon, stop.name).apple}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Apple
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            {!qa && rideGlance.water && (
+              <button
+                type="button"
+                className="plan-ride-panel__next"
+                onClick={() => setSelectedId(rideGlance.water!.id)}
+              >
+                Next water · {(rideGlance.water.distanceAlongKm - rideKm).toFixed(0)} km ·{" "}
+                {fmtEtaFromKm(rideGlance.water.distanceAlongKm - rideKm)}
+              </button>
+            )}
           </aside>
         )}
 
-        {/* Stop / peek sheet */}
+        {/* Compact stop sheet */}
         {(selectedStop || peek) && (
           <div
-            className={`plan-sheet${selectedStop?.reviewStatus === "verified" ? " plan-sheet--verified" : ""}`}
+            className={`plan-sheet plan-sheet--compact${selectedStop?.reviewStatus === "verified" ? " plan-sheet--verified" : ""}`}
             role="dialog"
             aria-label="Selection"
           >
@@ -1007,28 +989,33 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                   />
                   {selectedStop.category}
                   {selectedStop.is24h ? " · 24h" : ""}
-                  {selectedStop.reviewStatus === "verified" ? " · Verified" : ""}
                 </p>
                 <h2 className="plan-sheet__title">{selectedStop.name || selectedStop.category}</h2>
                 <p className="plan-sheet__rating">
-                  {selectedStop.qualityStars != null ? stars(selectedStop.qualityStars) : ""}{" "}
-                  {selectedStop.qualityLabel || ""}
                   {selectedStop.distanceOffRouteM != null
-                    ? ` · ${selectedStop.distanceOffRouteM} m off route`
-                    : ""}
-                  {selectedStop.distanceSincePreviousKm != null
-                    ? ` · ${selectedStop.distanceSincePreviousKm.toFixed(1)} km since previous`
-                    : ""}
-                  {selectedStop.distanceAlongKm
-                    ? ` · km ${selectedStop.distanceAlongKm.toFixed(0)}`
-                    : ""}
+                    ? `${selectedStop.distanceOffRouteM} m off route`
+                    : "On route"}
+                  {selectedStop.openingHours ? ` · ${selectedStop.openingHours}` : ""}
                 </p>
-                {selectedStop.openingHours && (
-                  <p className="plan-sheet__hours">{selectedStop.openingHours}</p>
-                )}
-                {selectedStop.qualityLabel && selectedStop.qualityLabel !== "Area find" && (
-                  <p className="plan-sheet__why">{recommendWhy(selectedStop)}</p>
-                )}
+                <p className="plan-sheet__meta-row">
+                  <span>
+                    {selectedStop.qualityStars != null ? stars(selectedStop.qualityStars) : ""}{" "}
+                    {selectedStop.qualityLabel || "Reliability"}
+                  </span>
+                  <span
+                    className={
+                      selectedStop.reviewStatus === "verified"
+                        ? "plan-sheet__badge plan-sheet__badge--ok"
+                        : "plan-sheet__badge"
+                    }
+                  >
+                    {selectedStop.reviewStatus === "verified"
+                      ? "Verified"
+                      : selectedStop.reviewStatus === "rejected"
+                        ? "Rejected"
+                        : "Unverified"}
+                  </span>
+                </p>
                 <div className="plan-sheet__links">
                   {(selectedStop.googleMapsUrl ||
                     mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place) && (
@@ -1053,13 +1040,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                   >
                     Street View
                   </a>
-                  <a
-                    href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).apple}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Apple Maps
-                  </a>
                   {selectedStop.website && (
                     <a href={selectedStop.website} target="_blank" rel="noreferrer">
                       Website
@@ -1068,7 +1048,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                 </div>
                 {!selectedStop.id.startsWith("area-") && (
                   <div className="plan-sheet__actions">
-                    {(["verified", "rejected", "skipped"] as ReviewStatus[]).map((status) => {
+                    {(["verified", "rejected"] as ReviewStatus[]).map((status) => {
                       const active = reviewing?.status === status;
                       const ghost = status !== "verified";
                       return (
@@ -1128,7 +1108,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
         {/* QA advanced filter sheet */}
         {qaAdvanced && (
-          <div className="plan-sheet plan-sheet--qa" role="dialog" aria-label="Filter options">
+          <div className="plan-sheet plan-sheet--qa plan-sheet--compact" role="dialog" aria-label="Filter options">
             <div className="plan-sheet__handle" aria-hidden />
             <button
               type="button"
@@ -1138,12 +1118,12 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             >
               ×
             </button>
-            <p className="plan-sheet__eyebrow">Quick filter</p>
+            <p className="plan-sheet__eyebrow">Quick Action</p>
             <h2 className="plan-sheet__title">
               {QUICK_ACTIONS.find((a) => a.id === qaAdvanced)?.label || "Filter"}
             </h2>
             <p className="plan-sheet__why">
-              Instant map filter — no reload. Long-press any Quick Action for these options.
+              Shows this category only · highlights the nearest {QA_NEAREST_N} · extras capped.
             </p>
             <div className="plan-sheet__actions">
               <button
@@ -1154,23 +1134,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                   setQaAdvanced(null);
                 }}
               >
-                {qa === qaAdvanced ? "Clear filter" : "Apply filter"}
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() => {
-                  setQa(qaAdvanced);
-                  setLayers((L) => ({
-                    ...L,
-                    ...(qaAdvanced === "verified"
-                      ? { verified: true }
-                      : { [qaAdvanced]: true, verified: true }),
-                  }));
-                  setQaAdvanced(null);
-                }}
-              >
-                Verified only
+                {qa === qaAdvanced ? "Clear" : "Show nearest"}
               </button>
               <button
                 type="button"
@@ -1181,7 +1145,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                   setQaAdvanced(null);
                 }}
               >
-                Reset layers
+                Calm map
               </button>
             </div>
           </div>

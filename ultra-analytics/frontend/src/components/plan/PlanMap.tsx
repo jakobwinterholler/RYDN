@@ -39,6 +39,8 @@ interface Props {
   className?: string;
   /** Re-fit camera when this changes (e.g. route id). */
   fitKey?: string;
+  /** When set, ease camera to these marker ids (Quick Action nearest-5). */
+  focusIds?: string[] | null;
   searching?: boolean;
   onSelectMarker?: (id: string) => void;
   /** Map center — used for nearest panel. Debounced by parent via this callback. */
@@ -72,8 +74,11 @@ function markersToGeoJSON(
   selectedId: string | null | undefined,
   searching: boolean,
 ) {
-  // Cap for paint perf; prefer verified + selected when trimming.
+  // Cap for paint perf; prefer emphasized + verified + selected when trimming.
   const sorted = [...markers].sort((a, b) => {
+    const ae = a.emphasize ? 1 : 0;
+    const be = b.emphasize ? 1 : 0;
+    if (ae !== be) return be - ae;
     const av = a.status === "verified" ? 1 : 0;
     const bv = b.status === "verified" ? 1 : 0;
     if (av !== bv) return bv - av;
@@ -83,11 +88,15 @@ function markersToGeoJSON(
   });
   return {
     type: "FeatureCollection" as const,
-    features: sorted.slice(0, 600).map((m) => {
+    features: sorted.slice(0, 420).map((m) => {
       const icon = iconForMarker(m);
       const verified = m.status === "verified";
       const rejected = m.status === "rejected";
       const selected = m.id === selectedId;
+      const emphasize = !!m.emphasize;
+      const dimmed = !!m.dimmed && !selected;
+      // Verified + nearest-5 sit above the rest
+      const z = selected ? 5 : emphasize ? 4 : verified ? 3 : rejected ? 0 : dimmed ? 1 : 2;
       return {
         type: "Feature" as const,
         id: m.id,
@@ -101,11 +110,15 @@ function markersToGeoJSON(
           selected: selected ? 1 : 0,
           verified: verified ? 1 : 0,
           rejected: rejected ? 1 : 0,
-          z: verified ? 3 : selected ? 2 : rejected ? 0 : 1,
+          emphasize: emphasize ? 1 : 0,
+          dimmed: dimmed ? 1 : 0,
+          z,
           sprite: markerImageId(icon, {
             selected,
             verified,
             rejected,
+            emphasize,
+            dimmed,
             loading: searching && selected,
           }),
         },
@@ -217,13 +230,16 @@ function ensureLayers(map: MapLibreMap) {
       data: markersToGeoJSON([], null, false),
       promoteId: "id",
       cluster: true,
-      clusterMaxZoom: 13,
-      clusterRadius: 46,
+      clusterMaxZoom: 12,
+      clusterRadius: 52,
       clusterProperties: {
         verified_sum: ["+", ["get", "verified"]],
+        emphasize_sum: ["+", ["get", "emphasize"]],
       },
     });
 
+    // Soft cluster disc (RYDN family — not black GIS pins). No text glyphs —
+    // OpenFreeMap font stacks vary; density is encoded in radius.
     map.addLayer({
       id: "stops-clusters",
       type: "circle",
@@ -232,20 +248,27 @@ function ensureLayers(map: MapLibreMap) {
       paint: {
         "circle-color": [
           "case",
-          [">", ["get", "verified_sum"], 0],
+          [">", ["get", "emphasize_sum"], 0],
           "#2f5d50",
+          [">", ["get", "verified_sum"], 0],
+          "#3d6b5c",
+          "#f7f6f3",
+        ],
+        "circle-radius": ["step", ["get", "point_count"], 14, 8, 17, 25, 20],
+        "circle-opacity": 0.92,
+        "circle-stroke-width": 2,
+        "circle-stroke-color": [
+          "case",
+          [">", ["coalesce", ["get", "emphasize_sum"], 0], 0],
+          "#f7f6f3",
+          [">", ["coalesce", ["get", "verified_sum"], 0], 0],
+          "#f7f6f3",
           "#1a1a18",
         ],
-        "circle-radius": ["step", ["get", "point_count"], 15, 8, 18, 25, 22],
-        "circle-opacity": 0.88,
-        "circle-stroke-width": 2,
-        "circle-stroke-color": "#f7f6f3",
       },
     });
 
-    // Cluster density via circle size only — avoids glyph/font mismatches across styles.
-
-    // Halo under selected / hover
+    // Halo under selected / nearest-5 / hover
     map.addLayer({
       id: "stops-halo",
       type: "circle",
@@ -255,16 +278,20 @@ function ensureLayers(map: MapLibreMap) {
         "circle-radius": [
           "case",
           ["boolean", ["feature-state", "hover"], false],
-          18,
+          20,
           ["==", ["get", "selected"], 1],
+          19,
+          ["==", ["get", "emphasize"], 1],
           17,
           0,
         ],
-        "circle-color": "rgba(47, 93, 80, 0.18)",
+        "circle-color": "rgba(47, 93, 80, 0.16)",
         "circle-opacity": [
           "case",
           ["==", ["get", "selected"], 1],
           1,
+          ["==", ["get", "emphasize"], 1],
+          0.9,
           ["boolean", ["feature-state", "hover"], false],
           0.85,
           0,
@@ -284,26 +311,33 @@ function ensureLayers(map: MapLibreMap) {
         "icon-size": [
           "case",
           ["==", ["get", "selected"], 1],
-          1.05,
+          1.08,
+          ["==", ["get", "emphasize"], 1],
+          1.04,
           ["boolean", ["feature-state", "hover"], false],
           1.02,
-          0.92,
+          ["==", ["get", "dimmed"], 1],
+          0.78,
+          0.9,
         ],
-        "icon-allow-overlap": false,
-        "icon-ignore-placement": false,
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
         "symbol-sort-key": ["get", "z"],
       },
       paint: {
         "icon-opacity": [
           "case",
           ["==", ["get", "rejected"], 1],
-          0.55,
+          0.5,
+          ["==", ["get", "dimmed"], 1],
+          0.42,
           0.96,
         ],
+        "icon-opacity-transition": { duration: 280, delay: 0 },
       },
     });
 
-    // Verified markers — always above unverified
+    // Verified markers — higher z-order + check badge sprite
     map.addLayer({
       id: "stops-verified",
       type: "symbol",
@@ -314,17 +348,20 @@ function ensureLayers(map: MapLibreMap) {
         "icon-size": [
           "case",
           ["==", ["get", "selected"], 1],
-          1.08,
+          1.1,
+          ["==", ["get", "emphasize"], 1],
+          1.06,
           ["boolean", ["feature-state", "hover"], false],
           1.04,
-          0.98,
+          0.96,
         ],
         "icon-allow-overlap": true,
         "icon-ignore-placement": true,
-        "symbol-sort-key": ["+", ["get", "z"], 10],
+        "symbol-sort-key": ["+", ["get", "z"], 20],
       },
       paint: {
         "icon-opacity": 1,
+        "icon-opacity-transition": { duration: 280, delay: 0 },
       },
     });
   }
@@ -338,6 +375,7 @@ export default function PlanMap({
   selectedId,
   className = "",
   fitKey,
+  focusIds,
   searching = false,
   onSelectMarker,
   onViewChange,
@@ -654,6 +692,26 @@ export default function PlanMap({
     if (map.isStyleLoaded()) run();
     else map.once("load", run);
   }, [fitKey, points]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded() || !focusIds?.length) return;
+    const idSet = new Set(focusIds);
+    const targets = markersRef.current.filter((m) => idSet.has(m.id));
+    if (targets.length < 1) return;
+    const bounds = new maplibregl.LngLatBounds(
+      [targets[0].lon, targets[0].lat],
+      [targets[0].lon, targets[0].lat],
+    );
+    for (const m of targets) bounds.extend([m.lon, m.lat]);
+    map.fitBounds(bounds, {
+      padding: { top: 72, bottom: 140, left: 48, right: 48 },
+      maxZoom: 13.5,
+      duration: 520,
+    });
+    // Only when the focus set identity changes (Quick Action toggle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusIds?.join(",")]);
 
   return (
     <div
