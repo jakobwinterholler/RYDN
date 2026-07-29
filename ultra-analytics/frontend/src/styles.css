@@ -5470,6 +5470,26 @@ input {
   z-index: 2;
 }
 
+/* Subtle status chip — never a blocking modal */
+.plan-workspace__analyzing {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 7;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper-elevated) 92%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 .plan-map {
   position: absolute;
   inset: 0;
@@ -5480,6 +5500,11 @@ input {
 .plan-map .maplibregl-ctrl-top-right {
   top: 8px;
   right: 8px;
+}
+
+/* Leave room for Layers + More FABs stacked under zoom */
+.plan-map .maplibregl-ctrl-top-right .maplibregl-ctrl {
+  margin: 0 0 8px 0;
 }
 
 .plan-map .maplibregl-ctrl-group {
@@ -5504,6 +5529,80 @@ input {
 
 .plan-map .maplibregl-canvas:focus {
   outline: none;
+}
+
+/* Floating Layers / More — sits under MapLibre zoom on the right */
+.plan-map-fab {
+  position: absolute;
+  top: 92px;
+  right: 8px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-map-fab__btn {
+  width: 36px;
+  min-height: 36px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--paper-elevated);
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+  line-height: 1.1;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.plan-map-fab__btn.is-on {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  color: var(--accent);
+}
+
+.plan-overflow {
+  position: absolute;
+  top: 92px;
+  right: 52px;
+  z-index: 13;
+  min-width: 140px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--paper-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plan-overflow__item {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plan-overflow__item:hover,
+.plan-overflow__item:focus-visible {
+  background: var(--accent-soft);
+}
+
+.plan-overflow__item:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .plan-nearest {
@@ -5710,6 +5809,26 @@ input {
   color: var(--accent);
 }
 
+.plan-qa__btn.is-loading .plan-qa__icon {
+  position: relative;
+}
+
+.plan-qa__spinner {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: plan-qa-spin 0.7s linear infinite;
+}
+
+@keyframes plan-qa-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .plan-qa__icon {
   display: grid;
   place-items: center;
@@ -5726,10 +5845,10 @@ input {
 
 .plan-layers {
   position: absolute;
-  top: 44px;
-  right: 12px;
-  z-index: 11;
-  width: min(220px, calc(100% - 24px));
+  top: 92px;
+  right: 52px;
+  z-index: 13;
+  width: min(220px, calc(100% - 72px));
   max-height: min(52vh, 360px);
   overflow: auto;
   padding: 12px;
@@ -5766,6 +5885,32 @@ input {
   width: 16px;
   height: 16px;
   accent-color: var(--accent);
+}
+
+.plan-layers__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.plan-layers__link {
+  flex: 1;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.plan-layers__link:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .plan-layers__note {

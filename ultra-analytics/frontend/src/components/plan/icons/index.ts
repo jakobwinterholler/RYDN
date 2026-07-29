@@ -6,5 +6,7 @@ export {
   ensurePlanSprites,
   markerImageId,
   spriteKey,
+  clusterSpriteId,
   type MarkerSpriteKind,
+  type ClusterTone,
 } from "./mapSprites";

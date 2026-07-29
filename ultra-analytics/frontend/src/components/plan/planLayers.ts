@@ -53,6 +53,9 @@ export const QA_NEAREST_N = 5;
 /** Soft cap for non-emphasized extras while a Quick Action is on. */
 export const QA_EXTRA_CAP = 10;
 
+/** Show service POIs within this corridor of the route (sleep may be farther). */
+export const CORRIDOR_MAX_M = 500;
+
 /**
  * Calm default — answer nothing until asked.
  * Visible: verified stops, remote/critical warnings. Service layers off.
@@ -158,6 +161,12 @@ export function stopMatchesLayer(m: PlanMarker, layer: PlanLayerId): boolean {
  * Independent layer visibility, with Quick Action exclusivity.
  * When `qa` is set: hide unrelated service POIs; only that category (+ selected).
  */
+function withinCorridor(m: PlanMarker): boolean {
+  if (m.distanceOffRouteM == null) return true;
+  if (m.kind === "sleep" || m.group === "sleep") return m.distanceOffRouteM <= 1500;
+  return m.distanceOffRouteM <= CORRIDOR_MAX_M;
+}
+
 export function markerVisible(
   m: PlanMarker,
   layers: Record<PlanLayerId, boolean>,
@@ -185,6 +194,9 @@ export function markerVisible(
     if (qa) return false;
     return layers.stages;
   }
+
+  // Service POIs: ~500 m corridor (sleep slightly farther)
+  if (!withinCorridor(m)) return false;
 
   // Quick Action: exclusive category filter — map answers only that question
   if (qa) {

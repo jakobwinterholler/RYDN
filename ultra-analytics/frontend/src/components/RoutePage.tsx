@@ -217,13 +217,6 @@ function qaToOverpassGroup(qa: QuickActionId | null): string {
   return "all";
 }
 
-const SEARCH_STATUS_STEPS = [
-  "Searching visible area…",
-  "Finding water…",
-  "Ranking best stops…",
-  "Loading map…",
-] as const;
-
 function searchStatusForQa(qa: QuickActionId | null, step: number): string {
   const finding =
     qa === "water"
@@ -235,8 +228,8 @@ function searchStatusForQa(qa: QuickActionId | null, step: number): string {
           : qa === "sleep"
             ? "Finding sleep…"
             : "Finding stops…";
-  const steps = ["Searching visible area…", finding, "Ranking best stops…", "Loading map…"];
-  return steps[Math.min(step, steps.length - 1)] || SEARCH_STATUS_STEPS[0];
+  const steps = ["Searching visible area…", finding, "Ranking best stops…"];
+  return steps[Math.min(step, steps.length - 1)] || steps[0];
 }
 
 type PeekPayload =
@@ -265,6 +258,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [briefingOpen, setBriefingOpen] = useState(false);
   const [briefingTab, setBriefingTab] = useState<BriefingTab>("critical");
   const [layersOpen, setLayersOpen] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
   const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number } | null>(null);
   const [mapBbox, setMapBbox] = useState<PlanMapBBox | null>(null);
   const [showSearchArea, setShowSearchArea] = useState(false);
@@ -279,6 +273,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const seenSearchIdsRef = useRef<Set<string>>(new Set());
   const searchGenRef = useRef(0);
   const searchStatusTimerRef = useRef<number | null>(null);
+  const autoSearchQaRef = useRef<QuickActionId | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -336,6 +331,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     setLayers(mode === "ride" ? RIDE_LAYERS : DEFAULT_LAYERS);
     setQa(null);
     setSelectedId(null);
+    setOverflowOpen(false);
     if (mode === "ride") {
       setLayersOpen(false);
       setBriefingOpen(false);
@@ -762,6 +758,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         const m = allMarkers.find((x) => x.id === selectedId);
         if (m && !stopMatchesLayer(m, next)) setSelectedId(null);
       }
+      // Progressive: show cached instantly, then background-search this category
+      if (next) autoSearchQaRef.current = next;
       return next;
     });
   };
@@ -860,7 +858,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         absorb(res);
       }
       if (gen === searchGenRef.current) {
-        setSearchStatus("Loading map…");
         setSearchHasMore(anyMore || added >= SEARCH_BATCH);
         if (added === 0 && !anyMore) setShowSearchArea(true);
       }
@@ -872,15 +869,28 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         searchStatusTimerRef.current = null;
       }
       if (gen === searchGenRef.current) {
-        // Brief settle so results fade in under the last status
+        // Brief settle so results fade in
         window.setTimeout(() => {
           if (gen !== searchGenRef.current) return;
           setSearchingArea(false);
           setSearchStatus(null);
-        }, 280);
+        }, 180);
       }
     }
   };
+
+  // Progressive: when a Quick Action turns on, search in background once bbox is ready
+  useEffect(() => {
+    if (!qa || mode !== "plan") {
+      autoSearchQaRef.current = null;
+      return;
+    }
+    if (autoSearchQaRef.current !== qa) return;
+    if (!mapBbox || !route || searchingArea) return;
+    autoSearchQaRef.current = null;
+    void searchThisArea();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per QA activation when bbox ready
+  }, [qa, mapBbox, mode, route?.id]);
 
   if (error && !route) {
     return (
@@ -907,13 +917,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const done = CHECKS.filter((c) => prep[c.key]).length;
   const reviewing = reviewMotion?.stopId === selectedStop?.id ? reviewMotion : null;
   const locked = Boolean(reviewing);
-
-  const actionLabel = (status: ReviewStatus) => {
-    if (!reviewing || reviewing.status !== status) return REVIEW_LABELS[status].idle;
-    return reviewing.phase === "confirming"
-      ? REVIEW_LABELS[status].pending
-      : REVIEW_LABELS[status].done;
-  };
 
   return (
     <div className={`plan-workspace${mode === "ride" ? " plan-workspace--ride" : ""}`}>
@@ -942,52 +945,25 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               Ride
             </button>
           </div>
-          {mode === "plan" && (
-            <>
-              <button
-                type="button"
-                className={`chip${layersOpen ? " is-on" : ""}`}
-                onClick={() => setLayersOpen((o) => !o)}
-              >
-                Layers
-              </button>
-              <button
-                type="button"
-                className={`chip${briefingOpen ? " is-on" : ""}`}
-                onClick={() => setBriefingOpen((o) => !o)}
-              >
-                Briefing
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => void loadAnalysis({ refresh: true })}
-            disabled={analyzing}
-            aria-label="Refresh analysis"
-          >
-            {analyzing ? "…" : "Refresh"}
-          </button>
         </div>
       </header>
 
       <div className="plan-workspace__stage">
-        {analyzing && !analysis ? (
-          <div className="plan-workspace__loading">
-            <RydnLoader label="Analysing course…" />
+        {/* Map paints immediately — analysis overlays in; never block with a modal */}
+        <PlanMap
+          points={route.points}
+          markers={analysis ? visibleMarkers : []}
+          selectedId={selectedId}
+          fitKey={route.id}
+          focusIds={focusIds}
+          searching={false}
+          onSelectMarker={onSelectMarker}
+          onViewChange={onViewChange}
+        />
+        {analyzing && !analysis && (
+          <div className="plan-workspace__analyzing" role="status" aria-live="polite">
+            Analysing course…
           </div>
-        ) : (
-          <PlanMap
-            points={route.points}
-            markers={visibleMarkers}
-            selectedId={selectedId}
-            fitKey={route.id}
-            focusIds={focusIds}
-            searching={searchingArea}
-            onSelectMarker={onSelectMarker}
-            onViewChange={onViewChange}
-          />
         )}
 
         {/* Nearest hint — only while a Quick Action is active */}
@@ -1012,15 +988,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </aside>
         )}
 
-        {searchingArea && mode === "plan" && (
-          <div className="plan-search-pill plan-search-pill--alive" role="status" aria-live="polite">
-            <span className="plan-search-pill__dot" aria-hidden />
-            <span key={searchStatus || "search"} className="plan-search-pill__text">
-              {searchStatus || "Searching visible area…"}
-            </span>
-          </div>
-        )}
-
         {!searchingArea && mode === "plan" && (showSearchArea || searchHasMore) && (
           <button
             type="button"
@@ -1031,26 +998,99 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </button>
         )}
 
-        {/* Quick Actions — Water / Markets / 24h / Sleep. Verified = badge on icons. */}
-        <nav className="plan-qa" aria-label="Quick actions">
-          {QUICK_ACTIONS.map((a) => (
+        {/* Floating right stack — Layers sits with zoom controls */}
+        {mode === "plan" && (
+          <div className="plan-map-fab" aria-label="Map tools">
             <button
-              key={a.id}
               type="button"
-              className={`plan-qa__btn${qa === a.id ? " is-on" : ""}`}
-              onClick={() => toggleQa(a.id)}
-              aria-pressed={qa === a.id}
-              title={a.label}
+              className={`plan-map-fab__btn${layersOpen ? " is-on" : ""}`}
+              aria-label="Layers"
+              aria-pressed={layersOpen}
+              onClick={() => {
+                setLayersOpen((o) => !o);
+                setOverflowOpen(false);
+              }}
             >
-              <span className="plan-qa__icon" aria-hidden>
-                {a.emoji}
-              </span>
-              <span>{a.label}</span>
+              Layers
             </button>
-          ))}
+            <button
+              type="button"
+              className={`plan-map-fab__btn${overflowOpen ? " is-on" : ""}`}
+              aria-label="More"
+              aria-pressed={overflowOpen}
+              onClick={() => {
+                setOverflowOpen((o) => !o);
+                setLayersOpen(false);
+              }}
+            >
+              ···
+            </button>
+          </div>
+        )}
+
+        {overflowOpen && mode === "plan" && (
+          <aside className="plan-overflow" aria-label="More actions">
+            <button
+              type="button"
+              className="plan-overflow__item"
+              onClick={() => {
+                setBriefingOpen(true);
+                setOverflowOpen(false);
+              }}
+            >
+              Briefing
+            </button>
+            <button
+              type="button"
+              className="plan-overflow__item"
+              disabled={analyzing}
+              onClick={() => {
+                setOverflowOpen(false);
+                void loadAnalysis({ refresh: true });
+              }}
+            >
+              {analyzing ? "Refreshing…" : "Refresh"}
+            </button>
+            {(showSearchArea || searchHasMore) && (
+              <button
+                type="button"
+                className="plan-overflow__item"
+                disabled={searchingArea}
+                onClick={() => {
+                  setOverflowOpen(false);
+                  void searchThisArea();
+                }}
+              >
+                Search area
+              </button>
+            )}
+          </aside>
+        )}
+
+        {/* Quick Actions — Water / Markets / 24h / Sleep. Loading indicator inside active button. */}
+        <nav className="plan-qa" aria-label="Quick actions">
+          {QUICK_ACTIONS.map((a) => {
+            const busy = searchingArea && qa === a.id;
+            return (
+              <button
+                key={a.id}
+                type="button"
+                className={`plan-qa__btn${qa === a.id ? " is-on" : ""}${busy ? " is-loading" : ""}`}
+                onClick={() => toggleQa(a.id)}
+                aria-pressed={qa === a.id}
+                aria-busy={busy || undefined}
+                title={busy ? searchStatus || a.label : a.label}
+              >
+                <span className="plan-qa__icon" aria-hidden>
+                  {busy ? <span className="plan-qa__spinner" /> : a.emoji}
+                </span>
+                <span>{a.label}</span>
+              </button>
+            );
+          })}
         </nav>
 
-        {/* Layer toggles */}
+        {/* Layer toggles — floating panel from right FAB */}
         {layersOpen && mode === "plan" && (
           <aside className="plan-layers" aria-label="Map layers">
             <p className="plan-layers__title">Layers</p>
@@ -1066,9 +1106,29 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                 </label>
               ))}
             </div>
+            <div className="plan-layers__actions">
+              <button
+                type="button"
+                className="plan-layers__link"
+                onClick={() => {
+                  setBriefingOpen(true);
+                  setLayersOpen(false);
+                }}
+              >
+                Briefing
+              </button>
+              <button
+                type="button"
+                className="plan-layers__link"
+                disabled={analyzing}
+                onClick={() => void loadAnalysis({ refresh: true })}
+              >
+                {analyzing ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
             <p className="plan-layers__note">
-              Default is calm (verified + remote). Use Quick Actions for services. Layers here are
-              advanced overrides. {PLAN_MAP_STYLE_NOTE}
+              Default is calm (verified + remote). Tap Water / Markets / 24h / Sleep for corridor
+              POIs (~500 m). {PLAN_MAP_STYLE_NOTE}
             </p>
           </aside>
         )}
@@ -1134,56 +1194,27 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     : "On route"}
                   {selectedStop.openingHours ? ` · ${selectedStop.openingHours}` : ""}
                 </p>
-                <div className="plan-sheet__links">
-                  {(selectedStop.googleMapsUrl ||
-                    mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place) && (
-                    <a
-                      href={
-                        selectedStop.googleMapsUrl ||
-                        mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
-                      }
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Google Maps
-                    </a>
-                  )}
+                <div className="plan-sheet__actions">
                   <a
-                    href={
-                      selectedStop.streetViewUrl ||
-                      mapsLinks(selectedStop.lat, selectedStop.lon).streetView
-                    }
+                    className="btn"
+                    href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).google}
                     target="_blank"
                     rel="noreferrer"
                   >
-                    Street View
+                    Navigate
                   </a>
-                  {selectedStop.website && (
-                    <a href={selectedStop.website} target="_blank" rel="noreferrer">
-                      Website
-                    </a>
-                  )}
-                </div>
-                <div className="plan-sheet__actions">
-                  {(["verified", "rejected"] as ReviewStatus[]).map((status) => {
-                    const active = reviewing?.status === status;
-                    const ghost = status !== "verified";
-                    return (
-                      <button
-                        key={status}
-                        type="button"
-                        className={`btn${ghost ? " btn--ghost" : ""}${active ? " btn--working" : ""}`}
-                        disabled={locked && !active}
-                        aria-busy={active || undefined}
-                        onClick={() => reviewStop(selectedStop.id, status)}
-                      >
-                        {active && reviewing?.phase === "confirming" && (
-                          <span className="btn__spinner" aria-hidden />
-                        )}
-                        {status === "verified" ? "✓ Verify" : actionLabel(status)}
-                      </button>
-                    );
-                  })}
+                  <button
+                    type="button"
+                    className={`btn btn--ghost${reviewing?.status === "verified" ? " btn--working" : ""}`}
+                    disabled={locked && reviewing?.status !== "verified"}
+                    aria-busy={reviewing?.status === "verified" || undefined}
+                    onClick={() => reviewStop(selectedStop.id, "verified")}
+                  >
+                    {reviewing?.status === "verified" && reviewing.phase === "confirming" && (
+                      <span className="btn__spinner" aria-hidden />
+                    )}
+                    {selectedStop.reviewStatus === "verified" ? "Saved" : "Add Stop"}
+                  </button>
                 </div>
               </>
             )}

@@ -197,7 +197,7 @@ def fetch_route_pois(
     track: Sequence[Sequence[Any]],
     *,
     force_refresh: bool = False,
-    max_off_route_m: float = 600.0,
+    max_off_route_m: float = 500.0,
 ) -> Dict[str, Any]:
     """POIs projected onto the route. Cached by bbox hash."""
     if len(track) < 2:
@@ -345,7 +345,7 @@ def fetch_viewport_pois(
     track: Optional[Sequence[Sequence[Any]]] = None,
     exclude_ids: Optional[Sequence[str]] = None,
     limit: int = 15,
-    max_off_route_m: float = 900.0,
+    max_off_route_m: float = 500.0,
 ) -> Dict[str, Any]:
     """POIs for a visible map bbox — scored batch for Search-this-area.
 

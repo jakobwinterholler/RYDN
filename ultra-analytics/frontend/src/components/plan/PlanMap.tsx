@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type MapMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { ensurePlanSprites, iconForMarker, markerImageId } from "./icons";
+import { ensurePlanSprites, iconForMarker, markerImageId, type ClusterTone } from "./icons";
 import type { PlanMarker } from "./planLayers";
 
 /** OpenFreeMap Liberty — roads, paths, water, forests, places. No API key. */
@@ -68,12 +68,37 @@ function decimate(points: number[][], max = 1800): number[][] {
   return out;
 }
 
+function toneForMarker(m: PlanMarker): ClusterTone {
+  const cat = (m.category || "").toLowerCase();
+  const group = (m.group || "").toLowerCase();
+  if (m.kind === "sleep" || group === "sleep") return "sleep";
+  if (group === "water" || cat.includes("water") || cat.includes("drinking") || cat.includes("fountain"))
+    return "water";
+  if (
+    cat.includes("24h") ||
+    cat.includes("fuel") ||
+    cat.includes("gas") ||
+    (m.is24h && (cat.includes("shop") || cat.includes("convenience")))
+  )
+    return "fuel";
+  if (
+    group === "resupply" ||
+    cat.includes("supermarket") ||
+    cat.includes("market") ||
+    cat.includes("convenience") ||
+    cat.includes("bakery")
+  )
+    return "sage";
+  return "sage";
+}
+
 function markersToGeoJSON(
   markers: PlanMarker[],
   selectedId: string | null | undefined,
   searching: boolean,
 ) {
   // Cap for paint perf; prefer emphasized + verified + selected when trimming.
+  // Clustering lets us keep more points without visual clutter when zoomed out.
   const sorted = [...markers].sort((a, b) => {
     const ae = a.emphasize ? 1 : 0;
     const be = b.emphasize ? 1 : 0;
@@ -87,13 +112,14 @@ function markersToGeoJSON(
   });
   return {
     type: "FeatureCollection" as const,
-    features: sorted.slice(0, 80).map((m) => {
+    features: sorted.slice(0, 160).map((m) => {
       const icon = iconForMarker(m);
       const verified = m.status === "verified";
       const rejected = m.status === "rejected";
       const selected = m.id === selectedId;
       const emphasize = !!m.emphasize;
       const dimmed = !!m.dimmed && !selected;
+      const tone = toneForMarker(m);
       // Verified + nearest-5 sit above the rest
       const z = selected ? 5 : emphasize ? 4 : verified ? 3 : rejected ? 0 : dimmed ? 1 : 2;
       return {
@@ -106,6 +132,12 @@ function markersToGeoJSON(
           group: m.group || "",
           category: m.category || "",
           icon,
+          clusterTone: tone,
+          // Flags for clusterProperties sums (MapLibre cluster aggregation)
+          isWater: tone === "water" ? 1 : 0,
+          isSage: tone === "sage" ? 1 : 0,
+          isFuel: tone === "fuel" ? 1 : 0,
+          isSleep: tone === "sleep" ? 1 : 0,
           selected: selected ? 1 : 0,
           verified: verified ? 1 : 0,
           rejected: rejected ? 1 : 0,
@@ -179,6 +211,60 @@ function fitRoute(map: MapLibreMap, points: number[][]) {
   map.fitBounds(bounds, { padding: 56, maxZoom: 12, duration: 480 });
 }
 
+/** Pick dominant category tone for a cluster from aggregated counts. */
+function clusterToneExpr(): maplibregl.ExpressionSpecification {
+  const maxAll: maplibregl.ExpressionSpecification = [
+    "max",
+    ["get", "sumWater"],
+    ["max", ["get", "sumSage"], ["max", ["get", "sumFuel"], ["get", "sumSleep"]]],
+  ];
+  return [
+    "case",
+    ["all", [">", ["get", "sumWater"], 0], ["==", ["get", "sumWater"], maxAll]],
+    "water",
+    ["all", [">", ["get", "sumFuel"], 0], ["==", ["get", "sumFuel"], maxAll]],
+    "fuel",
+    ["all", [">", ["get", "sumSleep"], 0], ["==", ["get", "sumSleep"], maxAll]],
+    "sleep",
+    ["all", [">", ["get", "sumSage"], 0], ["==", ["get", "sumSage"], maxAll]],
+    "sage",
+    "mixed",
+  ];
+}
+
+function clusterIconExpr(): maplibregl.ExpressionSpecification {
+  const tone = clusterToneExpr();
+  // Match baked sprite ids: rydn-cluster-{tone}-{2|3|…|9|10+|25+}
+  return [
+    "concat",
+    "rydn-cluster-",
+    tone,
+    "-",
+    [
+      "case",
+      [">=", ["get", "point_count"], 25],
+      "25+",
+      [">=", ["get", "point_count"], 10],
+      "10+",
+      [">=", ["get", "point_count"], 9],
+      "9",
+      [">=", ["get", "point_count"], 8],
+      "8",
+      [">=", ["get", "point_count"], 7],
+      "7",
+      [">=", ["get", "point_count"], 6],
+      "6",
+      [">=", ["get", "point_count"], 5],
+      "5",
+      [">=", ["get", "point_count"], 4],
+      "4",
+      [">=", ["get", "point_count"], 3],
+      "3",
+      "2",
+    ],
+  ];
+}
+
 function ensureLayers(map: MapLibreMap) {
   ensurePlanSprites(map);
 
@@ -224,19 +310,54 @@ function ensureLayers(map: MapLibreMap) {
   }
 
   if (!map.getSource("stops")) {
-    // No clustering — grey cluster discs were the "placeholder circles" bug.
-    // Cap in markersToGeoJSON keeps paint snappy; icons always show per category.
     map.addSource("stops", {
       type: "geojson",
       data: markersToGeoJSON([], null, false),
       promoteId: "id",
+      cluster: true,
+      clusterRadius: 42,
+      clusterMaxZoom: 13,
+      clusterProperties: {
+        sumWater: ["+", ["get", "isWater"]],
+        sumSage: ["+", ["get", "isSage"]],
+        sumFuel: ["+", ["get", "isFuel"]],
+        sumSleep: ["+", ["get", "isSleep"]],
+      },
     });
 
-    // Halo under selected / nearest-5 / hover
+    // Category-tinted cluster symbols with baked count badges (never grey discs)
+    map.addLayer({
+      id: "stops-clusters",
+      type: "symbol",
+      source: "stops",
+      filter: ["has", "point_count"],
+      layout: {
+        "icon-image": clusterIconExpr(),
+        "icon-size": [
+          "interpolate",
+          ["linear"],
+          ["get", "point_count"],
+          2,
+          0.78,
+          10,
+          0.9,
+          25,
+          1.05,
+        ],
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+      },
+      paint: {
+        "icon-opacity": 0.96,
+      },
+    });
+
+    // Halo under selected / nearest-5 / hover (unclustered only)
     map.addLayer({
       id: "stops-halo",
       type: "circle",
       source: "stops",
+      filter: ["!", ["has", "point_count"]],
       paint: {
         "circle-radius": [
           "interpolate",
@@ -314,7 +435,7 @@ function ensureLayers(map: MapLibreMap) {
       id: "stops-icons",
       type: "symbol",
       source: "stops",
-      filter: ["!=", ["get", "verified"], 1],
+      filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "verified"], 1]],
       layout: {
         "icon-image": ["get", "sprite"],
         "icon-size": iconSizeExpr,
@@ -340,7 +461,7 @@ function ensureLayers(map: MapLibreMap) {
       id: "stops-verified",
       type: "symbol",
       source: "stops",
-      filter: ["==", ["get", "verified"], 1],
+      filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "verified"], 1]],
       layout: {
         "icon-image": ["get", "sprite"],
         "icon-size": iconSizeExpr,
@@ -485,6 +606,21 @@ export default function PlanMap({
     };
 
     const onClick = (e: MapMouseEvent) => {
+      // Cluster tap → expand
+      const clusters = map.queryRenderedFeatures(e.point, { layers: ["stops-clusters"] });
+      if (clusters.length) {
+        const f = clusters[0];
+        const clusterId = f.properties?.cluster_id as number | undefined;
+        const coords = (f.geometry as { type: string; coordinates: number[] })?.coordinates;
+        const source = map.getSource("stops") as GeoJSONSource | undefined;
+        if (source && clusterId != null && coords) {
+          void source.getClusterExpansionZoom(clusterId).then((zoom) => {
+            map.easeTo({ center: [coords[0], coords[1]], zoom, duration: 380 });
+          });
+        }
+        return;
+      }
+
       const feats = map.queryRenderedFeatures(e.point, { layers: HIT_LAYERS });
       if (!feats.length) {
         onSelectRef.current?.("");
@@ -510,6 +646,12 @@ export default function PlanMap({
     map.on("click", onClick);
 
     const onMove = (e: MapMouseEvent) => {
+      const clusterHit = map.queryRenderedFeatures(e.point, { layers: ["stops-clusters"] });
+      if (clusterHit.length) {
+        clearHover();
+        map.getCanvas().style.cursor = "pointer";
+        return;
+      }
       const feats = map.queryRenderedFeatures(e.point, {
         layers: ["stops-icons", "stops-verified"],
       });
@@ -629,7 +771,7 @@ export default function PlanMap({
     );
     for (const m of targets) bounds.extend([m.lon, m.lat]);
     map.fitBounds(bounds, {
-      padding: { top: 72, bottom: 140, left: 48, right: 48 },
+      padding: { top: 72, bottom: 140, left: 48, right: 72 },
       maxZoom: 13.5,
       duration: 520,
     });

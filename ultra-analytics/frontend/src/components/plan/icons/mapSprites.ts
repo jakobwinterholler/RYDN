@@ -187,25 +187,68 @@ function renderSprite(iconId: PlanIconId, kind: MarkerSpriteKind): ImageData {
   return ctx.getImageData(0, 0, size, size);
 }
 
-export function clusterSprite(): ImageData {
-  const size = 64;
+export type ClusterTone = "water" | "sage" | "fuel" | "sleep" | "mixed";
+
+const CLUSTER_TONES: ClusterTone[] = ["water", "sage", "fuel", "sleep", "mixed"];
+
+/** Bucketed count labels baked into sprites (no map font dependency). */
+const CLUSTER_COUNT_LABELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10+", "25+"] as const;
+
+function clusterCountLabel(n: number): (typeof CLUSTER_COUNT_LABELS)[number] {
+  if (n >= 25) return "25+";
+  if (n >= 10) return "10+";
+  if (n <= 2) return "2";
+  if (n >= 9) return "9";
+  return String(n) as (typeof CLUSTER_COUNT_LABELS)[number];
+}
+
+export function clusterSpriteId(tone: ClusterTone, count: number): string {
+  return `rydn-cluster-${tone}-${clusterCountLabel(count)}`;
+}
+
+/** Category-tinted cluster pill with count — never empty grey discs. */
+export function clusterSprite(tone: ClusterTone = "sage", countLabel = "2"): ImageData {
+  const size = 72;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
   const cx = size / 2;
   const cy = size / 2;
+  const big = countLabel === "10+" || countLabel === "25+";
+  const r = big ? 20 : 17;
+  const fill =
+    tone === "mixed"
+      ? "#3a4a42"
+      : tone === "water"
+        ? TONE_FILL.water
+        : tone === "fuel"
+          ? TONE_FILL.fuel
+          : tone === "sleep"
+            ? TONE_FILL.sleep
+            : TONE_FILL.sage;
+
   ctx.beginPath();
-  ctx.arc(cx, cy + 1, 18, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(26, 26, 24, 0.16)";
+  ctx.arc(cx, cy + 1.2, r + 1, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(26, 26, 24, 0.18)";
   ctx.fill();
+
   ctx.beginPath();
-  ctx.arc(cx, cy, 17, 0, Math.PI * 2);
-  ctx.fillStyle = TONE_FILL.sage;
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = fill;
   ctx.fill();
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 2.2;
   ctx.strokeStyle = PAPER;
   ctx.stroke();
+
+  // Count badge pill (intentional, not an empty disc)
+  const label = countLabel;
+  ctx.font = `bold ${big ? 15 : 16}px system-ui, -apple-system, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = PAPER;
+  ctx.fillText(label, cx, cy + 0.5);
+
   return ctx.getImageData(0, 0, size, size);
 }
 
@@ -223,33 +266,35 @@ const KINDS: MarkerSpriteKind[] = [
   "loading",
 ];
 
-/** Register all RYDN marker sprites on a MapLibre map (idempotent). */
+function upsertImage(map: MapLibreMap, id: string, data: ImageData): void {
+  if (map.hasImage(id)) {
+    try {
+      map.updateImage(id, data);
+    } catch {
+      /* style race */
+    }
+    return;
+  }
+  map.addImage(id, data, { pixelRatio: 2 });
+}
+
+/** Register all RYDN marker + cluster sprites on a MapLibre map (idempotent). */
 export function ensurePlanSprites(map: MapLibreMap): void {
   for (const iconId of ALL_ICONS) {
     for (const kind of KINDS) {
-      const id = spriteKey(iconId, kind);
-      const data = renderSprite(iconId, kind);
-      if (map.hasImage(id)) {
-        try {
-          map.updateImage(id, data);
-        } catch {
-          /* style race */
-        }
-        continue;
-      }
-      map.addImage(id, data, { pixelRatio: 2 });
+      upsertImage(map, spriteKey(iconId, kind), renderSprite(iconId, kind));
     }
   }
-  if (!map.hasImage("rydn-cluster")) {
-    map.addImage("rydn-cluster", clusterSprite(), { pixelRatio: 2 });
-  } else {
-    try {
-      map.updateImage("rydn-cluster", clusterSprite());
-    } catch {
-      /* ignore */
+  for (const tone of CLUSTER_TONES) {
+    for (const label of CLUSTER_COUNT_LABELS) {
+      upsertImage(map, `rydn-cluster-${tone}-${label}`, clusterSprite(tone, label));
     }
   }
+  // Legacy id kept for safety
+  upsertImage(map, "rydn-cluster", clusterSprite("sage", "2"));
 }
+
+export { CLUSTER_TONES, clusterCountLabel };
 
 export function markerImageId(
   iconId: PlanIconId,
