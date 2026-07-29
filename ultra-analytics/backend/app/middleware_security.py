@@ -24,14 +24,21 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
 
-        # CSP — allow self + configured API origin + Google Fonts
+        # CSP — allow self + configured API origin + Google Fonts + MapLibre tiles
+        # MapLibre fetches style/TileJSON/glyphs/vector tiles via connect-src (not img-src).
+        # The bundled maplibre-gl worker is created from a blob: URL.
         connect = "'self'"
         if cfg.api_url and cfg.api_url.rstrip("/") not in (
             cfg.app_url.rstrip("/"),
             cfg.public_url.rstrip("/"),
         ):
             connect += f" {cfg.api_url}"
-        for extra in ("https://api.rydn.bike", "https://rydn.bike"):
+        for extra in (
+            "https://api.rydn.bike",
+            "https://rydn.bike",
+            "https://tiles.openfreemap.org",
+            "https://tile.openstreetmap.org",
+        ):
             if extra not in connect:
                 connect += f" {extra}"
         csp = (
@@ -43,9 +50,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "img-src 'self' data: blob: https:; "
             "font-src 'self' https://fonts.gstatic.com data:; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "script-src 'self'; "
+            "script-src 'self' 'wasm-unsafe-eval' blob:; "
             f"connect-src {connect}; "
-            "worker-src 'self'; "
+            "worker-src 'self' blob:; "
+            "child-src 'self' blob:; "
             "manifest-src 'self'"
         )
         if cfg.is_production:

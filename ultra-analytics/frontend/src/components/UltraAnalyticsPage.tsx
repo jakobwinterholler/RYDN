@@ -11,7 +11,7 @@ import Icon from "./ui/Icon";
 import LineChart from "./ui/LineChart";
 import MetricCard from "./ui/MetricCard";
 import RydnLoader from "./ui/RydnLoader";
-import { cleanUltraTitle } from "./ui/titles";
+import { cleanDayTitle, cleanUltraTitle } from "./ui/titles";
 import { fmtDuration, fmtNumber } from "./ui/format";
 
 interface Props {
@@ -129,12 +129,15 @@ export default function UltraAnalyticsPage({ ultraId, onBack, onOpenRide }: Prop
             <p className="ua-block__lead">Open a single day only when you need its detail.</p>
             <ul className="analytics-day-list">
               {analysis.dayHours.map((day) => (
-                <li key={day.activityId}>
+                <li key={`day-${day.dayIndex}-${(day.activityIds || [day.activityId]).join("-")}`}>
                   <button type="button" className="analytics-day" onClick={() => onOpenRide(day.activityId)}>
                     <span className="analytics-day__day">Day {day.dayIndex}</span>
-                    <span className="analytics-day__name">{day.name}</span>
+                    <span className="analytics-day__name">{cleanDayTitle(day.name)}</span>
                     <span className="analytics-day__meta">
                       {day.date || "—"} · {fmtDuration(day.movingTimeS)} moving
+                      {(day.recordingCount ?? 1) > 1
+                        ? ` · ${day.recordingCount} recordings`
+                        : ""}
                     </span>
                     <Icon name="chevronRight" size={18} className="analytics-day__chevron" />
                   </button>

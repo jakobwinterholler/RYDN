@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -113,6 +114,67 @@ class RouteStoreTests(unittest.TestCase):
         assert updated is not None
         self.assertEqual(updated["status"], "ready")
         self.assertTrue(updated["preparation"]["routeUnderstood"])
+
+    def test_stop_review_patches_analysis_cache(self) -> None:
+        """Verify must not wipe analysis cache — that forced a full re-analysis."""
+        route_id = "route-verify"
+        routes_dir = routes_store._routes_dir(self.uid)
+        os.makedirs(routes_dir, exist_ok=True)
+        route = {
+            "id": route_id,
+            "createdAt": 1,
+            "updatedAt": 1,
+            "objectType": "route",
+            "name": "Test",
+            "status": "planning",
+            "points": [[42.3, 3.2], [42.4, 3.3]],
+            "track": [],
+            "preparation": dict(routes_store.PREPARATION_DEFAULTS),
+            "stopReviews": {},
+            "hasAnalysis": True,
+            "distanceKm": 10,
+            "elevationGainM": 100,
+            "pointCount": 2,
+        }
+        with open(os.path.join(routes_dir, f"{route_id}.json"), "w", encoding="utf-8") as f:
+            json.dump(route, f)
+
+        cache = os.path.join(routes_dir, f"{route_id}.analysis.json")
+        analysis = {
+            "schemaVersion": 2,
+            "targetStageKm": 250,
+            "summary": {
+                "climbCount": 3,
+                "verifiedStopCount": 0,
+                "recommendedStopCount": 1,
+            },
+            "recommendedStops": [
+                {"id": "stop-a", "name": "Fountain", "reviewStatus": "unreviewed"}
+            ],
+            "stopReviews": {},
+        }
+        with open(cache, "w", encoding="utf-8") as f:
+            json.dump(analysis, f)
+        before_mtime = os.path.getmtime(cache)
+
+        updated = routes_store.update_route(
+            self.uid, route_id, {"stopReviews": {"stop-a": "verified"}}
+        )
+        assert updated is not None
+        self.assertEqual(updated["stopReviews"].get("stop-a"), "verified")
+        self.assertTrue(os.path.isfile(cache), "analysis cache must stay after review")
+
+        cached = routes_store.get_route_analysis(self.uid, route_id)
+        assert cached is not None
+        reviewed = next(
+            (s for s in (cached.get("recommendedStops") or []) if s.get("id") == "stop-a"),
+            None,
+        )
+        self.assertIsNotNone(reviewed)
+        self.assertEqual(reviewed["reviewStatus"], "verified")
+        self.assertEqual((cached.get("summary") or {}).get("verifiedStopCount"), 1)
+        self.assertEqual((cached.get("summary") or {}).get("climbCount"), 3)
+        self.assertGreaterEqual(os.path.getmtime(cache), before_mtime)
 
 
 if __name__ == "__main__":

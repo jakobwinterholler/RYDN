@@ -1,7 +1,13 @@
-/** Planned Route — linear Plan sections + in-page Verify deck. */
+/** Planned Route — map-first planning workspace (Analytics untouched). */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { deleteRoute, getRoute, getRouteAnalysis, patchRoute } from "../api";
+import {
+  deleteRoute,
+  getRoute,
+  getRouteAnalysis,
+  patchRoute,
+  searchRouteViewportPois,
+} from "../api";
 import type {
   CriticalDecision,
   PlannedRouteDetail,
@@ -13,9 +19,21 @@ import type {
 } from "../types";
 import { fmtDuration } from "./ui/format";
 import Icon from "./ui/Icon";
-import RoutePreview from "./ui/RoutePreview";
 import RydnLoader from "./ui/RydnLoader";
 import ScoreLine from "./ui/ScoreLine";
+import PlanMap, { type PlanMapBBox, PLAN_MAP_STYLE_NOTE } from "./plan/PlanMap";
+import {
+  DEFAULT_LAYERS,
+  LAYER_TOGGLES,
+  QUICK_ACTIONS,
+  RIDE_LAYERS,
+  markerVisible,
+  nearestOf,
+  stopMatchesLayer,
+  type PlanLayerId,
+  type PlanMarker,
+  type QuickActionId,
+} from "./plan/planLayers";
 
 interface Props {
   routeId: string;
@@ -24,17 +42,49 @@ interface Props {
 }
 
 type Mode = "plan" | "ride";
-type MapFilter = "all" | "stops" | "climbs" | "remote" | "sleep" | "stages" | "decisions";
-type PlanSection = "critical" | "map" | "stops" | "climbs" | "stages" | "verify";
+type ReviewStatus = "verified" | "rejected" | "skipped";
+type ReviewMotion = {
+  stopId: string;
+  status: ReviewStatus;
+  phase: "confirming" | "exiting" | "done";
+};
+type BriefingTab = "critical" | "stops" | "climbs" | "stages" | "verify" | "prep";
 
-const PLAN_SECTIONS: { id: PlanSection; label: string }[] = [
-  { id: "critical", label: "Critical" },
-  { id: "map", label: "Map" },
-  { id: "stops", label: "Stops" },
-  { id: "climbs", label: "Climbs" },
-  { id: "stages", label: "Stages" },
-  { id: "verify", label: "Verify" },
-];
+const REVIEW_FEEDBACK_MS = 220;
+const REVIEW_EXIT_MS = 260;
+
+const REVIEW_LABELS: Record<
+  ReviewStatus,
+  { idle: string; pending: string; done: string }
+> = {
+  verified: { idle: "Verify", pending: "Verifying…", done: "✓ Verified" },
+  rejected: { idle: "Reject", pending: "Rejecting…", done: "Rejected" },
+  skipped: { idle: "Save for later", pending: "Saving…", done: "Saved" },
+};
+
+function applyStopReview(
+  analysis: RouteAnalysis,
+  stopId: string,
+  status: ReviewStatus | "unreviewed",
+): RouteAnalysis {
+  const stops = (analysis.recommendedStops || []).map((s) =>
+    s.id === stopId ? { ...s, reviewStatus: status } : s,
+  );
+  const verified = stops.filter((s) => s.reviewStatus === "verified").length;
+  const nextReviews = { ...(analysis.stopReviews || {}) };
+  if (status === "unreviewed") delete nextReviews[stopId];
+  else nextReviews[stopId] = status;
+  return {
+    ...analysis,
+    recommendedStops: stops,
+    stopReviews: nextReviews,
+    summary: {
+      ...analysis.summary,
+      verifiedStopCount: verified,
+      recommendedStopCount: stops.filter((s) => s.reviewStatus !== "rejected").length,
+    },
+  };
+}
 
 const CHECKS: {
   key: keyof Omit<RoutePreparation, "notes">;
@@ -88,173 +138,14 @@ function recommendWhy(stop: RecommendedStop): string {
   return `${parts.join(" · ")}.`;
 }
 
-function ElevSpark({ profile, highlightKm }: { profile: number[][]; highlightKm?: number | null }) {
-  if (profile.length < 2) return null;
-  const w = 640;
-  const h = 72;
-  const xs = profile.map((p) => p[0]);
-  const ys = profile.map((p) => p[1]);
-  const x0 = Math.min(...xs);
-  const x1 = Math.max(...xs) || 1;
-  const y0 = Math.min(...ys);
-  const y1 = Math.max(...ys);
-  const span = Math.max(y1 - y0, 1);
-  const d = profile
-    .map((p, i) => {
-      const x = ((p[0] - x0) / (x1 - x0)) * w;
-      const y = h - ((p[1] - y0) / span) * (h - 8) - 4;
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(" ");
-  const hx = highlightKm != null ? ((highlightKm - x0) / (x1 - x0)) * w : null;
-  return (
-    <svg className="route-elev" viewBox={`0 0 ${w} ${h}`} role="img" aria-label="Elevation profile">
-      <path d={d} fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      {hx != null && <line x1={hx} x2={hx} y1={0} y2={h} stroke="var(--accent)" strokeWidth="1.5" />}
-    </svg>
-  );
-}
-
-function VerifyStopCard({
-  stop,
-  index,
-  total,
-  busy,
-  onReview,
-  onPrev,
-  onNext,
-}: {
-  stop: RecommendedStop;
-  index: number;
-  total: number;
-  busy: boolean;
-  onReview: (status: "verified" | "rejected" | "skipped") => void;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
-  const touchStart = useRef<{ x: number; y: number } | null>(null);
-
-  return (
-    <article
-      className={`verify-card verify-card--${stop.reviewStatus}`}
-      onTouchStart={(e) => {
-        const t = e.changedTouches[0];
-        touchStart.current = { x: t.clientX, y: t.clientY };
-      }}
-      onTouchEnd={(e) => {
-        if (!touchStart.current) return;
-        const t = e.changedTouches[0];
-        const dx = t.clientX - touchStart.current.x;
-        const dy = t.clientY - touchStart.current.y;
-        touchStart.current = null;
-        if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
-        if (dx < 0) onNext();
-        else onPrev();
-      }}
-    >
-      <header className="verify-card__progress">
-        <span>
-          Stop {index + 1} of {total}
-        </span>
-        <span className={`verify-card__status verify-card__status--${stop.reviewStatus}`}>
-          {stop.reviewStatus === "unreviewed" ? "Awaiting review" : stop.reviewStatus}
-        </span>
-      </header>
-
-      <div className="verify-card__rating">
-        <span className="verify-card__stars" aria-hidden>
-          {stars(stop.qualityStars)}
-        </span>
-        <span className="verify-card__quality">{stop.qualityLabel}</span>
-      </div>
-
-      <h3 className="verify-card__title">{stop.name || stop.category}</h3>
-      <p className="verify-card__type">
-        {stop.category}
-        {stop.is24h ? " · 24h" : ""}
-        {" · "}km {stop.distanceAlongKm.toFixed(0)}
-      </p>
-
-      <div className="verify-card__why">
-        <p className="verify-card__why-label">Why RYDN recommends this</p>
-        <p className="verify-card__why-text">{recommendWhy(stop)}</p>
-      </div>
-
-      <dl className="verify-card__facts">
-        <div>
-          <dt>Opening hours</dt>
-          <dd>{stop.openingHours || (stop.is24h ? "24h" : "Unknown")}</dd>
-        </div>
-        <div>
-          <dt>Off route</dt>
-          <dd>{stop.distanceOffRouteM} m</dd>
-        </div>
-        <div>
-          <dt>Since previous</dt>
-          <dd>
-            {stop.distanceSincePreviousKm != null ? `${stop.distanceSincePreviousKm} km` : "—"}
-          </dd>
-        </div>
-        <div>
-          <dt>ETA</dt>
-          <dd>{stop.estimatedArrivalS != null ? `~${fmtDuration(stop.estimatedArrivalS)}` : "—"}</dd>
-        </div>
-      </dl>
-
-      <div className="verify-card__preview">
-        <p className="verify-card__preview-label">Street View</p>
-        <p className="verify-card__preview-hint">
-          Confirm the entrance still looks open — then verify or reject.
-        </p>
-        {stop.streetViewUrl ? (
-          <a className="btn btn--ghost" href={stop.streetViewUrl} target="_blank" rel="noreferrer">
-            Open Street View
-          </a>
-        ) : (
-          <p className="verify-card__preview-missing">Street View link unavailable for this stop.</p>
-        )}
-      </div>
-
-      <div className="verify-card__links">
-        {stop.googleMapsUrl && (
-          <a href={stop.googleMapsUrl} target="_blank" rel="noreferrer">
-            Google Maps
-          </a>
-        )}
-        {stop.website && (
-          <a href={stop.website} target="_blank" rel="noreferrer">
-            Website
-          </a>
-        )}
-      </div>
-
-      <div className="verify-card__actions">
-        <button type="button" className="btn" disabled={busy} onClick={() => onReview("verified")}>
-          Verify
-        </button>
-        <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => onReview("rejected")}>
-          Reject
-        </button>
-        <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => onReview("skipped")}>
-          Skip
-        </button>
-      </div>
-
-      <div className="verify-card__nav">
-        <button type="button" className="btn btn--ghost" disabled={index <= 0 || busy} onClick={onPrev}>
-          Previous
-        </button>
-        <button
-          type="button"
-          className="btn btn--ghost"
-          disabled={index >= total - 1 || busy}
-          onClick={onNext}
-        >
-          Next
-        </button>
-      </div>
-    </article>
-  );
+function qaToOverpassGroup(qa: QuickActionId | null): string {
+  if (!qa || qa === "verified" || qa === "h24") return "all";
+  if (qa === "water") return "water";
+  if (qa === "food") return "resupply";
+  if (qa === "fuel") return "fuel";
+  if (qa === "bike" || qa === "pharmacy") return "service";
+  if (qa === "sleep") return "sleep";
+  return "all";
 }
 
 type PeekPayload =
@@ -273,13 +164,27 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [dateStart, setDateStart] = useState("");
   const [dateEnd, setDateEnd] = useState("");
   const [mode, setMode] = useState<Mode>("plan");
-  const [mapFilter, setMapFilter] = useState<MapFilter>("all");
+  const [layers, setLayers] = useState<Record<PlanLayerId, boolean>>(DEFAULT_LAYERS);
+  const [qa, setQa] = useState<QuickActionId | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [verifyIndex, setVerifyIndex] = useState(0);
-  const [verifyMapOpen, setVerifyMapOpen] = useState(true);
-  const [planSection, setPlanSection] = useState<PlanSection>("critical");
   const [targetKm, setTargetKm] = useState(250);
   const [rideKm, setRideKm] = useState(0);
+  const [reviewMotion, setReviewMotion] = useState<ReviewMotion | null>(null);
+  const [briefingOpen, setBriefingOpen] = useState(false);
+  const [briefingTab, setBriefingTab] = useState<BriefingTab>("critical");
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number } | null>(null);
+  const [mapBbox, setMapBbox] = useState<PlanMapBBox | null>(null);
+  const [showSearchArea, setShowSearchArea] = useState(false);
+  const [searchingArea, setSearchingArea] = useState(false);
+  const [areaPois, setAreaPois] = useState<RecommendedStop[]>([]);
+  const [emergencyHits, setEmergencyHits] = useState<
+    { marker: PlanMarker; km: number }[] | null
+  >(null);
+  const reviewTimers = useRef<number[]>([]);
+  const analysisRef = useRef<RouteAnalysis | null>(null);
+  const routeRef = useRef<PlannedRouteDetail | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -302,6 +207,32 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       cancelled = true;
     };
   }, [routeId]);
+
+  useEffect(() => {
+    analysisRef.current = analysis;
+  }, [analysis]);
+
+  useEffect(() => {
+    routeRef.current = route;
+  }, [route]);
+
+  useEffect(() => {
+    return () => {
+      for (const id of reviewTimers.current) window.clearTimeout(id);
+      reviewTimers.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    setLayers(mode === "ride" ? RIDE_LAYERS : DEFAULT_LAYERS);
+    if (mode === "ride") {
+      setQa("verified");
+      setLayersOpen(false);
+      setBriefingOpen(false);
+    } else {
+      setQa(null);
+    }
+  }, [mode]);
 
   const loadAnalysis = async (opts: { refresh?: boolean; targetStageKm?: number } = {}) => {
     setAnalyzing(true);
@@ -373,24 +304,93 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     }
   };
 
-  const reviewStop = async (stopId: string, status: "verified" | "rejected" | "skipped") => {
-    if (!route) return;
-    setBusy(true);
-    try {
-      const currentIdx = (analysis?.recommendedStops || []).findIndex((s) => s.id === stopId);
-      const updated = await patchRoute(route.id, { stopReviews: { [stopId]: status } });
-      setRoute(updated);
-      const a = await getRouteAnalysis(routeId, { targetStageKm: targetKm });
-      setAnalysis(a);
-      const nextList = a.recommendedStops || [];
-      const advanceTo = Math.min(Math.max(currentIdx, 0) + 1, Math.max(0, nextList.length - 1));
-      setVerifyIndex(advanceTo);
-      setSelectedId(nextList[advanceTo]?.id ?? null);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+  const reviewStop = (stopId: string, status: ReviewStatus) => {
+    const currentRoute = routeRef.current;
+    const currentAnalysis = analysisRef.current;
+    if (!currentRoute || !currentAnalysis || reviewMotion) return;
+
+    const list = currentAnalysis.recommendedStops || [];
+    const currentIdx = list.findIndex((s) => s.id === stopId);
+    if (currentIdx < 0) return;
+
+    const rawPrev = list[currentIdx]?.reviewStatus || "unreviewed";
+    const previousStatus: ReviewStatus | "unreviewed" =
+      rawPrev === "verified" || rawPrev === "rejected" || rawPrev === "skipped"
+        ? rawPrev
+        : "unreviewed";
+    const previousReviews = { ...(currentRoute.stopReviews || {}) };
+    const snapshotAnalysis = currentAnalysis;
+    const hasNext = currentIdx < list.length - 1;
+    const advanceTo = Math.min(currentIdx + 1, Math.max(0, list.length - 1));
+    const nextStopId = list[advanceTo]?.id ?? null;
+
+    setError(null);
+    setAnalysis(applyStopReview(currentAnalysis, stopId, status));
+    setRoute({
+      ...currentRoute,
+      stopReviews: { ...previousReviews, [stopId]: status },
+    });
+    setReviewMotion({ stopId, status, phase: "confirming" });
+
+    for (const id of reviewTimers.current) window.clearTimeout(id);
+    reviewTimers.current = [];
+
+    const exitTimer = window.setTimeout(() => {
+      setReviewMotion({ stopId, status, phase: hasNext ? "exiting" : "done" });
+    }, REVIEW_FEEDBACK_MS);
+
+    const advanceTimer = window.setTimeout(() => {
+      if (hasNext && briefingOpen && briefingTab === "verify") {
+        setVerifyIndex(advanceTo);
+        setSelectedId(nextStopId);
+        setReviewMotion(null);
+      } else {
+        setReviewMotion(null);
+        if (status === "verified" || status === "rejected") {
+          // Keep sheet on same stop so rider sees confirmation, then clear lightly.
+          window.setTimeout(() => {
+            if (analysisRef.current?.recommendedStops?.find((s) => s.id === stopId)) {
+              /* keep selection */
+            }
+          }, 80);
+        }
+      }
+    }, hasNext && briefingOpen && briefingTab === "verify"
+      ? REVIEW_FEEDBACK_MS + REVIEW_EXIT_MS
+      : REVIEW_FEEDBACK_MS + 160);
+
+    reviewTimers.current = [exitTimer, advanceTimer];
+
+    void patchRoute(currentRoute.id, { stopReviews: { [stopId]: status } })
+      .then((updated) => {
+        setRoute((prev) => {
+          if (!prev || prev.id !== updated.id) return prev;
+          return {
+            ...prev,
+            stopReviews: updated.stopReviews ?? prev.stopReviews,
+            preparation: updated.preparation ?? prev.preparation,
+            status: updated.status ?? prev.status,
+            updatedAt: updated.updatedAt ?? prev.updatedAt,
+          };
+        });
+      })
+      .catch(() => {
+        for (const id of reviewTimers.current) window.clearTimeout(id);
+        reviewTimers.current = [];
+        setReviewMotion(null);
+        const latest = analysisRef.current || snapshotAnalysis;
+        setAnalysis(applyStopReview(latest, stopId, previousStatus));
+        setRoute((prev) => {
+          if (!prev) return prev;
+          const next = { ...(prev.stopReviews || {}) };
+          if (previousStatus === "unreviewed") delete next[stopId];
+          else next[stopId] = previousStatus;
+          return { ...prev, stopReviews: next };
+        });
+        setVerifyIndex(currentIdx);
+        setSelectedId(stopId);
+        setError("Couldn't save verification. Please try again.");
+      });
   };
 
   const onDelete = async () => {
@@ -421,140 +421,126 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
   const verifyStop = recommended[Math.min(verifyIndex, Math.max(0, recommended.length - 1))] || null;
 
-  useEffect(() => {
-    if (planSection === "verify" && verifyStop) {
-      setSelectedId(verifyStop.id);
-      setMapFilter("stops");
+  const allMarkers: PlanMarker[] = useMemo(() => {
+    if (!analysis) return [];
+    const out: PlanMarker[] = [];
+    for (const s of recommended) {
+      out.push({
+        id: s.id,
+        lat: s.lat,
+        lon: s.lon,
+        kind: s.group === "sleep" ? "sleep" : "poi",
+        group: s.group,
+        category: s.category,
+        status: s.reviewStatus,
+        is24h: s.is24h,
+        name: s.name,
+        qualityStars: s.qualityStars,
+        distanceOffRouteM: s.distanceOffRouteM,
+      });
     }
-  }, [planSection, verifyStop?.id]);
+    for (const s of areaPois) {
+      if (out.some((m) => m.id === s.id)) continue;
+      out.push({
+        id: s.id,
+        lat: s.lat,
+        lon: s.lon,
+        kind: "area",
+        group: s.group,
+        category: s.category,
+        status: s.reviewStatus || "unreviewed",
+        is24h: s.is24h,
+        name: s.name,
+        distanceOffRouteM: s.distanceOffRouteM,
+      });
+    }
+    for (const c of analysis.climbs) {
+      if (c.startLat != null && c.startLon != null) {
+        out.push({
+          id: c.id,
+          lat: c.startLat,
+          lon: c.startLon,
+          kind: "climb",
+          name: c.name,
+        });
+      }
+    }
+    for (const g of analysis.remoteGaps) {
+      if (g.midLat != null && g.midLon != null) {
+        out.push({ id: g.id, lat: g.midLat, lon: g.midLon, kind: "remote", name: g.label });
+      }
+    }
+    for (const s of (analysis.sleep || []).slice(0, 40)) {
+      out.push({
+        id: `sleep-${s.osmId}`,
+        lat: s.lat,
+        lon: s.lon,
+        kind: "sleep",
+        group: "sleep",
+        category: s.category,
+        name: s.name,
+        distanceOffRouteM: s.distanceOffRouteM,
+      });
+    }
+    for (const st of analysis.stages.slice(0, -1)) {
+      const sleep = analysis.sleepPlan?.find((p) => p.stageIndex === st.index)?.suggestion;
+      if (sleep) {
+        out.push({
+          id: `stage-${st.index}`,
+          lat: sleep.lat,
+          lon: sleep.lon,
+          kind: "stage",
+          name: st.label,
+        });
+      }
+    }
+    for (const d of decisions) {
+      if (d.lat != null && d.lon != null && !out.some((m) => m.id === d.id)) {
+        out.push({ id: d.id, lat: d.lat, lon: d.lon, kind: "decision", name: d.title });
+      }
+    }
+    return out;
+  }, [analysis, recommended, decisions, areaPois]);
+
+  const visibleMarkers = useMemo(
+    () => allMarkers.filter((m) => markerVisible(m, layers, qa)),
+    [allMarkers, layers, qa],
+  );
+
+  const selectedStop: RecommendedStop | null = useMemo(() => {
+    if (!selectedId) return null;
+    const fromRec = recommended.find((s) => s.id === selectedId);
+    if (fromRec) return fromRec;
+    const fromArea = areaPois.find((s) => s.id === selectedId);
+    return fromArea || null;
+  }, [selectedId, recommended, areaPois]);
 
   const peek: PeekPayload | null = useMemo(() => {
-    if (!selectedId || !analysis) return null;
-    if (recommended.some((s) => s.id === selectedId)) return null;
+    if (!selectedId || !analysis || selectedStop) return null;
     const climb = analysis.climbs.find((c) => c.id === selectedId);
     if (climb) return { kind: "climb", climb };
     const gap = analysis.remoteGaps.find((g) => g.id === selectedId);
     if (gap) return { kind: "remote", gap };
     const decision = decisions.find((d) => d.id === selectedId);
-    if (decision) {
-      if (decision.relatedStopId) return null;
-      return { kind: "decision", decision };
-    }
+    if (decision) return { kind: "decision", decision };
     return null;
-  }, [selectedId, analysis, recommended, decisions]);
+  }, [selectedId, analysis, selectedStop, decisions]);
 
-  const markers = useMemo(() => {
-    if (!analysis) return [];
-    const out: {
-      id: string;
-      lat: number;
-      lon: number;
-      kind: "climb" | "poi" | "sleep" | "remote" | "stage" | "decision";
-      status?: string;
-    }[] = [];
-    const show = (f: MapFilter) => mapFilter === "all" || mapFilter === f;
-    if (show("stops") || show("decisions") || planSection === "verify") {
-      for (const s of recommended) {
-        out.push({
-          id: s.id,
-          lat: s.lat,
-          lon: s.lon,
-          kind: s.group === "sleep" ? "sleep" : "poi",
-          status: s.reviewStatus,
-        });
-      }
-    }
-    if (show("climbs") && planSection !== "verify") {
-      for (const c of analysis.climbs) {
-        if (c.startLat != null && c.startLon != null) {
-          out.push({ id: c.id, lat: c.startLat, lon: c.startLon, kind: "climb" });
-        }
-      }
-    }
-    if (show("remote") && planSection !== "verify") {
-      for (const g of analysis.remoteGaps) {
-        if (g.midLat != null && g.midLon != null) {
-          out.push({ id: g.id, lat: g.midLat, lon: g.midLon, kind: "remote" });
-        }
-      }
-    }
-    if (show("sleep") && planSection !== "verify") {
-      for (const s of (analysis.sleep || []).slice(0, 30)) {
-        out.push({ id: `sleep-${s.osmId}`, lat: s.lat, lon: s.lon, kind: "sleep" });
-      }
-    }
-    if (show("stages") && planSection !== "verify") {
-      for (const st of analysis.stages.slice(0, -1)) {
-        const sleep = analysis.sleepPlan?.find((p) => p.stageIndex === st.index)?.suggestion;
-        if (sleep) out.push({ id: `stage-${st.index}`, lat: sleep.lat, lon: sleep.lon, kind: "stage" });
-      }
-    }
-    if (show("decisions") && planSection !== "verify") {
-      for (const d of decisions) {
-        if (d.lat != null && d.lon != null && !out.some((m) => m.id === d.id)) {
-          out.push({ id: d.id, lat: d.lat, lon: d.lon, kind: "decision" });
-        }
-      }
-    }
-    return out;
-  }, [analysis, recommended, decisions, mapFilter, planSection]);
-
-  const selectedKm = useMemo(() => {
-    if (verifyStop && (planSection === "verify" || selectedId === verifyStop.id)) {
-      return verifyStop.distanceAlongKm;
-    }
-    if (!peek) {
-      const stop = recommended.find((s) => s.id === selectedId);
-      return stop?.distanceAlongKm ?? null;
-    }
-    if (peek.kind === "climb") return peek.climb.startKm;
-    if (peek.kind === "remote") return (peek.gap.startKm + peek.gap.endKm) / 2;
-    return peek.decision.km;
-  }, [peek, recommended, selectedId, verifyStop, planSection]);
-
-  const openVerifyAt = (stopId: string) => {
-    const idx = recommended.findIndex((s) => s.id === stopId);
-    if (idx >= 0) setVerifyIndex(idx);
-    setSelectedId(stopId);
-    setPlanSection("verify");
-    setMapFilter("stops");
-    requestAnimationFrame(() => {
-      document.getElementById("verify")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  };
-
-  const jumpToSection = (id: PlanSection) => {
-    setPlanSection(id);
-    if (id === "verify" && recommended.length) {
-      const firstPending = recommended.findIndex(
-        (s) => s.reviewStatus === "unreviewed" || s.reviewStatus === "skipped",
-      );
-      if (firstPending >= 0) {
-        setVerifyIndex(firstPending);
-        setSelectedId(recommended[firstPending].id);
-      } else if (verifyStop) {
-        setSelectedId(verifyStop.id);
-      }
-      setMapFilter("stops");
-    }
-    requestAnimationFrame(() => {
-      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  };
-
-  const onSelectMarker = (id: string) => {
-    const stop = recommended.find((s) => s.id === id);
-    if (stop) {
-      openVerifyAt(stop.id);
-      return;
-    }
-    const decision = decisions.find((d) => d.id === id);
-    if (decision?.relatedStopId) {
-      openVerifyAt(decision.relatedStopId);
-      return;
-    }
-    setSelectedId(id);
-  };
+  const nearest = useMemo(() => {
+    const center =
+      mapCenter ||
+      (route?.points?.[0]
+        ? { lat: route.points[0][0], lon: route.points[0][1] }
+        : null);
+    if (!center) return null;
+    // Nearest relative to map center (updates on pan). Falls back to route start before first view.
+    return {
+      verified: nearestOf(allMarkers, center.lat, center.lon, (m) => m.status === "verified"),
+      water: nearestOf(allMarkers, center.lat, center.lon, (m) => stopMatchesLayer(m, "water")),
+      food: nearestOf(allMarkers, center.lat, center.lon, (m) => stopMatchesLayer(m, "food")),
+      fuel: nearestOf(allMarkers, center.lat, center.lon, (m) => stopMatchesLayer(m, "fuel")),
+    };
+  }, [allMarkers, mapCenter, route]);
 
   const rideGlance = useMemo(() => {
     const verified = recommended.filter((s) => s.reviewStatus === "verified");
@@ -570,6 +556,92 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       bike: ahead((s) => s.category === "Bike shop"),
     };
   }, [recommended, rideKm]);
+
+  const onSelectMarker = (id: string) => {
+    if (!id) {
+      setSelectedId(null);
+      return;
+    }
+    const decision = decisions.find((d) => d.id === id);
+    if (decision?.relatedStopId) {
+      setSelectedId(decision.relatedStopId);
+      return;
+    }
+    setSelectedId(id);
+    const idx = recommended.findIndex((s) => s.id === id);
+    if (idx >= 0) setVerifyIndex(idx);
+  };
+
+  const toggleQa = (id: QuickActionId) => {
+    setQa((prev) => (prev === id ? null : id));
+    if (id === "verified") {
+      setLayers((L) => ({ ...L, verified: true }));
+    } else {
+      setLayers((L) => ({ ...L, [id]: true }));
+    }
+  };
+
+  const onViewChange = (
+    center: { lat: number; lon: number },
+    bbox: PlanMapBBox,
+    userMoved: boolean,
+  ) => {
+    setMapCenter(center);
+    setMapBbox(bbox);
+    if (userMoved && mode === "plan") setShowSearchArea(true);
+  };
+
+  const searchThisArea = async () => {
+    if (!mapBbox || !route) return;
+    setSearchingArea(true);
+    setError(null);
+    try {
+      const res = await searchRouteViewportPois(route.id, mapBbox, qaToOverpassGroup(qa));
+      if (res.error) setError(res.error);
+      const mapped: RecommendedStop[] = (res.pois || []).map((p) => ({
+        id: p.id,
+        osmId: p.osmId,
+        osmType: p.osmType,
+        name: p.name,
+        category: p.category,
+        group: p.group,
+        lat: p.lat,
+        lon: p.lon,
+        distanceAlongKm: p.distanceAlongKm,
+        distanceOffRouteM: p.distanceOffRouteM,
+        openingHours: p.openingHours,
+        website: p.website,
+        is24h: p.is24h,
+        qualityStars: 3,
+        qualityLabel: "Area find",
+        reviewStatus: "unreviewed",
+        googleMapsUrl: p.googleMapsUrl,
+      }));
+      setAreaPois((prev) => {
+        const byId = new Map(prev.map((s) => [s.id, s]));
+        for (const s of mapped) byId.set(s.id, s);
+        return Array.from(byId.values()).slice(-400);
+      });
+      setShowSearchArea(false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSearchingArea(false);
+    }
+  };
+
+  const onLongPress = (lat: number, lon: number) => {
+    // Emergency stub — top 3 nearest loaded markers (no turn-by-turn).
+    const scored = allMarkers
+      .filter((m) => m.kind === "poi" || m.kind === "area" || m.kind === "sleep")
+      .map((m) => ({
+        marker: m,
+        km: Math.hypot(m.lat - lat, m.lon - lon) * 111,
+      }))
+      .sort((a, b) => a.km - b.km)
+      .slice(0, 3);
+    setEmergencyHits(scored);
+  };
 
   if (error && !route) {
     return (
@@ -594,17 +666,41 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
   const prep = route.preparation;
   const done = CHECKS.filter((c) => prep[c.key]).length;
-  const weather = analysis?.weather;
-  const empty = analysis?.emptyReasons;
+  const reviewing = reviewMotion?.stopId === selectedStop?.id ? reviewMotion : null;
+  const locked = Boolean(reviewing);
+
+  const actionLabel = (status: ReviewStatus) => {
+    if (!reviewing || reviewing.status !== status) return REVIEW_LABELS[status].idle;
+    return reviewing.phase === "confirming"
+      ? REVIEW_LABELS[status].pending
+      : REVIEW_LABELS[status].done;
+  };
 
   return (
-    <div className="ultra-page route-page">
-      <header className="ultra-page__nav">
+    <div className={`plan-workspace${mode === "ride" ? " plan-workspace--ride" : ""}`}>
+      <header className="plan-workspace__top">
         <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to Ultras">
           <Icon name="chevronLeft" size={22} />
         </button>
-        <div className="route-page__nav-actions">
-          <div className="route-mode-tabs" role="tablist">
+        <div className="plan-workspace__title">
+          <input
+            className="plan-workspace__name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => void saveName()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+            disabled={busy}
+            aria-label="Route name"
+          />
+          <p className="plan-workspace__meta">
+            {Math.round(route.distanceKm)} km · {route.elevationGainM.toLocaleString("en-US")} m
+            {verifiedCount > 0 ? ` · ${verifiedCount} verified` : ""}
+          </p>
+        </div>
+        <div className="plan-workspace__top-actions">
+          <div className="route-mode-tabs" role="tablist" aria-label="Plan or Ride">
             <button
               type="button"
               role="tab"
@@ -624,371 +720,433 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               Ride
             </button>
           </div>
+          {mode === "plan" && (
+            <>
+              <button
+                type="button"
+                className={`chip${layersOpen ? " is-on" : ""}`}
+                onClick={() => setLayersOpen((o) => !o)}
+              >
+                Layers
+              </button>
+              <button
+                type="button"
+                className={`chip${briefingOpen ? " is-on" : ""}`}
+                onClick={() => setBriefingOpen((o) => !o)}
+              >
+                Briefing
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="btn btn--ghost"
             onClick={() => void loadAnalysis({ refresh: true })}
             disabled={analyzing}
           >
-            {analyzing ? "Analysing…" : "Refresh"}
-          </button>
-          <button type="button" className="btn btn--ghost" onClick={() => void onDelete()} disabled={busy}>
-            Delete
+            {analyzing ? "…" : "Refresh"}
           </button>
         </div>
       </header>
 
-      <div className="ultra-page__hero">
-        <p className="route-page__eyebrow">{mode === "ride" ? "Ride mode" : "Planned route"}</p>
-        <label className="route-page__name-field">
-          <span className="visually-hidden">Route name</span>
-          <input
-            className="route-page__name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onBlur={() => void saveName()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") e.currentTarget.blur();
-            }}
-            disabled={busy}
+      <div className="plan-workspace__stage">
+        {analyzing && !analysis ? (
+          <div className="plan-workspace__loading">
+            <RydnLoader label="Analysing course…" />
+          </div>
+        ) : (
+          <PlanMap
+            points={route.points}
+            markers={visibleMarkers}
+            selectedId={selectedId}
+            fitKey={route.id}
+            onSelectMarker={onSelectMarker}
+            onViewChange={onViewChange}
+            onLongPress={onLongPress}
           />
-        </label>
-        <p className="ultra-page__range">
-          {mode === "ride"
-            ? "Nearest verified services ahead"
-            : "Review the course, then verify stops one by one"}
-        </p>
-      </div>
+        )}
 
-      {mode === "ride" ? (
-        <section className="ua-block ride-mode">
-          <label className="field ride-mode__pos">
-            <span>Your position · km {rideKm.toFixed(0)}</span>
-            <input
-              type="range"
-              min={0}
-              max={Math.max(1, route.distanceKm)}
-              step={1}
-              value={rideKm}
-              onChange={(e) => setRideKm(Number(e.target.value))}
-            />
-          </label>
-          <div className="ride-glance">
+        {/* Nearest — relative to map center */}
+        {mode === "plan" && nearest && analysis && (
+          <aside className="plan-nearest" aria-label="Nearest services">
+            <p className="plan-nearest__label">Nearest · map center</p>
             {(
               [
-                ["Water", rideGlance.water],
-                ["24h gas", rideGlance.gas24],
-                ["Supermarket", rideGlance.supermarket],
-                ["Pharmacy", rideGlance.pharmacy],
-                ["Bike shop", rideGlance.bike],
+                ["Verified", nearest.verified],
+                ["Water", nearest.water],
+                ["Food", nearest.food],
+                ["Fuel", nearest.fuel],
               ] as const
-            ).map(([label, stop]) => (
-              <div className="ride-glance__row" key={label}>
-                <span className="ride-glance__label">{label}</span>
-                {stop ? (
-                  <span className="ride-glance__val">
-                    <strong>{(stop.distanceAlongKm - rideKm).toFixed(0)} km ahead</strong>
-                    <span>
-                      {stop.name || stop.category} · {stop.distanceOffRouteM} m off
-                      {stop.openingHours ? ` · ${stop.openingHours}` : ""} · verified
-                    </span>
-                  </span>
-                ) : (
-                  <span className="ride-glance__val ride-glance__val--empty">None verified ahead</span>
-                )}
-              </div>
+            ).map(([label, hit]) => (
+              <button
+                key={label}
+                type="button"
+                className="plan-nearest__row"
+                disabled={!hit}
+                onClick={() => hit && setSelectedId(hit.marker.id)}
+              >
+                <span>{label}</span>
+                <span>
+                  {hit
+                    ? `${hit.km < 1 ? `${Math.round(hit.km * 1000)} m` : `${hit.km.toFixed(1)} km`} · ${hit.marker.name || hit.marker.category || "Stop"}`
+                    : "—"}
+                </span>
+              </button>
             ))}
-          </div>
-          <p className="space__hint">Verify stops in Plan first — Ride only shows what you confirmed.</p>
-        </section>
-      ) : (
-        <>
-          <div className="ultra-page__score">
-            <ScoreLine
-              distanceKm={route.distanceKm}
-              elevationGainM={route.elevationGainM}
-              durationS={0}
-              hideDuration
-            />
-          </div>
+          </aside>
+        )}
 
-          {analysis && (
-            <nav className="plan-section-nav" aria-label="Planning sections">
-              {PLAN_SECTIONS.map((s) => (
+        {showSearchArea && mode === "plan" && (
+          <button
+            type="button"
+            className="plan-search-area"
+            disabled={searchingArea}
+            onClick={() => void searchThisArea()}
+          >
+            {searchingArea ? "Searching…" : "Search this area"}
+          </button>
+        )}
+
+        {/* Quick Actions */}
+        <nav className="plan-qa" aria-label="Quick actions">
+          {QUICK_ACTIONS.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              className={`plan-qa__btn${qa === a.id ? " is-on" : ""}`}
+              onClick={() => toggleQa(a.id)}
+            >
+              <span className="plan-qa__emoji" aria-hidden>
+                {a.emoji}
+              </span>
+              <span>{a.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        {/* Layer toggles */}
+        {layersOpen && mode === "plan" && (
+          <aside className="plan-layers" aria-label="Map layers">
+            <p className="plan-layers__title">Layers</p>
+            <div className="plan-layers__grid">
+              {LAYER_TOGGLES.map((L) => (
+                <label key={L.id} className="plan-layers__item">
+                  <input
+                    type="checkbox"
+                    checked={layers[L.id]}
+                    onChange={() => setLayers((prev) => ({ ...prev, [L.id]: !prev[L.id] }))}
+                  />
+                  {L.label}
+                </label>
+              ))}
+            </div>
+            <p className="plan-layers__note">{PLAN_MAP_STYLE_NOTE}</p>
+          </aside>
+        )}
+
+        {/* Ride Mode glance */}
+        {mode === "ride" && (
+          <aside className="plan-ride-panel" aria-label="Ride mode">
+            <label className="field plan-ride-panel__pos">
+              <span>Position · km {rideKm.toFixed(0)}</span>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(1, route.distanceKm)}
+                step={1}
+                value={rideKm}
+                onChange={(e) => setRideKm(Number(e.target.value))}
+              />
+            </label>
+            <div className="plan-ride-panel__list">
+              {(
+                [
+                  ["Water", rideGlance.water],
+                  ["24h gas", rideGlance.gas24],
+                  ["Market", rideGlance.supermarket],
+                  ["Pharmacy", rideGlance.pharmacy],
+                  ["Bike", rideGlance.bike],
+                ] as const
+              ).map(([label, stop]) => (
                 <button
-                  key={s.id}
+                  key={label}
                   type="button"
-                  className={`chip${planSection === s.id ? " is-on" : ""}`}
-                  onClick={() => jumpToSection(s.id)}
+                  className="plan-ride-panel__row"
+                  disabled={!stop}
+                  onClick={() => stop && setSelectedId(stop.id)}
                 >
-                  {s.label}
-                  {s.id === "verify" && recommended.length > 0
-                    ? ` · ${verifiedCount}/${recommended.length}`
-                    : ""}
+                  <span>{label}</span>
+                  <span>
+                    {stop
+                      ? `${(stop.distanceAlongKm - rideKm).toFixed(0)} km · ${stop.name || stop.category}`
+                      : "None verified"}
+                  </span>
                 </button>
               ))}
-            </nav>
-          )}
-
-          {analyzing && !analysis && (
-            <div className="space-loading space-loading--visual">
-              <RydnLoader label="Analysing course…" />
             </div>
-          )}
+          </aside>
+        )}
 
-          {analysis && (
-            <>
-              {/* 1. Critical Decisions */}
-              <section className="ua-block" id="critical">
-                <h2 className="ua-block__title">Critical decisions</h2>
-                <p className="ua-block__lead">
-                  Moments where a rider can make a mistake. Tap one to inspect it on the map — or jump
-                  straight into Verify for related stops.
+        {/* Stop / peek sheet */}
+        {(selectedStop || peek) && (
+          <div className="plan-sheet" role="dialog" aria-label="Selection">
+            <div className="plan-sheet__handle" aria-hidden />
+            <button
+              type="button"
+              className="plan-sheet__close"
+              aria-label="Close"
+              onClick={() => setSelectedId(null)}
+            >
+              ×
+            </button>
+            {selectedStop && (
+              <>
+                <p className="plan-sheet__eyebrow">
+                  {selectedStop.category}
+                  {selectedStop.is24h ? " · 24h" : ""}
+                  {selectedStop.reviewStatus === "verified" ? " · Verified" : ""}
                 </p>
+                <h2 className="plan-sheet__title">{selectedStop.name || selectedStop.category}</h2>
+                <p className="plan-sheet__rating">
+                  {selectedStop.qualityStars != null ? stars(selectedStop.qualityStars) : ""}{" "}
+                  {selectedStop.qualityLabel || ""}
+                  {selectedStop.distanceOffRouteM != null
+                    ? ` · ${selectedStop.distanceOffRouteM} m off route`
+                    : ""}
+                  {selectedStop.distanceAlongKm
+                    ? ` · km ${selectedStop.distanceAlongKm.toFixed(0)}`
+                    : ""}
+                </p>
+                {selectedStop.qualityLabel && selectedStop.qualityLabel !== "Area find" && (
+                  <p className="plan-sheet__why">{recommendWhy(selectedStop)}</p>
+                )}
+                <div className="plan-sheet__links">
+                  {selectedStop.googleMapsUrl && (
+                    <a href={selectedStop.googleMapsUrl} target="_blank" rel="noreferrer">
+                      Google Maps
+                    </a>
+                  )}
+                  {selectedStop.website && (
+                    <a href={selectedStop.website} target="_blank" rel="noreferrer">
+                      Website
+                    </a>
+                  )}
+                </div>
+                {!selectedStop.id.startsWith("area-") && (
+                  <div className="plan-sheet__actions">
+                    {(["verified", "rejected", "skipped"] as ReviewStatus[]).map((status) => {
+                      const active = reviewing?.status === status;
+                      const ghost = status !== "verified";
+                      return (
+                        <button
+                          key={status}
+                          type="button"
+                          className={`btn${ghost ? " btn--ghost" : ""}${active ? " btn--working" : ""}`}
+                          disabled={locked && !active}
+                          aria-busy={active || undefined}
+                          onClick={() => reviewStop(selectedStop.id, status)}
+                        >
+                          {active && reviewing?.phase === "confirming" && (
+                            <span className="btn__spinner" aria-hidden />
+                          )}
+                          {actionLabel(status)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+            {peek?.kind === "climb" && (
+              <>
+                <p className="plan-sheet__eyebrow">Climb</p>
+                <h2 className="plan-sheet__title">
+                  {peek.climb.name || `Climb · km ${peek.climb.startKm.toFixed(0)}`}
+                </h2>
+                <p className="plan-sheet__rating">
+                  km {peek.climb.startKm.toFixed(0)}–{peek.climb.endKm.toFixed(0)} ·{" "}
+                  {peek.climb.lengthKm.toFixed(1)} km · {peek.climb.elevationGainM} m · avg{" "}
+                  {peek.climb.avgGradientPct}%
+                  {peek.climb.estimatedClimbTimeS
+                    ? ` · ~${fmtDuration(peek.climb.estimatedClimbTimeS)}`
+                    : ""}
+                </p>
+              </>
+            )}
+            {peek?.kind === "remote" && (
+              <>
+                <p className="plan-sheet__eyebrow">Remote · {peek.gap.riskLevel}</p>
+                <h2 className="plan-sheet__title">{peek.gap.label}</h2>
+                <p className="plan-sheet__why">{peek.gap.preparation}</p>
+              </>
+            )}
+            {peek?.kind === "decision" && (
+              <>
+                <p className="plan-sheet__eyebrow">Critical decision</p>
+                <h2 className="plan-sheet__title">{peek.decision.title}</h2>
+                <p className="plan-sheet__why">
+                  {peek.decision.detail} — {peek.decision.advice}
+                </p>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Emergency long-press stub */}
+        {emergencyHits && (
+          <div className="plan-sheet plan-sheet--emergency" role="dialog" aria-label="Nearby">
+            <div className="plan-sheet__handle" aria-hidden />
+            <button
+              type="button"
+              className="plan-sheet__close"
+              aria-label="Close"
+              onClick={() => setEmergencyHits(null)}
+            >
+              ×
+            </button>
+            <p className="plan-sheet__eyebrow">Nearby (long-press)</p>
+            <h2 className="plan-sheet__title">3 closest loaded stops</h2>
+            <p className="plan-sheet__why">
+              Navigation stub — open Maps for turn-by-turn. Live GPS tracking not enabled yet.
+            </p>
+            <ul className="plan-emergency-list">
+              {emergencyHits.map(({ marker, km }) => (
+                <li key={marker.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedId(marker.id);
+                      setEmergencyHits(null);
+                    }}
+                  >
+                    <strong>{marker.name || marker.category || "Stop"}</strong>
+                    <span>~{km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* Briefing drawer — secondary editorial content */}
+      {briefingOpen && mode === "plan" && analysis && (
+        <aside className="plan-briefing" aria-label="Planning briefing">
+          <div className="plan-briefing__tabs">
+            {(
+              [
+                ["critical", "Critical"],
+                ["stops", "Stops"],
+                ["climbs", "Climbs"],
+                ["stages", "Stages"],
+                ["verify", `Verify · ${verifiedCount}/${recommended.length || 0}`],
+                ["prep", "Prep"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={`chip${briefingTab === id ? " is-on" : ""}`}
+                onClick={() => setBriefingTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="plan-briefing__body">
+            {briefingTab === "critical" && (
+              <>
+                <h2 className="plan-briefing__heading">Critical decisions</h2>
                 {decisions.length === 0 ? (
-                  <p className="space__hint">{empty?.decisions || "No critical decisions yet."}</p>
+                  <p className="space__hint">No critical decisions yet.</p>
                 ) : (
                   <div className="plan-list">
-                    {decisions.map((d: CriticalDecision) => (
+                    {decisions.map((d) => (
                       <button
                         type="button"
                         key={d.id}
-                        className={`plan-row plan-row--click${selectedId === d.id || selectedId === d.relatedStopId ? " is-selected" : ""}`}
+                        className="plan-row plan-row--click"
                         onClick={() => {
-                          if (d.relatedStopId) openVerifyAt(d.relatedStopId);
-                          else {
-                            setSelectedId(d.id);
-                            jumpToSection("map");
-                          }
+                          setSelectedId(d.relatedStopId || d.id);
+                          setBriefingOpen(false);
                         }}
                       >
                         <div className="plan-row__main">
-                          <span className="plan-row__title">
-                            {d.title}
-                            {d.riskLevel ? <span className="plan-pill plan-pill--quiet">{d.riskLevel}</span> : null}
-                          </span>
+                          <span className="plan-row__title">{d.title}</span>
                           <span className="plan-row__meta">
                             km {d.km.toFixed(0)} · {d.detail}
-                            {d.advice ? ` — ${d.advice}` : ""}
                           </span>
                         </div>
                       </button>
                     ))}
                   </div>
                 )}
-              </section>
+              </>
+            )}
 
-              {/* 2. Interactive Map */}
-              <section className="ua-block ua-block--map" id="map">
-                <h2 className="ua-block__title">Route map</h2>
-                <p className="ua-block__lead">
-                  Tap a stop marker to open Verify. Climbs and remote gaps show a short peek below.
-                </p>
-                <RoutePreview
-                  points={route.points}
-                  markers={markers}
-                  selectedId={selectedId}
-                  onSelectMarker={onSelectMarker}
-                />
-                <div className="plan-filters plan-filters--map">
-                  {(
-                    [
-                      ["all", "All"],
-                      ["decisions", "Decisions"],
-                      ["stops", "Stops"],
-                      ["climbs", "Climbs"],
-                      ["remote", "Remote"],
-                      ["sleep", "Sleep"],
-                      ["stages", "Stages"],
-                    ] as const
-                  ).map(([id, label]) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className={`chip${mapFilter === id ? " is-on" : ""}`}
-                      onClick={() => setMapFilter(id)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                {analysis.profile.length > 1 && (
-                  <div className="route-elev-wrap">
-                    <ElevSpark profile={analysis.profile} highlightKm={selectedKm} />
-                  </div>
-                )}
-
-                {peek && (
-                  <div className="plan-peek">
-                    <div className="plan-peek__bar">
-                      <button type="button" className="btn btn--ghost" onClick={() => setSelectedId(null)}>
-                        Clear
-                      </button>
-                    </div>
-                    {peek.kind === "climb" && (
-                      <div className="plan-row plan-row--hard">
-                        <div className="plan-row__main">
-                          <span className="plan-row__title">
-                            {peek.climb.name || `Climb · km ${peek.climb.startKm.toFixed(0)}`}
-                            {peek.climb.difficultyLabel ? (
-                              <span className="plan-pill">{peek.climb.difficultyLabel}</span>
-                            ) : null}
-                          </span>
-                          <span className="plan-row__meta">
-                            km {peek.climb.startKm.toFixed(0)}–{peek.climb.endKm.toFixed(0)} ·{" "}
-                            {peek.climb.lengthKm.toFixed(1)} km · {peek.climb.elevationGainM} m · avg{" "}
-                            {peek.climb.avgGradientPct}% · max {peek.climb.maxGradientPct ?? "—"}%
-                            {peek.climb.estimatedClimbTimeS
-                              ? ` · ~${fmtDuration(peek.climb.estimatedClimbTimeS)}`
-                              : ""}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                    {peek.kind === "remote" && (
-                      <div className={`plan-row plan-row--risk-${peek.gap.riskLevel}`}>
-                        <div className="plan-row__main">
-                          <span className="plan-row__title">{peek.gap.label}</span>
-                          <span className="plan-row__meta">
-                            {peek.gap.preparation}
-                            {peek.gap.estimatedRideTimeS
-                              ? ` · ~${fmtDuration(peek.gap.estimatedRideTimeS)}`
-                              : ""}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                    {peek.kind === "decision" && (
-                      <div className="plan-row">
-                        <div className="plan-row__main">
-                          <span className="plan-row__title">{peek.decision.title}</span>
-                          <span className="plan-row__meta">
-                            {peek.decision.detail} — {peek.decision.advice}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </section>
-
-              {/* 3. Recommended Stops */}
-              <section className="ua-block" id="stops">
-                <h2 className="ua-block__title">Recommended stops</h2>
-                <p className="ua-block__lead">
-                  {recommended.length
-                    ? `${recommended.length} intentional stops · ${verifiedCount} verified · ${pendingCount} left to review. Tap any stop to open Verify.`
-                    : empty?.stops || "No recommendations yet."}
-                </p>
+            {briefingTab === "stops" && (
+              <>
+                <h2 className="plan-briefing__heading">
+                  Recommended · {pendingCount} left
+                </h2>
                 <div className="plan-list plan-list--compact">
                   {recommended.map((s) => (
                     <button
                       type="button"
                       key={s.id}
-                      className={`plan-row plan-row--click plan-row--${s.reviewStatus}${
-                        selectedId === s.id ? " is-selected" : ""
-                      }`}
-                      onClick={() => openVerifyAt(s.id)}
+                      className={`plan-row plan-row--click plan-row--${s.reviewStatus}`}
+                      onClick={() => {
+                        setSelectedId(s.id);
+                        setBriefingOpen(false);
+                      }}
                     >
                       <div className="plan-row__main">
                         <span className="plan-row__title">
                           {s.name || s.category}
-                          <span className="plan-pill plan-pill--quiet">{stars(s.qualityStars)}</span>
                           <span className="plan-pill plan-pill--quiet">{s.reviewStatus}</span>
                         </span>
                         <span className="plan-row__meta">
                           km {s.distanceAlongKm.toFixed(0)} · {s.category}
-                          {s.is24h ? " · 24h" : ""} · {s.qualityLabel}
                         </span>
                       </div>
                     </button>
                   ))}
                 </div>
-              </section>
+              </>
+            )}
 
-              {/* 4. Major Climbs */}
-              <section className="ua-block" id="climbs">
-                <h2 className="ua-block__title">Major climbs</h2>
-                <p className="ua-block__lead">Hardest efforts first — plan fuel and pacing around them.</p>
-                {analysis.climbs.length === 0 ? (
-                  <p className="space__hint">{empty?.climbs || "No significant climbs detected."}</p>
-                ) : (
-                  <div className="plan-list">
-                    {analysis.climbs.map((c: RouteClimb) => (
-                      <button
-                        type="button"
-                        key={c.id}
-                        className={`plan-row plan-row--click${c.hard ? " plan-row--hard" : ""}${
-                          selectedId === c.id ? " is-selected" : ""
-                        }`}
-                        onClick={() => {
-                          setSelectedId(c.id);
-                          jumpToSection("map");
-                        }}
-                      >
-                        <div className="plan-row__main">
-                          <span className="plan-row__title">
-                            {c.name || `Climb · km ${c.startKm.toFixed(0)}`}
-                            {c.hard ? <span className="plan-pill">Hardest</span> : null}
-                            {c.difficultyLabel ? (
-                              <span className="plan-pill plan-pill--quiet">
-                                {c.difficultyLabel}
-                                {c.difficultyScore != null ? ` ${c.difficultyScore}` : ""}
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="plan-row__meta">
-                            km {c.startKm.toFixed(0)}–{c.endKm.toFixed(0)} · {c.lengthKm.toFixed(1)} km ·{" "}
-                            {c.elevationGainM} m · avg {c.avgGradientPct}% · max {c.maxGradientPct ?? "—"}%
-                            {c.estimatedClimbTimeS ? ` · ~${fmtDuration(c.estimatedClimbTimeS)}` : ""}
-                          </span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </section>
+            {briefingTab === "climbs" && (
+              <>
+                <h2 className="plan-briefing__heading">Major climbs</h2>
+                <div className="plan-list">
+                  {analysis.climbs.map((c) => (
+                    <button
+                      type="button"
+                      key={c.id}
+                      className="plan-row plan-row--click"
+                      onClick={() => {
+                        setSelectedId(c.id);
+                        setBriefingOpen(false);
+                      }}
+                    >
+                      <div className="plan-row__main">
+                        <span className="plan-row__title">
+                          {c.name || `Climb · km ${c.startKm.toFixed(0)}`}
+                        </span>
+                        <span className="plan-row__meta">
+                          {c.lengthKm.toFixed(1)} km · {c.elevationGainM} m · avg {c.avgGradientPct}%
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
 
-              {/* 5. Remote */}
-              <section className="ua-block" id="remote">
-                <h2 className="ua-block__title">Remote sections</h2>
-                <p className="ua-block__lead">Only gaps that actually need preparation (≥40 km without resupply).</p>
-                {analysis.remoteGaps.length === 0 ? (
-                  <p className="space__hint">{empty?.remote || "No meaningful remote sections."}</p>
-                ) : (
-                  <div className="plan-list">
-                    {analysis.remoteGaps.map((g) => (
-                      <button
-                        type="button"
-                        key={g.id}
-                        className={`plan-row plan-row--click plan-row--risk-${g.riskLevel}${
-                          selectedId === g.id ? " is-selected" : ""
-                        }`}
-                        onClick={() => {
-                          setSelectedId(g.id);
-                          jumpToSection("map");
-                        }}
-                      >
-                        <div className="plan-row__main">
-                          <span className="plan-row__title">{g.label}</span>
-                          <span className="plan-row__meta">
-                            Risk: {g.riskLevel}
-                            {g.estimatedRideTimeS ? ` · ~${fmtDuration(g.estimatedRideTimeS)}` : ""}
-                            {g.preparation ? ` — ${g.preparation}` : ""}
-                          </span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </section>
-
-              {/* 6. Stages */}
-              <section className="ua-block" id="stages">
-                <h2 className="ua-block__title">Stage plan</h2>
-                <p className="ua-block__lead">
-                  Optimised for sleep, resupply, and hard climbs — distance is only one factor.
-                </p>
+            {briefingTab === "stages" && (
+              <>
+                <h2 className="plan-briefing__heading">Stage plan</h2>
                 <div className="plan-stage-controls">
                   <label className="field">
                     <span>Target km / day</span>
@@ -1020,123 +1178,86 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                           <span className="plan-pill plan-pill--quiet">{s.distanceKm} km</span>
                         </span>
                         <span className="plan-row__meta">
-                          km {s.startKm.toFixed(0)}–{s.endKm.toFixed(0)} ·{" "}
-                          {s.elevationGainM.toLocaleString("en-US")} m · {s.reason}
+                          km {s.startKm.toFixed(0)}–{s.endKm.toFixed(0)} · {s.reason}
                         </span>
                       </div>
                     </div>
                   ))}
                 </div>
-              </section>
+              </>
+            )}
 
-              {/* 7. Verify — in-page deck, no modal */}
-              <section className="ua-block route-page__verify-deck" id="verify">
-                <h2 className="ua-block__title">Verify</h2>
+            {briefingTab === "verify" && (
+              <>
+                <h2 className="plan-briefing__heading">Verify deck</h2>
                 <p className="ua-block__lead">
-                  One recommendation at a time. Map stays with you — swipe or use Next to move through the
-                  deck.
+                  {verifiedCount} verified · {pendingCount} remaining. Tap Verify on the map sheet, or
+                  step through here.
                 </p>
-                {recommended.length === 0 ? (
-                  <p className="space__hint">{empty?.stops || "No recommendations to verify yet."}</p>
-                ) : (
-                  <>
-                    <div className="verify-progress">
-                      <div className="verify-progress__track">
-                        <div
-                          className="verify-progress__bar"
-                          style={{
-                            width: `${recommended.length ? (verifiedCount / recommended.length) * 100 : 0}%`,
-                          }}
-                        />
-                      </div>
-                      <p className="verify-progress__label">
-                        {verifiedCount} verified · {pendingCount} remaining ·{" "}
-                        {recommended.filter((s) => s.reviewStatus === "rejected").length} rejected
-                      </p>
+                {verifyStop ? (
+                  <div className="plan-verify-mini">
+                    <p className="plan-sheet__eyebrow">
+                      Stop {verifyIndex + 1} of {recommended.length}
+                    </p>
+                    <h3 className="plan-sheet__title">{verifyStop.name || verifyStop.category}</h3>
+                    <p className="plan-sheet__why">{recommendWhy(verifyStop)}</p>
+                    <div className="plan-sheet__actions">
+                      {(["verified", "rejected", "skipped"] as ReviewStatus[]).map((status) => (
+                        <button
+                          key={status}
+                          type="button"
+                          className={`btn${status !== "verified" ? " btn--ghost" : ""}`}
+                          disabled={Boolean(reviewMotion)}
+                          onClick={() => reviewStop(verifyStop.id, status)}
+                        >
+                          {REVIEW_LABELS[status].idle}
+                        </button>
+                      ))}
                     </div>
-
-                    <div className="verify-map">
+                    <div className="verify-card__nav">
                       <button
                         type="button"
-                        className="verify-map__toggle"
-                        onClick={() => setVerifyMapOpen((o) => !o)}
-                        aria-expanded={verifyMapOpen}
-                      >
-                        {verifyMapOpen ? "Hide map" : "Show map"}
-                      </button>
-                      {verifyMapOpen && (
-                        <>
-                          <RoutePreview
-                            points={route.points}
-                            markers={markers}
-                            selectedId={verifyStop?.id || selectedId}
-                            onSelectMarker={onSelectMarker}
-                          />
-                          {analysis.profile.length > 1 && (
-                            <div className="route-elev-wrap">
-                              <ElevSpark
-                                profile={analysis.profile}
-                                highlightKm={verifyStop?.distanceAlongKm ?? null}
-                              />
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-
-                    {verifyStop && (
-                      <VerifyStopCard
-                        stop={verifyStop}
-                        index={Math.min(verifyIndex, recommended.length - 1)}
-                        total={recommended.length}
-                        busy={busy}
-                        onReview={(status) => void reviewStop(verifyStop.id, status)}
-                        onPrev={() => {
+                        className="btn btn--ghost"
+                        disabled={verifyIndex <= 0 || Boolean(reviewMotion)}
+                        onClick={() => {
                           const next = Math.max(0, verifyIndex - 1);
                           setVerifyIndex(next);
                           setSelectedId(recommended[next]?.id ?? null);
                         }}
-                        onNext={() => {
+                      >
+                        Previous
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--ghost"
+                        disabled={verifyIndex >= recommended.length - 1 || Boolean(reviewMotion)}
+                        onClick={() => {
                           const next = Math.min(recommended.length - 1, verifyIndex + 1);
                           setVerifyIndex(next);
                           setSelectedId(recommended[next]?.id ?? null);
                         }}
-                      />
-                    )}
-                  </>
-                )}
-              </section>
-
-              {/* 8. Weather */}
-              {weather?.hasDecisionWeather && weather.decisionAlerts && weather.decisionAlerts.length > 0 && (
-                <section className="ua-block" id="weather">
-                  <h2 className="ua-block__title">Weather</h2>
-                  <p className="ua-block__lead">Only days that change decisions.</p>
-                  <div className="plan-list plan-list--compact">
-                    {weather.decisionAlerts.map((d) => (
-                      <div className="plan-row" key={d.date}>
-                        <div className="plan-row__main">
-                          <span className="plan-row__title">
-                            {d.date}
-                            <span className="plan-pill">{(d.decisionReasons || []).join(" · ")}</span>
-                          </span>
-                          <span className="plan-row__meta">
-                            {d.tempMinC != null && d.tempMaxC != null
-                              ? `${Math.round(d.tempMinC)}–${Math.round(d.tempMaxC)}°C`
-                              : ""}
-                            {d.precipMm != null ? ` · ${d.precipMm} mm` : ""}
-                            {d.windMaxKmh != null ? ` · wind ${Math.round(d.windMaxKmh)} km/h` : ""}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
+                      >
+                        Next
+                      </button>
+                    </div>
                   </div>
-                </section>
-              )}
+                ) : (
+                  <p className="space__hint">No recommendations to verify yet.</p>
+                )}
+              </>
+            )}
 
-              {/* 9. Notes */}
-              <section className="ua-block" id="notes">
-                <h2 className="ua-block__title">Manual notes</h2>
+            {briefingTab === "prep" && (
+              <>
+                <h2 className="plan-briefing__heading">Preparation</h2>
+                <div className="ultra-page__score" style={{ marginBottom: 12 }}>
+                  <ScoreLine
+                    distanceKm={route.distanceKm}
+                    elevationGainM={route.elevationGainM}
+                    durationS={0}
+                    hideDuration
+                  />
+                </div>
                 <div className="plan-dates">
                   <label className="field">
                     <span>Start</span>
@@ -1166,17 +1287,12 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     onChange={(e) => setNotes(e.target.value)}
                     onBlur={() => void saveNotes()}
                     placeholder="Hotel bookings, customs, shops you already trust…"
-                    rows={4}
+                    rows={3}
                     disabled={busy}
                   />
                 </label>
-              </section>
-
-              {/* 10. Checklist */}
-              <section className="ua-block route-page__verify">
-                <h2 className="ua-block__title">Preparation checklist</h2>
-                <p className="ua-block__lead">
-                  Confirm you reviewed RYDN’s suggestions. {done}/{CHECKS.length}.
+                <p className="ua-block__lead" style={{ marginTop: 16 }}>
+                  Checklist · {done}/{CHECKS.length}
                 </p>
                 <ul className="verify-list">
                   {CHECKS.map((c) => (
@@ -1196,13 +1312,22 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     </li>
                   ))}
                 </ul>
-              </section>
-            </>
-          )}
-        </>
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  style={{ marginTop: 16 }}
+                  onClick={() => void onDelete()}
+                  disabled={busy}
+                >
+                  Delete route
+                </button>
+              </>
+            )}
+          </div>
+        </aside>
       )}
 
-      {error && <div className="banner banner--err">{error}</div>}
+      {error && <div className="banner banner--err plan-workspace__err">{error}</div>}
     </div>
   );
 }

@@ -14,6 +14,8 @@ Assumptions (documented for the product):
 - Moving time = sum of each day's moving time.
 - Distance, elevation gain, and moving time must match the sum of member days
   (within tolerance). Ultra elapsed intentionally does not match ride-elapsed sum.
+- Riding days / dayHours group by calendar day: same-day recordings merge into
+  one day (recordingCount > 1). Library files remain separate.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from ..models import Activity, Race
 from .helpers import fmt_duration, safe_max, safe_min
 from .report import ANALYSIS_SCHEMA, build_report
 
-ULTRA_ANALYSIS_SCHEMA = 2
+ULTRA_ANALYSIS_SCHEMA = 3
 
 # Validation tolerances — GPS/rounding noise across day reports vs stitch.
 _DIST_TOL_KM = 2.0
@@ -145,28 +147,60 @@ def _validate(stitched_ov: dict, day_sum: dict) -> dict:
 
 
 def _day_hours(race: Race, activity_ids: List[str], uid: str) -> List[dict]:
-    """Riding / elapsed hours per member day (activity order = Ultra day order)."""
-    days = []
-    for i, (aid, activity) in enumerate(zip(activity_ids, race.activities)):
+    """Riding / elapsed hours per calendar day (same-day recordings merge)."""
+    rows: List[dict] = []
+    for aid, activity in zip(activity_ids, race.activities):
         report = store.get_ride(uid, aid) or {}
         ov = report.get("overview") or {}
-        start = activity.start_time
-        date = None
-        if start is not None:
-            date = datetime.fromtimestamp(start, tz=timezone.utc).date().isoformat()
-        else:
-            date = _iso_day((report.get("race") or {}).get("startTime"))
-        days.append(
+        # Prefer race startTime prefix so grouping matches Ultra day list / Library dates.
+        date = _iso_day((report.get("race") or {}).get("startTime"))
+        if not date and activity.start_time is not None:
+            date = datetime.fromtimestamp(activity.start_time, tz=timezone.utc).date().isoformat()
+        rows.append(
             {
-                "dayIndex": i + 1,
                 "activityId": aid,
                 "name": (report.get("race") or {}).get("name") or activity.source_file,
                 "date": date,
-                "distanceKm": ov.get("distanceKm") or 0,
-                "elevationGainM": ov.get("elevationGainM") or 0,
-                "movingTimeS": ov.get("movingTimeS") or 0,
-                "elapsedTimeS": ov.get("elapsedTimeS") or 0,
-                "stoppedTimeS": ov.get("stoppedTimeS") or 0,
+                "distanceKm": float(ov.get("distanceKm") or 0),
+                "elevationGainM": float(ov.get("elevationGainM") or 0),
+                "movingTimeS": float(ov.get("movingTimeS") or 0),
+                "elapsedTimeS": float(ov.get("elapsedTimeS") or 0),
+                "stoppedTimeS": float(ov.get("stoppedTimeS") or 0),
+            }
+        )
+
+    # Merge by calendar day — first occurrence order, undated never merge.
+    groups: List[List[dict]] = []
+    index_by_day: dict[str, int] = {}
+    for row in rows:
+        key = row.get("date")
+        if key and key in index_by_day:
+            groups[index_by_day[key]].append(row)
+            continue
+        if key:
+            index_by_day[key] = len(groups)
+        groups.append([row])
+
+    from ..ultras import strip_recording_part_label
+
+    days: List[dict] = []
+    for i, group in enumerate(groups):
+        primary = group[0]
+        activity_ids_day = [r["activityId"] for r in group]
+        raw_name = primary.get("name") or ""
+        days.append(
+            {
+                "dayIndex": i + 1,
+                "activityId": primary["activityId"],
+                "activityIds": activity_ids_day,
+                "recordingCount": len(group),
+                "name": strip_recording_part_label(raw_name) or raw_name,
+                "date": primary.get("date"),
+                "distanceKm": round(sum(r["distanceKm"] for r in group), 1),
+                "elevationGainM": round(sum(r["elevationGainM"] for r in group)),
+                "movingTimeS": round(sum(r["movingTimeS"] for r in group)),
+                "elapsedTimeS": round(sum(r["elapsedTimeS"] for r in group)),
+                "stoppedTimeS": round(sum(r["stoppedTimeS"] for r in group)),
             }
         )
     return days

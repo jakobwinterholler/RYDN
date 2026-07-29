@@ -88,6 +88,54 @@ class UltraAggregationTests(unittest.TestCase):
         dist = next(c for c in result["checks"] if c["metric"] == "distanceKm")
         self.assertFalse(dist["ok"])
 
+    def test_same_calendar_day_counts_as_one_riding_day(self) -> None:
+        # Morning + afternoon on the same UTC calendar day, then next day.
+        from datetime import datetime, timezone
+
+        t_am = datetime(2024, 6, 11, 8, 0, tzinfo=timezone.utc).timestamp()
+        t_pm = datetime(2024, 6, 11, 15, 20, tzinfo=timezone.utc).timestamp()
+        t_next = datetime(2024, 6, 12, 8, 0, tzinfo=timezone.utc).timestamp()
+        day1a = Activity(source_file="d1a", samples=_samples(t_am, n=100))
+        day1b = Activity(source_file="d1b", samples=_samples(t_pm, n=80, ele0=150))
+        day2 = Activity(source_file="d2", samples=_samples(t_next, n=120, ele0=200))
+        r1a = build_report(Race(name="D1a", kind="race", activities=[day1a]))
+        r1b = build_report(Race(name="D1b", kind="race", activities=[day1b]))
+        r2 = build_report(Race(name="D2", kind="race", activities=[day2]))
+        s1a = store.save_ride(self.uid, r1a, activities=[day1a])
+        s1b = store.save_ride(self.uid, r1b, activities=[day1b])
+        s2 = store.save_ride(self.uid, r2, activities=[day2])
+        ultra = ultras.ultra_from_activities(self.uid, "Same Day Agg", [s1a, s1b, s2])
+        self.assertEqual(ultra["dayCount"], 2)
+
+        # Calendar-day grouping without requiring full analysis stitch (env-light).
+        detail = ultras.ultra_detail(self.uid, ultra["id"], [s1a, s1b, s2])
+        assert detail is not None
+        days = detail["days"]
+        self.assertEqual(len(days), 2)
+        self.assertEqual(days[0]["recordingCount"], 2)
+        self.assertEqual(days[1]["recordingCount"], 1)
+        merged_km = float(s1a["distanceKm"]) + float(s1b["distanceKm"])
+        self.assertAlmostEqual(days[0]["distanceKm"], merged_km, delta=0.2)
+
+        # dayHours merge when analysis can run
+        user = {"id": self.uid}
+        import asyncio
+
+        try:
+            payload = asyncio.run(build_ultra_analysis(user, ultra["id"], force=True))
+        except ModuleNotFoundError:
+            self.skipTest("provider deps unavailable in this environment")
+            return
+        self.assertIn(payload["status"], ("ready", "ready_with_warnings"))
+        agg = payload["aggregation"]
+        self.assertEqual(agg["ridingDays"], 2)
+        day_hours = payload["dayHours"]
+        self.assertEqual(len(day_hours), 2)
+        self.assertEqual(day_hours[0]["recordingCount"], 2)
+        self.assertEqual(len(day_hours[0]["activityIds"]), 2)
+        self.assertEqual(day_hours[1]["recordingCount"], 1)
+        self.assertAlmostEqual(day_hours[0]["distanceKm"], merged_km, delta=2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

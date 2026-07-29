@@ -221,3 +221,139 @@ def fetch_route_pois(
     pois.sort(key=lambda p: p["distanceAlongKm"])
     sleep.sort(key=lambda p: p["distanceAlongKm"])
     return {"pois": pois, "sleep": sleep, "cache": cache_status, "error": error}
+
+
+# Groups accepted by viewport search (maps to POI_RULES.group or special filters).
+VIEWPORT_GROUPS = ("water", "resupply", "dining", "service", "sleep", "fuel", "all")
+
+
+def _build_viewport_query(
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    group: Optional[str] = None,
+) -> str:
+    """Tighter Overpass query for a map viewport — fewer OSM keys than full-route fetch."""
+    parts = []
+    seen = set()
+    for cat, key, val, grp in POI_RULES:
+        if group and group not in ("all", None, ""):
+            if group == "fuel" and cat != "Gas station":
+                continue
+            if group == "water" and grp != "water":
+                continue
+            if group in ("resupply", "dining", "service", "sleep") and grp != group:
+                continue
+        pair = (key, val)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        parts.append(f'  node["{key}"="{val}"]({south},{west},{north},{east});')
+        parts.append(f'  way["{key}"="{val}"]({south},{west},{north},{east});')
+    body = "\n".join(parts) if parts else '  node["amenity"="drinking_water"](0,0,0,0);'
+    return f"[out:json][timeout:45];\n(\n{body}\n);\nout center tags;"
+
+
+def fetch_viewport_pois(
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    *,
+    group: Optional[str] = None,
+    max_results: int = 200,
+) -> Dict[str, Any]:
+    """POIs for a visible map bbox only — progressive Search-this-area loads.
+
+    Cached by rounded bbox + group. Does not project onto a route track.
+    """
+    # Clamp absurdly large viewports (whole-continent pans).
+    if north - south > 2.5 or east - west > 2.5:
+        return {
+            "pois": [],
+            "cache": "skipped",
+            "error": "Zoom in closer to search this area.",
+            "truncated": False,
+        }
+
+    g = (group or "all").strip().lower()
+    cache_key = hashlib.sha1(
+        f"vp:{south:.3f},{west:.3f},{north:.3f},{east:.3f}:{g}".encode()
+    ).hexdigest()[:16]
+    path = _cache_path(cache_key)
+    cache_status = "miss"
+    elements: List[dict] = []
+
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                elements = json.load(f)
+            cache_status = "hit"
+        except (OSError, json.JSONDecodeError):
+            elements = []
+
+    error = None
+    if cache_status == "miss":
+        try:
+            elements = _fetch_elements(_build_viewport_query(south, west, north, east, g))
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(elements, f)
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+            elements = []
+
+    pois: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, int]] = set()
+    for el in elements:
+        tags = el.get("tags") or {}
+        if not isinstance(tags, dict):
+            continue
+        cat_grp = _category_from_tags(tags)
+        if not cat_grp:
+            continue
+        category, grp = cat_grp
+        if g == "fuel" and category != "Gas station":
+            continue
+        if g == "water" and grp != "water":
+            continue
+        if g in ("resupply", "dining", "service", "sleep") and grp != g:
+            continue
+        ll = _element_ll(el)
+        if not ll:
+            continue
+        lat, lon = ll
+        osm_type = el.get("type") or "node"
+        osm_id = int(el.get("id") or 0)
+        key = (osm_type, osm_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        pois.append(
+            {
+                "id": f"area-{osm_type}-{osm_id}",
+                "osmId": osm_id,
+                "osmType": osm_type,
+                "name": tags.get("name") or tags.get("brand") or tags.get("operator") or None,
+                "category": category,
+                "group": grp,
+                "lat": round(lat, 5),
+                "lon": round(lon, 5),
+                "distanceAlongKm": 0,
+                "distanceOffRouteM": 0,
+                "openingHours": tags.get("opening_hours"),
+                "website": tags.get("website") or tags.get("contact:website"),
+                "is24h": (tags.get("opening_hours") or "").strip().lower() in ("24/7", "24h"),
+                "reviewStatus": "unreviewed",
+                "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+            }
+        )
+        if len(pois) >= max_results:
+            break
+
+    return {
+        "pois": pois,
+        "cache": cache_status,
+        "error": error,
+        "truncated": len(elements) > max_results,
+    }

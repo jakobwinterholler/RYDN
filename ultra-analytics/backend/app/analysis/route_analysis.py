@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .route_decisions import build_critical_decisions
 from .route_plan import (
@@ -78,12 +78,20 @@ def _decision_weather(weather: Dict[str, Any] | None) -> Dict[str, Any] | None:
     }
 
 
+ProgressFn = Callable[[str, str, int, Optional[Dict[str, Any]]], None]
+
+
 def analyze_planned_route(
     route: dict,
     *,
     force_refresh: bool = False,
     target_stage_km: float = 250.0,
+    on_progress: Optional[ProgressFn] = None,
 ) -> Dict[str, Any]:
+    def _progress(stage: str, label: str, pct: int, stats: Optional[Dict[str, Any]] = None) -> None:
+        if on_progress:
+            on_progress(stage, label, pct, stats)
+
     track: Sequence[Sequence[Any]] = route.get("track") or []
     if not track:
         pts = route.get("points") or []
@@ -93,16 +101,64 @@ def analyze_planned_route(
         track = points_to_track(pts) if pts else []
 
     started = time.time()
+    total_km = float(
+        route.get("distanceKm")
+        or (track[-1][3] if track and len(track[-1]) > 3 else 0)
+        or 0
+    )
+    elev_gain = int(route.get("elevationGainM") or 0)
+    base_stats: Dict[str, Any] = {
+        "distanceKm": round(total_km, 1),
+        "elevationGainM": elev_gain,
+        "pointCount": int(route.get("pointCount") or len(track) or 0),
+    }
+
     elev_n = sum(1 for r in track if len(r) > 2 and isinstance(r[2], (int, float)))
+    _progress("climbs", "Detecting major climbs", 28, base_stats)
     climbs = detect_route_climbs(track)
     climbs = sorted(climbs, key=lambda c: (-float(c.get("difficultyScore") or 0), c["startKm"]))
     profile = elevation_profile(track)
     elev_pairs = [(float(p[0]), float(p[1])) for p in profile]
+    base_stats = {**base_stats, "climbCount": len(climbs)}
+    _progress(
+        "climbs_done",
+        f"{len(climbs)} climb{'s' if len(climbs) != 1 else ''} found" if climbs else "No major climbs",
+        34,
+        base_stats,
+    )
 
+    _progress("pois", "Finding water sources & services", 40, base_stats)
     poi_bundle = fetch_route_pois(track, force_refresh=force_refresh)
     pois = poi_bundle.get("pois") or []
     sleep = poi_bundle.get("sleep") or []
     reviews = route.get("stopReviews") or {}
+
+    water_n = sum(1 for p in pois if p.get("group") == "water")
+    market_n = sum(
+        1
+        for p in pois
+        if p.get("group") == "resupply" or (p.get("category") or "").lower().find("supermarket") >= 0
+    )
+    shop_n = sum(1 for p in pois if p.get("group") == "service")
+    base_stats = {
+        **base_stats,
+        "waterCount": water_n,
+        "supermarketCount": market_n,
+        "bikeShopCount": shop_n,
+    }
+    _progress("water", f"Found {water_n} water source{'s' if water_n != 1 else ''}", 48, base_stats)
+    _progress(
+        "markets",
+        f"Found {market_n} supermarket{'s' if market_n != 1 else ''} / resupply",
+        54,
+        base_stats,
+    )
+    _progress(
+        "shops",
+        f"Found {shop_n} bike shop{'s' if shop_n != 1 else ''} / service",
+        58,
+        base_stats,
+    )
 
     water_kms = [float(p["distanceAlongKm"]) for p in pois if p.get("group") == "water"]
     food_kms = [
@@ -117,12 +173,7 @@ def analyze_planned_route(
     ]
     sleep_kms = [float(p["distanceAlongKm"]) for p in sleep]
 
-    total_km = float(
-        route.get("distanceKm")
-        or (track[-1][3] if track and len(track[-1]) > 3 else 0)
-        or 0
-    )
-
+    _progress("remote", "Detecting remote sections", 64, base_stats)
     gaps = remote_gaps_from_services(
         water_kms=water_kms,
         food_kms=food_kms,
@@ -131,12 +182,28 @@ def analyze_planned_route(
         total_km=total_km,
         track=track,
     )
+    base_stats = {**base_stats, "remoteGapCount": len(gaps)}
+    _progress(
+        "remote_done",
+        f"{len(gaps)} remote stretch{'es' if len(gaps) != 1 else ''}" if gaps else "No long remote gaps",
+        68,
+        base_stats,
+    )
 
+    _progress("scoring", "Scoring recommended stops", 72, base_stats)
     recommended = select_recommended_stops(
         pois, sleep, total_km=total_km, reviews=reviews
     )
     # Keep rejected in Planning so Verify/map can show status colours.
     # Ride mode filters to verified only on the client.
+    stop_n = sum(1 for s in recommended if s.get("reviewStatus") != "rejected")
+    base_stats = {**base_stats, "recommendedStopCount": stop_n}
+    _progress(
+        "scoring_done",
+        f"{stop_n} recommended stop{'s' if stop_n != 1 else ''}",
+        78,
+        base_stats,
+    )
 
     snap_kms = [
         float(p["distanceAlongKm"])
@@ -144,6 +211,7 @@ def analyze_planned_route(
     ]
     hard_climbs = [(float(c["startKm"]), float(c["endKm"])) for c in climbs if c.get("hard")]
     target = max(40.0, min(400.0, float(target_stage_km or 250.0)))
+    _progress("stages", "Generating stage suggestions", 82, base_stats)
     stages = suggest_stages(
         total_km,
         elev_pairs,
@@ -152,7 +220,15 @@ def analyze_planned_route(
         hard_climb_kms=hard_climbs,
     )
     sleep_plan = _sleep_near_stages(stages, sleep)
+    base_stats = {**base_stats, "stageCount": len(stages)}
+    _progress(
+        "stages_done",
+        f"{len(stages)} stage{'s' if len(stages) != 1 else ''} suggested",
+        86,
+        base_stats,
+    )
 
+    _progress("weather", "Checking decision weather", 88, base_stats)
     weather = _decision_weather(
         fetch_route_weather(
             track,
@@ -162,6 +238,7 @@ def analyze_planned_route(
         )
     )
 
+    _progress("planning", "Building planning data", 92, base_stats)
     decisions = build_critical_decisions(
         recommended=recommended,
         climbs=climbs,
@@ -170,6 +247,7 @@ def analyze_planned_route(
         sleep_plan=sleep_plan,
         total_km=total_km,
     )
+    base_stats = {**base_stats, "criticalDecisionCount": len(decisions)}
 
     empty: Dict[str, Optional[str]] = {
         "climbs": None,

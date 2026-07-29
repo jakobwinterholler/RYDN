@@ -121,6 +121,99 @@ class UltraConsistencyTests(unittest.TestCase):
         ok = ultras.find_membership_conflicts(self.uid, ["a"], except_ultra_id=first["id"])
         self.assertEqual(ok, [])
 
+    def test_same_calendar_day_merges_into_one_riding_day(self) -> None:
+        # Two recordings on Day 1 + one on Day 2 → dayCount 2, not 3.
+        rides = [
+            {
+                **_ride("a1", km=77, elev=900, dur=18_360, moving=16_000, date="2024-06-11T08:00:00+00:00"),
+                "name": "Tag 11 (1/2) - Nach Spanien",
+            },
+            {
+                **_ride("a2", km=15, elev=120, dur=2_460, moving=2_200, date="2024-06-11T15:20:00+00:00"),
+                "name": "Tag 11 (2/2) - Nach Spanien",
+            },
+            _ride("b", km=100, elev=800, dur=36_000, moving=30_000, date="2024-06-12T08:00:00+00:00"),
+        ]
+        ultra = ultras.ultra_from_activities(self.uid, "Same Day Ultra", rides)
+        self.assertEqual(ultra["distanceKm"], 192.0)
+        self.assertEqual(ultra["elevationGainM"], 1820)
+        self.assertEqual(ultra["dayCount"], 2)
+        self.assertEqual(ultra["rideElapsedTimeS"], 18_360 + 2_460 + 36_000)
+        self.assertEqual(ultra["movingTimeS"], 16_000 + 2_200 + 30_000)
+
+        detail = ultras.ultra_detail(self.uid, ultra["id"], rides)
+        assert detail is not None
+        days = detail["days"]
+        self.assertEqual(len(days), 2)
+        self.assertEqual(days[0]["dayIndex"], 1)
+        self.assertEqual(days[0]["recordingCount"], 2)
+        self.assertEqual(days[0]["activityIds"], ["a1", "a2"])
+        self.assertEqual(days[0]["distanceKm"], 92.0)
+        self.assertEqual(days[0]["elevationGainM"], 1020)
+        self.assertEqual(days[0]["durationS"], 18_360 + 2_460)
+        self.assertEqual(days[0]["movingTimeS"], 18_200)
+        # Day title must not keep Strava (1/2) part labels after merge.
+        self.assertEqual(days[0]["name"], "Tag 11 - Nach Spanien")
+        self.assertNotIn("(1/2)", days[0]["name"])
+        self.assertNotIn("(2/2)", days[0]["name"])
+        self.assertEqual(days[1]["dayIndex"], 2)
+        self.assertEqual(days[1]["recordingCount"], 1)
+        self.assertEqual(days[1]["distanceKm"], 100.0)
+
+    def test_strip_recording_part_label(self) -> None:
+        self.assertEqual(
+            ultras.strip_recording_part_label("Tag 11 (1/2) - Nach Spanien"),
+            "Tag 11 - Nach Spanien",
+        )
+        self.assertEqual(
+            ultras.strip_recording_part_label("Day 7 (2/2)"),
+            "Day 7",
+        )
+
+    def test_different_calendar_days_do_not_merge(self) -> None:
+        rides = [
+            _ride("a", km=50, elev=400, dur=3600, moving=3000, date="2024-06-01T08:00:00+00:00"),
+            _ride("b", km=50, elev=400, dur=3600, moving=3000, date="2024-06-02T08:00:00+00:00"),
+        ]
+        ultra = ultras.ultra_from_activities(self.uid, "Two Days", rides)
+        self.assertEqual(ultra["dayCount"], 2)
+        detail = ultras.ultra_detail(self.uid, ultra["id"], rides)
+        assert detail is not None
+        self.assertEqual(len(detail["days"]), 2)
+        self.assertEqual(detail["days"][0]["recordingCount"], 1)
+        self.assertEqual(detail["days"][1]["recordingCount"], 1)
+
+    def test_undated_rides_never_merge(self) -> None:
+        rides = [
+            {
+                "id": "u1",
+                "name": "Undated 1",
+                "distanceKm": 10,
+                "elevationGainM": 100,
+                "durationS": 1000,
+                "movingTimeS": 900,
+                "date": None,
+                "analyzed": True,
+                "status": "reviewed",
+            },
+            {
+                "id": "u2",
+                "name": "Undated 2",
+                "distanceKm": 12,
+                "elevationGainM": 110,
+                "durationS": 1100,
+                "movingTimeS": 1000,
+                "date": None,
+                "analyzed": True,
+                "status": "reviewed",
+            },
+        ]
+        ultra = ultras.ultra_from_activities(self.uid, "Undated", rides)
+        self.assertEqual(ultra["dayCount"], 2)
+        detail = ultras.ultra_detail(self.uid, ultra["id"], rides)
+        assert detail is not None
+        self.assertEqual(len(detail["days"]), 2)
+
     def test_empty_ultra_zeros_totals(self) -> None:
         ultra = ultras.create_ultra(self.uid, name="Empty")
         updated = ultras.recompute_ultra(self.uid, ultra["id"], rides=[])

@@ -16,7 +16,7 @@ from typing import List, Optional
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import store
@@ -184,6 +184,104 @@ async def import_planned_route(
     return JSONResponse(summary)
 
 
+@app.post("/api/routes/import/stream")
+async def import_planned_route_stream(
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    user: dict = Depends(current_user),
+) -> StreamingResponse:
+    """SSE progress for Planned Route import — same work as /api/routes/import."""
+    import json as _json
+    import queue
+    import threading
+
+    filename = file.filename or "route.gpx"
+    suffix = os.path.splitext(filename)[1].lower()
+    if suffix != ".gpx":
+        raise HTTPException(
+            status_code=400,
+            detail="Planned routes require a GPX file. Use Completed Ride for FIT, TCX, or activity GPX.",
+        )
+    raw = await file.read()
+    if len(raw) > MAX_FILE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{filename} is larger than {MAX_FILE_MB} MB.",
+        )
+    with tempfile.NamedTemporaryFile(suffix=".gpx", delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
+
+    uid = user["id"]
+    display_name = (name or "").strip() or None
+    events: queue.Queue = queue.Queue()
+
+    def emit(payload: dict) -> None:
+        events.put(payload)
+
+    def worker() -> None:
+        try:
+            emit(
+                {
+                    "type": "progress",
+                    "stage": "uploading",
+                    "label": "Upload complete",
+                    "pct": 4,
+                    "stats": {},
+                }
+            )
+
+            def on_progress(stage: str, label: str, pct: int, stats=None) -> None:
+                emit(
+                    {
+                        "type": "progress",
+                        "stage": stage,
+                        "label": label,
+                        "pct": int(max(0, min(99, pct))),
+                        "stats": stats or {},
+                    }
+                )
+
+            summary = routes_store.create_route_from_gpx(
+                uid,
+                gpx_path=tmp_path,
+                filename=filename,
+                name=display_name,
+                on_progress=on_progress,
+            )
+            log_event("routes.imported", user_id=uid, route_id=summary.get("id"))
+            emit({"type": "done", "summary": summary, "pct": 100, "label": "Route imported successfully"})
+        except ValueError as exc:
+            emit({"type": "error", "message": str(exc) or MSG_IMPORT_CORRUPT})
+        except Exception as exc:  # noqa: BLE001
+            log_exception("routes.import_stream_failed", exc, filename=filename)
+            emit({"type": "error", "message": MSG_IMPORT_CORRUPT})
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            events.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def event_stream():
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            yield f"data: {_json.dumps(item)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/api/routes/{route_id}")
 def get_route(route_id: str, user: dict = Depends(current_user)) -> JSONResponse:
     detail = routes_store.get_route_detail(user["id"], route_id)
@@ -209,6 +307,28 @@ def get_route_analysis(
     if not analysis:
         raise HTTPException(status_code=404, detail="Route not found.")
     return JSONResponse(analysis)
+
+
+@app.get("/api/routes/{route_id}/pois")
+def get_route_viewport_pois(
+    route_id: str,
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    group: str = "all",
+    user: dict = Depends(current_user),
+) -> JSONResponse:
+    """Viewport POI search (Overpass proxy) for Planning map Search-this-area."""
+    detail = routes_store.get_route_detail(user["id"], route_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Route not found.")
+    if south >= north or west >= east:
+        raise HTTPException(status_code=400, detail="Invalid bounding box.")
+    from .analysis.route_pois import fetch_viewport_pois
+
+    payload = fetch_viewport_pois(south, west, north, east, group=group or "all")
+    return JSONResponse(payload)
 
 
 @app.patch("/api/routes/{route_id}")

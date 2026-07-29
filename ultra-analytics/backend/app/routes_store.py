@@ -11,7 +11,7 @@ import os
 import shutil
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .analysis.route_analysis import analyze_planned_route
 from .analysis.route_elevation import ensure_analysis_track, track_has_elevation
@@ -45,6 +45,49 @@ def _gpx_path(uid: str, route_id: str) -> str:
 
 def _analysis_path(uid: str, route_id: str) -> str:
     return os.path.join(_routes_dir(uid), f"{route_id}.analysis.json")
+
+
+def _patch_analysis_reviews(uid: str, route_id: str, reviews: Dict[str, str]) -> None:
+    """Apply stop review statuses to the cached analysis without re-running POI/climb work.
+
+    Verify should feel instant — deleting the cache forced a full re-analysis on the
+    next GET and made every Verify click wait on heavy work.
+    """
+    cache = _analysis_path(uid, route_id)
+    if not os.path.isfile(cache):
+        return
+    try:
+        with open(cache, "r", encoding="utf-8") as f:
+            analysis = json.load(f)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return
+
+    analysis["stopReviews"] = dict(reviews)
+    stops = list(analysis.get("recommendedStops") or [])
+    for stop in stops:
+        if not isinstance(stop, dict):
+            continue
+        sid = stop.get("id")
+        if sid is None:
+            continue
+        stop["reviewStatus"] = reviews.get(str(sid)) or "unreviewed"
+    analysis["recommendedStops"] = stops
+
+    verified = sum(1 for s in stops if isinstance(s, dict) and s.get("reviewStatus") == "verified")
+    summary = dict(analysis.get("summary") or {})
+    summary["verifiedStopCount"] = verified
+    summary["recommendedStopCount"] = sum(
+        1 for s in stops if isinstance(s, dict) and s.get("reviewStatus") != "rejected"
+    )
+    analysis["summary"] = summary
+
+    try:
+        tmp = f"{cache}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(analysis, f)
+        os.replace(tmp, cache)
+    except OSError:
+        pass
 
 
 def _ensure_dir(uid: str) -> None:
@@ -120,12 +163,29 @@ def create_route_from_gpx(
     gpx_path: str,
     filename: str,
     name: Optional[str] = None,
+    on_progress: Optional[Callable] = None,
 ) -> dict:
+    def _progress(stage: str, label: str, pct: int, stats: Optional[Dict[str, Any]] = None) -> None:
+        if on_progress:
+            on_progress(stage, label, pct, stats)
+
+    _progress("parsing", "Parsing GPX", 8, None)
     parsed = parse_route_gpx(gpx_path)
     now = time.time()
     stem = os.path.splitext(filename or "route")[0].replace("_", " ").replace("-", " ").strip()
     route_id = uuid.uuid4().hex[:12]
     track = downsample_track(parsed.points)
+    stats = {
+        "distanceKm": round(float(parsed.distance_km or 0), 1),
+        "elevationGainM": int(parsed.elevation_gain_m or 0),
+        "pointCount": int(parsed.point_count or 0),
+    }
+    _progress(
+        "parsed",
+        f"Parsing {stats['pointCount']:,} GPX points",
+        16,
+        stats,
+    )
     route = {
         "id": route_id,
         "createdAt": now,
@@ -151,12 +211,14 @@ def create_route_from_gpx(
         shutil.copyfile(gpx_path, _gpx_path(uid, route_id))
     except OSError:
         pass
+    _progress("saving", "Saving route", 22, stats)
     _save(uid, route)
     # Eager local analysis (climbs/stages); POIs may hit Overpass.
     try:
-        get_route_analysis(uid, route_id, force=True)
+        get_route_analysis(uid, route_id, force=True, on_progress=on_progress)
     except Exception:
         pass
+    _progress("done", "Almost ready…", 98, stats)
     return _summary(get_route(uid, route_id) or route)
 
 
@@ -195,13 +257,9 @@ def update_route(uid: str, route_id: str, patch: Dict[str, Any]) -> Optional[dic
             elif status in REVIEW_STATUSES:
                 reviews[key] = status
         route["stopReviews"] = reviews
-        # Invalidate analysis so recommendations reflect reviews.
-        try:
-            cache = _analysis_path(uid, route_id)
-            if os.path.isfile(cache):
-                os.unlink(cache)
-        except OSError:
-            pass
+        # Lightweight: patch review fields on cached analysis instead of wiping it
+        # (full re-analysis was the main reason Verify felt frozen).
+        _patch_analysis_reviews(uid, route_id, reviews)
     if "notes" in patch:
         prep = dict(route.get("preparation") or PREPARATION_DEFAULTS)
         prep["notes"] = str(patch["notes"] or "")[:4000]
@@ -225,7 +283,12 @@ def get_route_detail(uid: str, route_id: str) -> Optional[dict]:
 
 
 def get_route_analysis(
-    uid: str, route_id: str, *, force: bool = False, target_stage_km: float = 250.0
+    uid: str,
+    route_id: str,
+    *,
+    force: bool = False,
+    target_stage_km: float = 250.0,
+    on_progress: Optional[Callable] = None,
 ) -> Optional[dict]:
     route = get_route(uid, route_id)
     if not route:
@@ -258,12 +321,21 @@ def get_route_analysis(
             route["elevationGainM"] = parsed.elevation_gain_m
             _save(uid, route)
 
+    if on_progress:
+        on_progress("elevation", "Preparing elevation profile", 24, {
+            "distanceKm": round(float(route.get("distanceKm") or 0), 1),
+            "elevationGainM": int(route.get("elevationGainM") or 0),
+            "pointCount": int(route.get("pointCount") or 0),
+        })
     route, heal_meta = ensure_analysis_track(route)
     if heal_meta.get("healed"):
         _save(uid, route)
 
     analysis = analyze_planned_route(
-        route, force_refresh=force, target_stage_km=target_stage_km
+        route,
+        force_refresh=force,
+        target_stage_km=target_stage_km,
+        on_progress=on_progress,
     )
     analysis["schemaVersion"] = 2
     analysis["elevationSource"] = heal_meta.get("source") or (
@@ -274,6 +346,8 @@ def get_route_analysis(
             "Elevation healed from terrain data (original GPX elev was missing) — climbs estimated from DEM.",
             *list(analysis.get("insights") or []),
         ]
+    if on_progress:
+        on_progress("saving_analysis", "Saving planning data", 96, analysis.get("summary"))
     try:
         with open(cache, "w", encoding="utf-8") as f:
             json.dump(analysis, f)

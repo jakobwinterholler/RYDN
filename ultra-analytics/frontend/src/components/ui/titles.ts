@@ -11,3 +11,12 @@ export function cleanUltraTitle(name: string): string {
   s = s.replace(/\s{2,}/g, " ").replace(/^[\s\-—–|&]+|[\s\-—–|&]+$/g, "");
   return s || "Untitled Ultra";
 }
+
+/** Strip Strava ``(1/2)`` recording-part markers from Ultra day titles. */
+export function cleanDayTitle(name: string): string {
+  let s = (name || "").trim();
+  if (!s) return "";
+  s = s.replace(/\s*\(\s*\d+\s*\/\s*\d+\s*\)/g, "");
+  s = s.replace(/\s{2,}/g, " ").replace(/^[\s\-—–|&]+|[\s\-—–|&]+$/g, "");
+  return s || (name || "").trim();
+}

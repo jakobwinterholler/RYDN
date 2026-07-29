@@ -8,7 +8,7 @@ import Icon from "./ui/Icon";
 import RoutePreview from "./ui/RoutePreview";
 import RydnLoader from "./ui/RydnLoader";
 import ScoreLine, { fmtElapsed } from "./ui/ScoreLine";
-import { cleanUltraTitle } from "./ui/titles";
+import { cleanDayTitle, cleanUltraTitle } from "./ui/titles";
 
 interface Props {
   ultraId: string;
@@ -83,22 +83,29 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
     }
   };
 
-  const removeDay = async (rideId: string) => {
+  const removeDay = async (day: UltraDay) => {
     if (!detail) return;
-    const ok = window.confirm("Remove this day from the Ultra? The ride stays in your Library.");
+    const block = day.activityIds?.length ? day.activityIds : [day.id];
+    const n = block.length;
+    const ok = window.confirm(
+      n > 1
+        ? `Remove this day (${n} ride recordings) from the Ultra? The rides stay in your Library.`
+        : "Remove this day from the Ultra? The ride stays in your Library.",
+    );
     if (!ok) return;
-    const next = detail.ultra.activityIds.filter((id) => id !== rideId);
+    const drop = new Set(block);
+    const next = detail.ultra.activityIds.filter((id) => !drop.has(id));
     await saveIds(next);
   };
 
-  const moveDay = async (rideId: string, dir: -1 | 1) => {
+  const moveDay = async (day: UltraDay, dir: -1 | 1) => {
     if (!detail) return;
-    const ids = [...detail.ultra.activityIds];
-    const i = ids.indexOf(rideId);
+    const blocks = detail.days.map((d) => (d.activityIds?.length ? d.activityIds : [d.id]));
+    const i = day.dayIndex - 1;
     const j = i + dir;
-    if (i < 0 || j < 0 || j >= ids.length) return;
-    [ids[i], ids[j]] = [ids[j], ids[i]];
-    await saveIds(ids, { orderManual: true });
+    if (i < 0 || j < 0 || j >= blocks.length) return;
+    [blocks[i], blocks[j]] = [blocks[j], blocks[i]];
+    await saveIds(blocks.flat(), { orderManual: true });
   };
 
   if (error && !detail) {
@@ -247,19 +254,22 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
           </div>
         ) : (
           <ul className="day-list">
-            {days.map((day) => (
+            {days.map((day) => {
+              const partIds = day.activityIds?.length ? day.activityIds : [day.id];
+              return (
               <DayRow
-                key={day.id}
+                key={`day-${day.dayIndex}-${partIds.join("-")}`}
                 day={day}
                 canUp={day.dayIndex > 1}
                 canDown={day.dayIndex < days.length}
                 busy={busy}
-                onOpen={() => onOpenRide(day.id)}
-                onRemove={() => void removeDay(day.id)}
-                onUp={() => void moveDay(day.id, -1)}
-                onDown={() => void moveDay(day.id, 1)}
+                onOpenRide={onOpenRide}
+                onRemove={() => void removeDay(day)}
+                onUp={() => void moveDay(day, -1)}
+                onDown={() => void moveDay(day, 1)}
               />
-            ))}
+              );
+            })}
           </ul>
         )}
       </section>
@@ -304,7 +314,7 @@ function DayRow({
   canUp,
   canDown,
   busy,
-  onOpen,
+  onOpenRide,
   onRemove,
   onUp,
   onDown,
@@ -313,13 +323,16 @@ function DayRow({
   canUp: boolean;
   canDown: boolean;
   busy: boolean;
-  onOpen: () => void;
+  onOpenRide: (rideId: string) => void;
   onRemove: () => void;
   onUp: () => void;
   onDown: () => void;
 }) {
   const startX = useRef<number | null>(null);
   const [dx, setDx] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const recordingCount = day.recordingCount ?? day.activityIds?.length ?? 1;
+  const hasMultiple = recordingCount > 1;
 
   const onTouchStart = (e: TouchEvent) => {
     startX.current = e.touches[0].clientX;
@@ -336,48 +349,85 @@ function DayRow({
   };
 
   return (
-    <li className="day-row-wrap">
-      <div className="day-row__reveal" aria-hidden="true">
-        Remove
-      </div>
-      <div
-        className="day-row"
-        style={{ transform: `translateX(${dx}px)` }}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
-      >
-        <button type="button" className="day-row__main" onClick={onOpen}>
-          <span className="day-row__day">Day {day.dayIndex}</span>
-          <span className="day-row__name">{day.name}</span>
-          <span className="day-row__meta">
-            {fmtDate(day.date)}
-            <ScoreLine
-              className="day-row__score"
-              distanceKm={day.distanceKm}
-              elevationGainM={day.elevationGainM}
-              durationS={day.durationS}
-            />
-          </span>
-        </button>
-        <div className="day-row__actions">
-          <button type="button" className="icon-btn" disabled={!canUp || busy} onClick={onUp} aria-label="Move up">
-            <Icon name="chevronLeft" size={18} className="icon--rotate-90" />
+    <li className="day-row-block">
+      <div className="day-row-wrap">
+        <div className="day-row__reveal" aria-hidden="true">
+          Remove
+        </div>
+        <div
+          className="day-row"
+          style={{ transform: `translateX(${dx}px)` }}
+          onTouchStart={onTouchStart}
+          onTouchMove={onTouchMove}
+          onTouchEnd={onTouchEnd}
+        >
+          <button type="button" className="day-row__main" onClick={() => onOpenRide(day.id)}>
+            <span className="day-row__day">Day {day.dayIndex}</span>
+            <span className="day-row__name">{cleanDayTitle(day.name)}</span>
+            <span className="day-row__meta">
+              {fmtDate(day.date)}
+              <ScoreLine
+                className="day-row__score"
+                distanceKm={day.distanceKm}
+                elevationGainM={day.elevationGainM}
+                durationS={day.durationS}
+              />
+              {hasMultiple && (
+                <span className="day-row__recordings">
+                  Built from {recordingCount} ride recordings
+                </span>
+              )}
+            </span>
           </button>
-          <button
-            type="button"
-            className="icon-btn"
-            disabled={!canDown || busy}
-            onClick={onDown}
-            aria-label="Move down"
-          >
-            <Icon name="chevronRight" size={18} className="icon--rotate-90" />
-          </button>
-          <button type="button" className="icon-btn icon-btn--danger" disabled={busy} onClick={onRemove} aria-label="Remove from Ultra">
-            <Icon name="minus" size={18} />
-          </button>
+          <div className="day-row__actions">
+            {hasMultiple && (
+              <button
+                type="button"
+                className="icon-btn"
+                disabled={busy}
+                onClick={() => setExpanded((v) => !v)}
+                aria-expanded={expanded}
+                aria-label={expanded ? "Hide recordings" : "Show recordings"}
+              >
+                <Icon name={expanded ? "chevronLeft" : "chevronRight"} size={18} className="icon--rotate-90" />
+              </button>
+            )}
+            <button type="button" className="icon-btn" disabled={!canUp || busy} onClick={onUp} aria-label="Move up">
+              <Icon name="chevronLeft" size={18} className="icon--rotate-90" />
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              disabled={!canDown || busy}
+              onClick={onDown}
+              aria-label="Move down"
+            >
+              <Icon name="chevronRight" size={18} className="icon--rotate-90" />
+            </button>
+            <button type="button" className="icon-btn icon-btn--danger" disabled={busy} onClick={onRemove} aria-label="Remove from Ultra">
+              <Icon name="minus" size={18} />
+            </button>
+          </div>
         </div>
       </div>
+      {expanded && hasMultiple && (
+        <ul className="day-row__parts">
+          {(day.recordings || []).map((rec, i) => (
+            <li key={rec.id}>
+              <button type="button" className="day-row__part" onClick={() => onOpenRide(rec.id)}>
+                <span className="day-row__part-label">Recording {i + 1}</span>
+                <span className="day-row__part-name">{rec.name}</span>
+                <ScoreLine
+                  className="day-row__score"
+                  distanceKm={rec.distanceKm}
+                  elevationGainM={rec.elevationGainM}
+                  durationS={rec.durationS}
+                />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </li>
   );
 }

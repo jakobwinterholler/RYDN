@@ -121,6 +121,7 @@ export default defineConfig(({ mode }) => {
         output: {
           manualChunks: {
             react: ["react", "react-dom"],
+            maplibre: ["maplibre-gl"],
           },
         },
       },

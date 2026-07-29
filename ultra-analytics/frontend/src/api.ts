@@ -132,6 +132,130 @@ export async function importPlannedRoute(file: File, name?: string): Promise<Pla
   return (await res.json()) as PlannedRouteSummary;
 }
 
+export type ImportProgressStats = {
+  distanceKm?: number;
+  elevationGainM?: number;
+  pointCount?: number;
+  climbCount?: number;
+  waterCount?: number;
+  supermarketCount?: number;
+  bikeShopCount?: number;
+  remoteGapCount?: number;
+  recommendedStopCount?: number;
+  stageCount?: number;
+  criticalDecisionCount?: number;
+  [key: string]: unknown;
+};
+
+export type ImportProgressUpdate = {
+  stage: string;
+  label: string;
+  pct: number;
+  stats?: ImportProgressStats;
+};
+
+/** SSE progress for Planned Route GPX import. Falls back callers can still use importPlannedRoute. */
+export async function importPlannedRouteStream(
+  file: File,
+  name?: string,
+  onProgress?: (update: ImportProgressUpdate) => void,
+): Promise<PlannedRouteSummary> {
+  const form = new FormData();
+  form.append("file", file);
+  if (name) form.append("name", name);
+
+  let res: Response;
+  try {
+    res = await fetch(api("/api/routes/import/stream"), { ...opts, method: "POST", body: form });
+  } catch (err) {
+    throw new ApiError(networkErrorMessage(err), 0, "network");
+  }
+
+  if (!res.ok) {
+    await fail(res, "Could not import planned route. Check the GPX and try again.");
+  }
+  if (!res.body) {
+    throw new ApiError("No response stream from server.", 0, "network");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let summary: PlannedRouteSummary | null = null;
+
+  const handleEvent = (event: Record<string, unknown>) => {
+    const type = event.type;
+    if (type === "progress") {
+      onProgress?.({
+        stage: String(event.stage || ""),
+        label: String(event.label || "Working…"),
+        pct: Math.max(0, Math.min(99, Number(event.pct) || 0)),
+        stats: (event.stats as ImportProgressStats) || undefined,
+      });
+      return;
+    }
+    if (type === "done") {
+      summary = event.summary as PlannedRouteSummary;
+      onProgress?.({
+        stage: "done",
+        label: String(event.label || "Route imported successfully"),
+        pct: 100,
+        stats: (event.stats as ImportProgressStats) || undefined,
+      });
+      return;
+    }
+    if (type === "error") {
+      throw new ApiError(
+        String(event.message || "Could not import planned route. Check the GPX and try again."),
+        400,
+      );
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() ?? "";
+    for (const chunk of chunks) {
+      for (const line of chunk.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const raw = trimmed.slice(5).trim();
+        if (!raw || raw === "[DONE]") continue;
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        handleEvent(parsed);
+      }
+    }
+  }
+
+  // Flush any trailing event without a final blank line
+  if (buffer.trim()) {
+    for (const line of buffer.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const raw = trimmed.slice(5).trim();
+      if (!raw) continue;
+      try {
+        handleEvent(JSON.parse(raw) as Record<string, unknown>);
+      } catch {
+        /* ignore trailing junk */
+      }
+    }
+  }
+
+  if (!summary) {
+    throw new ApiError("Import ended without a result. Try again.", 0, "network");
+  }
+  return summary;
+}
+
 export async function getRoute(id: string): Promise<PlannedRouteDetail> {
   const res = await request(`/api/routes/${id}`);
   if (!res.ok) await fail(res, "Route not found.");
@@ -149,6 +273,47 @@ export async function getRouteAnalysis(
   const res = await request(`/api/routes/${id}/analysis${qs ? `?${qs}` : ""}`);
   if (!res.ok) await fail(res, "Could not analyse this route.");
   return (await res.json()) as RouteAnalysis;
+}
+
+export interface ViewportPoisResult {
+  pois: Array<{
+    id: string;
+    osmId: number;
+    osmType: string;
+    name: string | null;
+    category: string;
+    group: string;
+    lat: number;
+    lon: number;
+    distanceAlongKm: number;
+    distanceOffRouteM: number;
+    openingHours?: string | null;
+    website?: string | null;
+    is24h?: boolean;
+    reviewStatus?: string;
+    googleMapsUrl?: string | null;
+  }>;
+  cache?: string;
+  error?: string | null;
+  truncated?: boolean;
+}
+
+/** Progressive POI load for the visible map bbox (Overpass via backend). */
+export async function searchRouteViewportPois(
+  id: string,
+  bbox: { south: number; west: number; north: number; east: number },
+  group: string = "all",
+): Promise<ViewportPoisResult> {
+  const q = new URLSearchParams({
+    south: String(bbox.south),
+    west: String(bbox.west),
+    north: String(bbox.north),
+    east: String(bbox.east),
+    group,
+  });
+  const res = await request(`/api/routes/${id}/pois?${q}`);
+  if (!res.ok) await fail(res, "Could not search this area.");
+  return (await res.json()) as ViewportPoisResult;
 }
 
 export async function patchRoute(

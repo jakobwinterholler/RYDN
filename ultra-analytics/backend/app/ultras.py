@@ -5,6 +5,9 @@ Strava activity. It groups one or more activities (Strava days and/or uploads)
 into one cabinet card, one Review, and eventually one experience profile used
 when planning the next Ultra.
 
+Within an Ultra, multiple recordings on the same calendar day collapse into one
+trip day (totals, day index, analytics). Original Library rides stay untouched.
+
 Persistence lives beside the ride library:
 
     data/users/<uid>/ultras/<ultraId>.json
@@ -130,6 +133,106 @@ def _range_from_activities(activities: List[dict]) -> tuple[Optional[str], Optio
     return days[0], days[0], days[-1]
 
 
+def _calendar_day_key(activity: dict) -> Optional[str]:
+    """YYYY-MM-DD for a ride summary, or None when undated."""
+    return _day(activity.get("date") or activity.get("startTime"))
+
+
+def group_activities_by_calendar_day(ordered_activities: List[dict]) -> List[List[dict]]:
+    """Merge rides that share a calendar day into one trip day.
+
+    A "day" is one calendar riding day within a trip — not one GPX/FIT file.
+    Undated rides never merge with each other. Group order follows first
+    occurrence in ``ordered_activities``; members within a group are sorted
+    chronologically.
+    """
+    groups: List[List[dict]] = []
+    index_by_day: Dict[str, int] = {}
+    for activity in ordered_activities:
+        key = _calendar_day_key(activity)
+        if key and key in index_by_day:
+            groups[index_by_day[key]].append(activity)
+            continue
+        if key:
+            index_by_day[key] = len(groups)
+        groups.append([activity])
+
+    for group in groups:
+        group.sort(
+            key=lambda a: (
+                _parse_epoch(a.get("date") or a.get("startTime")) or 0.0,
+                str(a.get("id") or ""),
+            )
+        )
+    return groups
+
+
+def count_calendar_days(activities: List[dict]) -> int:
+    """Riding days: unique calendar dates; each undated ride counts alone."""
+    return len(group_activities_by_calendar_day(activities))
+
+
+def strip_recording_part_label(name: Optional[str]) -> str:
+    """Remove Strava-style ``(1/2)`` / ``(2/2)`` part markers from a day title.
+
+    Those markers name *recordings*, not Ultra days. After same-day merge the
+    Ultra day index is authoritative — keeping ``(1/2)`` makes merge look broken.
+    """
+    import re
+
+    s = (name or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"\s*\(\s*\d+\s*/\s*\d+\s*\)", "", s)
+    s = re.sub(r"\s{2,}", " ", s).strip(" -—–|&")
+    return s
+
+
+def merge_day_summary(members: List[dict], day_index: int) -> dict:
+    """Combine same-calendar-day ride summaries into one Ultra day row."""
+    if not members:
+        raise ValueError("merge_day_summary requires at least one member")
+    primary = members[0]
+    activity_ids = [str(m["id"]) for m in members if m.get("id")]
+    distance = sum(float(m.get("distanceKm") or 0) for m in members)
+    elev = sum(float(m.get("elevationGainM") or 0) for m in members)
+    moving = sum(float(m.get("movingTimeS") or 0) for m in members)
+    ride_elapsed = sum(float(m.get("durationS") or 0) for m in members)
+    has_photos = any(bool(m.get("hasPhotos")) for m in members)
+    photo_url = next((m.get("photoUrl") for m in members if m.get("photoUrl")), primary.get("photoUrl"))
+    # Prefer a cleaned title; fall back to primary if stripping emptied it.
+    display_name = strip_recording_part_label(primary.get("name")) or (primary.get("name") or "")
+
+    merged = {
+        **primary,
+        "id": primary.get("id"),
+        "activityIds": activity_ids,
+        "recordingCount": len(members),
+        "dayIndex": day_index,
+        "date": primary.get("date"),
+        "name": display_name,
+        "distanceKm": round(distance, 1),
+        "elevationGainM": round(elev),
+        "movingTimeS": round(moving),
+        "durationS": round(ride_elapsed),
+        "hasPhotos": has_photos,
+        "photoUrl": photo_url,
+        "recordings": [
+            {
+                "id": m.get("id"),
+                "name": m.get("name"),  # originals keep Strava titles
+                "date": m.get("date"),
+                "distanceKm": m.get("distanceKm") or 0,
+                "elevationGainM": m.get("elevationGainM") or 0,
+                "durationS": m.get("durationS") or 0,
+                "movingTimeS": m.get("movingTimeS") or 0,
+            }
+            for m in members
+        ],
+    }
+    return merged
+
+
 def apply_activity_totals(ultra: dict, activities: List[dict]) -> dict:
     """Recompute totals + date range + year + day count from member rides.
 
@@ -137,6 +240,8 @@ def apply_activity_totals(ultra: dict, activities: List[dict]) -> dict:
     - ``durationS`` / ultra elapsed — first ride start → last ride end (wall clock)
     - ``rideElapsedTimeS`` — sum of each ride's own elapsed time
     - ``movingTimeS`` — sum of each ride's moving time
+
+    ``dayCount`` is the number of calendar riding days (same-day recordings merge).
     """
     ultra["distanceKm"] = round(sum(float(a.get("distanceKm") or 0) for a in activities), 1)
     ultra["elevationGainM"] = round(sum(float(a.get("elevationGainM") or 0) for a in activities))
@@ -144,7 +249,7 @@ def apply_activity_totals(ultra: dict, activities: List[dict]) -> dict:
     ultra["rideElapsedTimeS"] = round(ride_elapsed)
     ultra["movingTimeS"] = round(sum(float(a.get("movingTimeS") or 0) for a in activities))
     ultra["durationS"] = round(_ultra_elapsed_s(activities))
-    ultra["dayCount"] = len(activities)
+    ultra["dayCount"] = count_calendar_days(activities)
     date, start, end = _range_from_activities(activities)
     if activities:
         ultra["date"] = date
@@ -594,11 +699,15 @@ def ultra_detail(uid: str, ultra_id: str, rides: List[dict]) -> Optional[dict]:
     # Heal membership: drop deleted rides and refresh derived fields.
     by_id_check = {r["id"]: r for r in rides}
     raw_ids = list(ultra.get("activityIds") or [])
-    if any(aid not in by_id_check for aid in raw_ids) or ultra.get("dayCount") != len(
-        [a for a in raw_ids if a in by_id_check]
+    members_for_heal = [by_id_check[a] for a in raw_ids if a in by_id_check]
+    expected_day_count = count_calendar_days(members_for_heal)
+    if (
+        any(aid not in by_id_check for aid in raw_ids)
+        or ultra.get("dayCount") != expected_day_count
+        or ultra.get("movingTimeS") is None
+        or "dayCount" not in ultra
+        or ultra.get("rideElapsedTimeS") is None
     ):
-        ultra = recompute_ultra(uid, ultra_id, rides=rides) or ultra
-    elif ultra.get("movingTimeS") is None or "dayCount" not in ultra or ultra.get("rideElapsedTimeS") is None:
         ultra = recompute_ultra(uid, ultra_id, rides=rides) or ultra
 
     # Backfill countries from GPS when software can know and rider hasn't overridden.
@@ -619,15 +728,16 @@ def ultra_detail(uid: str, ultra_id: str, rides: List[dict]) -> Optional[dict]:
     chrono_ids = sort_activity_ids(activity_ids, by_id)
 
     # Keep day list in rider order when locked; otherwise chronological.
+    # Same-calendar-day recordings always collapse into one trip day.
     display_ids = activity_ids if ultra.get("activityOrderManual") else chrono_ids
-    days: List[dict] = []
-    for i, aid in enumerate(display_ids):
-        summary = by_id.get(aid)
-        if summary:
-            days.append({**summary, "dayIndex": i + 1})
+    ordered = [by_id[aid] for aid in display_ids if aid in by_id]
+    days = [
+        merge_day_summary(group, i + 1)
+        for i, group in enumerate(group_activities_by_calendar_day(ordered))
+    ]
 
-    # Map plate always stitches days chronologically as separate segments
-    # (never draw a teleport line across overnight gaps).
+    # Map plate always stitches recordings chronologically as separate segments
+    # (never draw a teleport line across overnight or mid-day gaps).
     route_segments: List[List[list]] = []
     for aid in chrono_ids:
         pts = ride_store.get_route_points(uid, aid, max_points=280)

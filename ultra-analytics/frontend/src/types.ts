@@ -177,7 +177,7 @@ export interface Ultra {
   rideElapsedTimeS?: number;
   /** Sum of member moving times when known. */
   movingTimeS?: number;
-  /** Number of member days after prune. */
+  /** Number of calendar riding days (same-day recordings count as one). */
   dayCount?: number;
   date?: string | null;
   /** Inclusive calendar range for the Ultra (YYYY-MM-DD). */
@@ -190,6 +190,18 @@ export interface Ultra {
 
 export interface UltraDay extends RideSummary {
   dayIndex: number;
+  /** All Library recordings that make up this calendar day (usually one). */
+  activityIds?: string[];
+  recordingCount?: number;
+  recordings?: {
+    id: string;
+    name: string;
+    date: string | null;
+    distanceKm: number;
+    elevationGainM: number;
+    durationS: number;
+    movingTimeS: number;
+  }[];
 }
 
 export interface UltraDetail {
@@ -668,6 +680,8 @@ export interface UltraAggregation {
 export interface UltraDayHours {
   dayIndex: number;
   activityId: string;
+  activityIds?: string[];
+  recordingCount?: number;
   name: string;
   date: string | null;
   distanceKm: number;
