@@ -324,8 +324,10 @@ function ensureLayers(map: MapLibreMap) {
         sumSleep: ["+", ["get", "isSleep"]],
       },
     });
+  }
 
-    // Category-tinted cluster symbols with baked count badges (never grey discs)
+  // Category-tinted cluster symbols with baked count badges (never grey discs)
+  if (!map.getLayer("stops-clusters")) {
     map.addLayer({
       id: "stops-clusters",
       type: "symbol",
@@ -351,8 +353,10 @@ function ensureLayers(map: MapLibreMap) {
         "icon-opacity": 0.96,
       },
     });
+  }
 
-    // Halo under selected / nearest-5 / hover (unclustered only)
+  // Halo under selected / nearest-5 / hover (unclustered only)
+  if (!map.getLayer("stops-halo")) {
     map.addLayer({
       id: "stops-halo",
       type: "circle",
@@ -400,37 +404,41 @@ function ensureLayers(map: MapLibreMap) {
         "circle-stroke-width": 0,
       },
     });
+  }
 
-    const iconSizeExpr: maplibregl.ExpressionSpecification = [
-      "*",
-      [
-        "interpolate",
-        ["linear"],
-        ["zoom"],
-        7,
-        0.55,
-        10,
-        0.78,
-        13,
-        1,
-        16,
-        1.18,
-      ],
-      [
-        "case",
-        ["==", ["get", "selected"], 1],
-        1.12,
-        ["==", ["get", "emphasize"], 1],
-        1.06,
-        ["boolean", ["feature-state", "hover"], false],
-        1.04,
-        ["==", ["get", "dimmed"], 1],
-        0.78,
-        0.92,
-      ],
-    ];
+  // Zoom must be the top-level input to interpolate/step — nesting zoom
+  // inside `*` made MapLibre reject the layer (fallback basemap, no icons).
+  // feature-state is paint-only — never use it in layout icon-size.
+  const stateMul = (base: number): maplibregl.ExpressionSpecification => [
+    "*",
+    base,
+    [
+      "case",
+      ["==", ["get", "selected"], 1],
+      1.12,
+      ["==", ["get", "emphasize"], 1],
+      1.06,
+      ["==", ["get", "dimmed"], 1],
+      0.78,
+      0.92,
+    ],
+  ];
+  const iconSizeExpr: maplibregl.ExpressionSpecification = [
+    "interpolate",
+    ["linear"],
+    ["zoom"],
+    7,
+    stateMul(0.55),
+    10,
+    stateMul(0.78),
+    13,
+    stateMul(1),
+    16,
+    stateMul(1.18),
+  ];
 
-    // Unverified / normal markers — category SymbolLayer (not circles)
+  // Unverified / normal markers — category SymbolLayer (not circles)
+  if (!map.getLayer("stops-icons")) {
     map.addLayer({
       id: "stops-icons",
       type: "symbol",
@@ -455,8 +463,10 @@ function ensureLayers(map: MapLibreMap) {
         "icon-opacity-transition": { duration: 280, delay: 0 },
       },
     });
+  }
 
-    // Verified markers — same category glyph + green check badge in sprite
+  // Verified markers — same category glyph + green check badge in sprite
+  if (!map.getLayer("stops-verified")) {
     map.addLayer({
       id: "stops-verified",
       type: "symbol",
@@ -539,6 +549,9 @@ export default function PlanMap({
       maxPitch: 0,
     });
     mapRef.current = map;
+    if (typeof window !== "undefined" && import.meta.env.DEV) {
+      (window as unknown as { __planMap?: MapLibreMap }).__planMap = map;
+    }
 
     const applyFallback = (reason: string) => {
       if (cancelled || usedFallback) return;
@@ -705,13 +718,19 @@ export default function PlanMap({
     map.on("error", (e) => {
       if (cancelled || usedFallback) return;
       const msg = String((e as { error?: { message?: string } })?.error?.message || "");
+      // Layer expression bugs must not nuke the vector basemap — only fall back
+      // when the style itself failed to load.
+      if (/stops-icons|stops-verified|icon-size|icon-image/i.test(msg)) {
+        console.warn(`[PlanMap] layer error (not falling back): ${msg}`);
+        return;
+      }
       if (!map.isStyleLoaded()) applyFallback(msg || "map error");
     });
 
     const fallbackTimer = window.setTimeout(() => {
       if (cancelled || usedFallback) return;
       if (!map.isStyleLoaded()) applyFallback("style load timeout");
-    }, 4500);
+    }, 12000);
 
     return () => {
       cancelled = true;

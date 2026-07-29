@@ -118,6 +118,10 @@ export default defineConfig(({ mode }) => {
       target: "es2020",
       cssCodeSplit: true,
       rollupOptions: {
+        input: {
+          main: resolve(__dirname, "index.html"),
+          planmapHarness: resolve(__dirname, "planmap-harness.html"),
+        },
         output: {
           manualChunks: {
             react: ["react", "react-dom"],

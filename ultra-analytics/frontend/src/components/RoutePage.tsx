@@ -956,7 +956,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           selectedId={selectedId}
           fitKey={route.id}
           focusIds={focusIds}
-          searching={false}
+          searching={searchingArea}
           onSelectMarker={onSelectMarker}
           onViewChange={onViewChange}
         />
@@ -988,13 +988,23 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </aside>
         )}
 
-        {!searchingArea && mode === "plan" && (showSearchArea || searchHasMore) && (
+        {mode === "plan" && (searchingArea || showSearchArea || searchHasMore) && (
           <button
             type="button"
             className="plan-search-area"
+            disabled={searchingArea}
             onClick={() => void searchThisArea()}
           >
-            {searchHasMore && seenSearchIdsRef.current.size > 0 ? "Search again" : "Search"}
+            {searchingArea ? (
+              <>
+                <span className="plan-qa__spinner" aria-hidden />
+                Searching…
+              </>
+            ) : searchHasMore && seenSearchIdsRef.current.size > 0 ? (
+              "Search this area again"
+            ) : (
+              "Search this area"
+            )}
           </button>
         )}
 
@@ -1202,6 +1212,25 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     rel="noreferrer"
                   >
                     Navigate
+                  </a>
+                  <a
+                    className="btn btn--ghost"
+                    href={
+                      selectedStop.googleMapsUrl ||
+                      mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Maps
+                  </a>
+                  <a
+                    className="btn btn--ghost"
+                    href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).streetView}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Street View
                   </a>
                   <button
                     type="button"

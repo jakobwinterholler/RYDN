@@ -12,9 +12,12 @@ import httpx
 
 from ..util.geo import haversine_m
 
+# Prefer mirrors that respond; kumi.systems often hangs (120s×retries) and
+# blocks Search-this-area until later mirrors are tried.
 OVERPASS_URLS = (
-    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
 )
 
 # (category, osm_key, osm_value, group)
@@ -177,19 +180,21 @@ def _project_onto_track(
 
 def _fetch_elements(query: str) -> List[dict]:
     last_err: Optional[Exception] = None
+    # Fail fast per attempt so a dead mirror cannot stall Search-this-area.
+    timeout = httpx.Timeout(25.0, connect=8.0)
     for url in OVERPASS_URLS:
-        for attempt in range(3):
+        for attempt in range(2):
             try:
-                with httpx.Client(timeout=120.0) as client:
+                with httpx.Client(timeout=timeout) as client:
                     res = client.post(url, data={"data": query})
                 if res.status_code in (429, 504):
-                    time.sleep(2 * (attempt + 1))
+                    time.sleep(1.5 * (attempt + 1))
                     continue
                 res.raise_for_status()
                 return list((res.json() or {}).get("elements") or [])
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
-                time.sleep(2 * (attempt + 1))
+                time.sleep(1.5 * (attempt + 1))
     raise RuntimeError(f"Overpass unavailable: {last_err}")
 
 
