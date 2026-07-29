@@ -5,11 +5,8 @@
  * - Quick Actions: show ONLY that category; emphasize nearest 5; cap the rest.
  *
  * Primary Quick Actions (planning speed):
- * Water · Markets · 24h (fuel shops) · Sleep · Verified
- *
- * Nearest reference (documented default):
- * - Plan mode → map viewport center (falls back to route start).
- * - Ride mode → rider progress along the route (rideKm), else map center.
+ * Water · Markets · 24h (fuel shops) · Sleep
+ * Verified is a badge on category icons — not a toolbar button.
  */
 
 export type PlanLayerId =
@@ -27,7 +24,7 @@ export type PlanLayerId =
   | "stages";
 
 /** Primary Quick Actions — tap only, no hidden gestures. */
-export type QuickActionId = "water" | "food" | "h24" | "sleep" | "verified";
+export type QuickActionId = "water" | "food" | "h24" | "sleep";
 
 export type PlanMarkerKind = "climb" | "poi" | "sleep" | "remote" | "stage" | "decision" | "area";
 
@@ -53,7 +50,7 @@ export interface PlanMarker {
 /** How many nearest POIs get full emphasis under a Quick Action. */
 export const QA_NEAREST_N = 5;
 
-/** Soft cap for non-emphasized extras while a Quick Action is on (clustered on map). */
+/** Soft cap for non-emphasized extras while a Quick Action is on. */
 export const QA_EXTRA_CAP = 10;
 
 /**
@@ -93,7 +90,6 @@ export const QUICK_ACTIONS: {
   { id: "food", label: "Markets", layer: "food", emoji: "🛒" },
   { id: "h24", label: "24h", layer: "h24", emoji: "⛽" },
   { id: "sleep", label: "Sleep", layer: "sleep", emoji: "🛏" },
-  { id: "verified", label: "Verified", layer: "verified", emoji: "✔" },
 ];
 
 /** Layers panel — primary planning categories only (no hospital/ATM/pharmacy/bike dump). */
@@ -190,8 +186,7 @@ export function markerVisible(
     return layers.stages;
   }
 
-  // Quick Action: exclusive category filter
-  if (qa === "verified") return m.status === "verified";
+  // Quick Action: exclusive category filter — map answers only that question
   if (qa) {
     return stopMatchesLayer(m, qa) && (layers.rejected || m.status !== "rejected");
   }
@@ -262,8 +257,7 @@ export function applyQuickActionEmphasis(
     return markers.map((m) => ({ ...m, emphasize: false, dimmed: false }));
   }
 
-  const pred = (m: PlanMarker) =>
-    qa === "verified" ? m.status === "verified" : stopMatchesLayer(m, qa);
+  const pred = (m: PlanMarker) => stopMatchesLayer(m, qa);
 
   const ranked = markers
     .filter(pred)

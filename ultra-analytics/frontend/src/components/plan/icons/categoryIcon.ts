@@ -52,7 +52,7 @@ export function iconForMarker(m: PlanMarker): PlanIconId {
 }
 
 export function iconForQuickAction(
-  id: "water" | "food" | "h24" | "sleep" | "verified",
+  id: "water" | "food" | "h24" | "sleep",
 ): PlanIconId {
   switch (id) {
     case "water":
@@ -63,7 +63,5 @@ export function iconForQuickAction(
       return "shop24h";
     case "sleep":
       return "sleepSpot";
-    case "verified":
-      return "verified";
   }
 }

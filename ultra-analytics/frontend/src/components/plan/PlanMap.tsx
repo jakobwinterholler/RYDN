@@ -224,47 +224,12 @@ function ensureLayers(map: MapLibreMap) {
   }
 
   if (!map.getSource("stops")) {
+    // No clustering — grey cluster discs were the "placeholder circles" bug.
+    // Cap in markersToGeoJSON keeps paint snappy; icons always show per category.
     map.addSource("stops", {
       type: "geojson",
       data: markersToGeoJSON([], null, false),
       promoteId: "id",
-      cluster: true,
-      clusterMaxZoom: 12,
-      clusterRadius: 52,
-      clusterProperties: {
-        verified_sum: ["+", ["get", "verified"]],
-        emphasize_sum: ["+", ["get", "emphasize"]],
-      },
-    });
-
-    // Soft cluster disc (RYDN family — not black GIS pins). No text glyphs —
-    // OpenFreeMap font stacks vary; density is encoded in radius.
-    map.addLayer({
-      id: "stops-clusters",
-      type: "circle",
-      source: "stops",
-      filter: ["has", "point_count"],
-      paint: {
-        "circle-color": [
-          "case",
-          [">", ["get", "emphasize_sum"], 0],
-          "#2f5d50",
-          [">", ["get", "verified_sum"], 0],
-          "#3d6b5c",
-          "#f7f6f3",
-        ],
-        "circle-radius": ["step", ["get", "point_count"], 14, 8, 17, 25, 20],
-        "circle-opacity": 0.92,
-        "circle-stroke-width": 2,
-        "circle-stroke-color": [
-          "case",
-          [">", ["coalesce", ["get", "emphasize_sum"], 0], 0],
-          "#f7f6f3",
-          [">", ["coalesce", ["get", "verified_sum"], 0], 0],
-          "#f7f6f3",
-          "#1a1a18",
-        ],
-      },
     });
 
     // Halo under selected / nearest-5 / hover
@@ -272,17 +237,33 @@ function ensureLayers(map: MapLibreMap) {
       id: "stops-halo",
       type: "circle",
       source: "stops",
-      filter: ["!", ["has", "point_count"]],
       paint: {
         "circle-radius": [
-          "case",
-          ["boolean", ["feature-state", "hover"], false],
-          20,
-          ["==", ["get", "selected"], 1],
-          19,
-          ["==", ["get", "emphasize"], 1],
-          17,
-          0,
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          8,
+          [
+            "case",
+            ["boolean", ["feature-state", "hover"], false],
+            14,
+            ["==", ["get", "selected"], 1],
+            13,
+            ["==", ["get", "emphasize"], 1],
+            12,
+            0,
+          ],
+          14,
+          [
+            "case",
+            ["boolean", ["feature-state", "hover"], false],
+            22,
+            ["==", ["get", "selected"], 1],
+            20,
+            ["==", ["get", "emphasize"], 1],
+            18,
+            0,
+          ],
         ],
         "circle-color": "rgba(47, 93, 80, 0.16)",
         "circle-opacity": [
@@ -299,26 +280,44 @@ function ensureLayers(map: MapLibreMap) {
       },
     });
 
-    // Unverified / normal markers
+    const iconSizeExpr: maplibregl.ExpressionSpecification = [
+      "*",
+      [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        7,
+        0.55,
+        10,
+        0.78,
+        13,
+        1,
+        16,
+        1.18,
+      ],
+      [
+        "case",
+        ["==", ["get", "selected"], 1],
+        1.12,
+        ["==", ["get", "emphasize"], 1],
+        1.06,
+        ["boolean", ["feature-state", "hover"], false],
+        1.04,
+        ["==", ["get", "dimmed"], 1],
+        0.78,
+        0.92,
+      ],
+    ];
+
+    // Unverified / normal markers — category SymbolLayer (not circles)
     map.addLayer({
       id: "stops-icons",
       type: "symbol",
       source: "stops",
-      filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "verified"], 1]],
+      filter: ["!=", ["get", "verified"], 1],
       layout: {
         "icon-image": ["get", "sprite"],
-        "icon-size": [
-          "case",
-          ["==", ["get", "selected"], 1],
-          1.08,
-          ["==", ["get", "emphasize"], 1],
-          1.04,
-          ["boolean", ["feature-state", "hover"], false],
-          1.02,
-          ["==", ["get", "dimmed"], 1],
-          0.78,
-          0.9,
-        ],
+        "icon-size": iconSizeExpr,
         "icon-allow-overlap": true,
         "icon-ignore-placement": true,
         "symbol-sort-key": ["get", "z"],
@@ -330,30 +329,21 @@ function ensureLayers(map: MapLibreMap) {
           0.5,
           ["==", ["get", "dimmed"], 1],
           0.42,
-          0.96,
+          0.98,
         ],
         "icon-opacity-transition": { duration: 280, delay: 0 },
       },
     });
 
-    // Verified markers — higher z-order + check badge sprite
+    // Verified markers — same category glyph + green check badge in sprite
     map.addLayer({
       id: "stops-verified",
       type: "symbol",
       source: "stops",
-      filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "verified"], 1]],
+      filter: ["==", ["get", "verified"], 1],
       layout: {
         "icon-image": ["get", "sprite"],
-        "icon-size": [
-          "case",
-          ["==", ["get", "selected"], 1],
-          1.1,
-          ["==", ["get", "emphasize"], 1],
-          1.06,
-          ["boolean", ["feature-state", "hover"], false],
-          1.04,
-          0.96,
-        ],
+        "icon-size": iconSizeExpr,
         "icon-allow-overlap": true,
         "icon-ignore-placement": true,
         "symbol-sort-key": ["+", ["get", "z"], 20],
@@ -366,7 +356,7 @@ function ensureLayers(map: MapLibreMap) {
   }
 }
 
-const HIT_LAYERS = ["stops-icons", "stops-verified", "stops-clusters"];
+const HIT_LAYERS = ["stops-icons", "stops-verified"];
 
 export default function PlanMap({
   points,
@@ -501,16 +491,6 @@ export default function PlanMap({
         return;
       }
       const f = feats[0];
-      if (f.properties?.cluster) {
-        const source = map.getSource("stops") as GeoJSONSource;
-        const clusterId = f.properties.cluster_id as number;
-        source.getClusterExpansionZoom(clusterId).then((zoom) => {
-          const geom = f.geometry as { type: string; coordinates: number[] };
-          const coords = geom.coordinates as [number, number];
-          map.easeTo({ center: coords, zoom, duration: 420 });
-        });
-        return;
-      }
       const id = String(f.properties?.id || f.id || "");
       if (id) {
         onSelectRef.current?.(id);
@@ -550,13 +530,6 @@ export default function PlanMap({
     };
     map.on("mousemove", onMove);
     map.on("mouseleave", clearHover);
-
-    map.on("mouseenter", "stops-clusters", () => {
-      map.getCanvas().style.cursor = "pointer";
-    });
-    map.on("mouseleave", "stops-clusters", () => {
-      map.getCanvas().style.cursor = "";
-    });
 
     const syncData = () => {
       if (cancelled) return;

@@ -209,12 +209,34 @@ function recommendWhy(stop: RecommendedStop): string {
 }
 
 function qaToOverpassGroup(qa: QuickActionId | null): string {
-  if (!qa || qa === "verified") return "all";
+  if (!qa) return "all";
   if (qa === "water") return "water";
   if (qa === "food") return "resupply";
   if (qa === "h24") return "fuel";
   if (qa === "sleep") return "sleep";
   return "all";
+}
+
+const SEARCH_STATUS_STEPS = [
+  "Searching visible area…",
+  "Finding water…",
+  "Ranking best stops…",
+  "Loading map…",
+] as const;
+
+function searchStatusForQa(qa: QuickActionId | null, step: number): string {
+  const finding =
+    qa === "water"
+      ? "Finding water…"
+      : qa === "food"
+        ? "Finding markets…"
+        : qa === "h24"
+          ? "Finding 24h shops…"
+          : qa === "sleep"
+            ? "Finding sleep…"
+            : "Finding stops…";
+  const steps = ["Searching visible area…", finding, "Ranking best stops…", "Loading map…"];
+  return steps[Math.min(step, steps.length - 1)] || SEARCH_STATUS_STEPS[0];
 }
 
 type PeekPayload =
@@ -247,6 +269,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [mapBbox, setMapBbox] = useState<PlanMapBBox | null>(null);
   const [showSearchArea, setShowSearchArea] = useState(false);
   const [searchingArea, setSearchingArea] = useState(false);
+  const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [searchHasMore, setSearchHasMore] = useState(false);
   const [areaPois, setAreaPois] = useState<RecommendedStop[]>([]);
   const reviewTimers = useRef<number[]>([]);
@@ -255,6 +278,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   /** IDs already returned by Search — next Search skips these. */
   const seenSearchIdsRef = useRef<Set<string>>(new Set());
   const searchGenRef = useRef(0);
+  const searchStatusTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -301,6 +325,10 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     return () => {
       for (const id of reviewTimers.current) window.clearTimeout(id);
       reviewTimers.current = [];
+      if (searchStatusTimerRef.current != null) {
+        window.clearInterval(searchStatusTimerRef.current);
+        searchStatusTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -682,9 +710,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const nearest = useMemo(() => {
     if (!nearestRef || !qa) return null;
     // Nearest under active Quick Action — Plan: map center · Ride: route progress
-    return nearestOf(allMarkers, nearestRef.lat, nearestRef.lon, (m) =>
-      qa === "verified" ? m.status === "verified" : stopMatchesLayer(m, qa),
-    );
+    return nearestOf(allMarkers, nearestRef.lat, nearestRef.lon, (m) => stopMatchesLayer(m, qa));
   }, [allMarkers, nearestRef, qa]);
 
   const rideGlance = useMemo(() => {
@@ -729,7 +755,15 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   };
 
   const toggleQa = (id: QuickActionId) => {
-    setQa((prev) => (prev === id ? null : id));
+    setQa((prev) => {
+      const next = prev === id ? null : id;
+      // Switching category replaces the question — clear selection if it no longer matches
+      if (next && selectedId) {
+        const m = allMarkers.find((x) => x.id === selectedId);
+        if (m && !stopMatchesLayer(m, next)) setSelectedId(null);
+      }
+      return next;
+    });
   };
 
   const onViewChange = (
@@ -746,11 +780,21 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     if (!mapBbox || !route) return;
     const gen = ++searchGenRef.current;
     const SEARCH_BATCH = searchLimitForBbox(mapBbox);
+    const activeQa = qa;
     setSearchingArea(true);
     setError(null);
     setShowSearchArea(false);
+    // Immediate alive feedback — never leave the UI frozen on Search.
+    let statusStep = 0;
+    setSearchStatus(searchStatusForQa(activeQa, 0));
+    if (searchStatusTimerRef.current != null) window.clearInterval(searchStatusTimerRef.current);
+    searchStatusTimerRef.current = window.setInterval(() => {
+      statusStep += 1;
+      if (gen !== searchGenRef.current) return;
+      setSearchStatus(searchStatusForQa(activeQa, statusStep));
+    }, 900);
 
-    const group = qaToOverpassGroup(qa);
+    const group = qaToOverpassGroup(activeQa);
     const excludeBase = Array.from(seenSearchIdsRef.current);
     for (const s of analysisRef.current?.recommendedStops || []) {
       if (s.reviewStatus === "verified") excludeBase.push(s.id);
@@ -790,6 +834,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         }
         return Array.from(byId.values()).slice(-120);
       });
+      // Results arriving — jump to ranking / loading status
+      if (added > 0) setSearchStatus(searchStatusForQa(activeQa, 2));
     };
 
     try {
@@ -814,13 +860,25 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         absorb(res);
       }
       if (gen === searchGenRef.current) {
+        setSearchStatus("Loading map…");
         setSearchHasMore(anyMore || added >= SEARCH_BATCH);
         if (added === 0 && !anyMore) setShowSearchArea(true);
       }
     } catch (e) {
       if (gen === searchGenRef.current) setError((e as Error).message);
     } finally {
-      if (gen === searchGenRef.current) setSearchingArea(false);
+      if (searchStatusTimerRef.current != null) {
+        window.clearInterval(searchStatusTimerRef.current);
+        searchStatusTimerRef.current = null;
+      }
+      if (gen === searchGenRef.current) {
+        // Brief settle so results fade in under the last status
+        window.setTimeout(() => {
+          if (gen !== searchGenRef.current) return;
+          setSearchingArea(false);
+          setSearchStatus(null);
+        }, 280);
+      }
     }
   };
 
@@ -955,8 +1013,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         )}
 
         {searchingArea && mode === "plan" && (
-          <div className="plan-search-pill" role="status" aria-live="polite">
-            Searching…
+          <div className="plan-search-pill plan-search-pill--alive" role="status" aria-live="polite">
+            <span className="plan-search-pill__dot" aria-hidden />
+            <span key={searchStatus || "search"} className="plan-search-pill__text">
+              {searchStatus || "Searching visible area…"}
+            </span>
           </div>
         )}
 
@@ -970,7 +1031,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </button>
         )}
 
-        {/* Quick Actions — emoji for one-handed scan; map uses SVG markers */}
+        {/* Quick Actions — Water / Markets / 24h / Sleep. Verified = badge on icons. */}
         <nav className="plan-qa" aria-label="Quick actions">
           {QUICK_ACTIONS.map((a) => (
             <button
