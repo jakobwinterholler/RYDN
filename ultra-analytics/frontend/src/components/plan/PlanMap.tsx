@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type MapMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { ensurePlanSprites, iconForMarker, markerImageId } from "./icons";
 import type { PlanMarker } from "./planLayers";
 
 /** OpenFreeMap Liberty — roads, paths, water, forests, places. No API key. */
@@ -38,6 +39,7 @@ interface Props {
   className?: string;
   /** Re-fit camera when this changes (e.g. route id). */
   fitKey?: string;
+  searching?: boolean;
   onSelectMarker?: (id: string) => void;
   /** Map center — used for nearest panel. Debounced by parent via this callback. */
   onViewChange?: (center: { lat: number; lon: number }, bbox: PlanMapBBox, userMoved: boolean) => void;
@@ -65,25 +67,54 @@ function decimate(points: number[][], max = 1800): number[][] {
   return out;
 }
 
-function markersToGeoJSON(markers: PlanMarker[], selectedId: string | null | undefined) {
+function markersToGeoJSON(
+  markers: PlanMarker[],
+  selectedId: string | null | undefined,
+  searching: boolean,
+) {
+  // Cap for paint perf; prefer verified + selected when trimming.
+  const sorted = [...markers].sort((a, b) => {
+    const av = a.status === "verified" ? 1 : 0;
+    const bv = b.status === "verified" ? 1 : 0;
+    if (av !== bv) return bv - av;
+    const as = a.id === selectedId ? 1 : 0;
+    const bs = b.id === selectedId ? 1 : 0;
+    return bs - as;
+  });
   return {
     type: "FeatureCollection" as const,
-    features: markers.slice(0, 500).map((m) => ({
-      type: "Feature" as const,
-      properties: {
+    features: sorted.slice(0, 600).map((m) => {
+      const icon = iconForMarker(m);
+      const verified = m.status === "verified";
+      const rejected = m.status === "rejected";
+      const selected = m.id === selectedId;
+      return {
+        type: "Feature" as const,
         id: m.id,
-        kind: m.kind,
-        status: m.status || "unreviewed",
-        group: m.group || "",
-        category: m.category || "",
-        selected: m.id === selectedId ? 1 : 0,
-        verified: m.status === "verified" ? 1 : 0,
-      },
-      geometry: {
-        type: "Point" as const,
-        coordinates: [m.lon, m.lat],
-      },
-    })),
+        properties: {
+          id: m.id,
+          kind: m.kind,
+          status: m.status || "unreviewed",
+          group: m.group || "",
+          category: m.category || "",
+          icon,
+          selected: selected ? 1 : 0,
+          verified: verified ? 1 : 0,
+          rejected: rejected ? 1 : 0,
+          z: verified ? 3 : selected ? 2 : rejected ? 0 : 1,
+          sprite: markerImageId(icon, {
+            selected,
+            verified,
+            rejected,
+            loading: searching && selected,
+          }),
+        },
+        geometry: {
+          type: "Point" as const,
+          coordinates: [m.lon, m.lat],
+        },
+      };
+    }),
   };
 }
 
@@ -133,10 +164,12 @@ function fitRoute(map: MapLibreMap, points: number[][]) {
   if (pts.length < 2) return;
   const bounds = new maplibregl.LngLatBounds([pts[0][1], pts[0][0]], [pts[0][1], pts[0][0]]);
   for (const p of pts) bounds.extend([p[1], p[0]]);
-  map.fitBounds(bounds, { padding: 56, maxZoom: 12, duration: 0 });
+  map.fitBounds(bounds, { padding: 56, maxZoom: 12, duration: 480 });
 }
 
 function ensureLayers(map: MapLibreMap) {
+  ensurePlanSprites(map);
+
   if (!map.getSource("route")) {
     map.addSource("route", { type: "geojson", data: routeToGeoJSON([]) });
     map.addLayer({
@@ -171,13 +204,7 @@ function ensureLayers(map: MapLibreMap) {
       source: "ends",
       paint: {
         "circle-radius": 6,
-        "circle-color": [
-          "match",
-          ["get", "role"],
-          "start",
-          "#1a1a18",
-          "#f7f6f3",
-        ],
+        "circle-color": ["match", ["get", "role"], "start", "#1a1a18", "#f7f6f3"],
         "circle-stroke-color": "#1a1a18",
         "circle-stroke-width": 2,
       },
@@ -187,10 +214,14 @@ function ensureLayers(map: MapLibreMap) {
   if (!map.getSource("stops")) {
     map.addSource("stops", {
       type: "geojson",
-      data: markersToGeoJSON([], null),
+      data: markersToGeoJSON([], null, false),
+      promoteId: "id",
       cluster: true,
-      clusterMaxZoom: 12,
-      clusterRadius: 42,
+      clusterMaxZoom: 13,
+      clusterRadius: 46,
+      clusterProperties: {
+        verified_sum: ["+", ["get", "verified"]],
+      },
     });
 
     map.addLayer({
@@ -199,61 +230,107 @@ function ensureLayers(map: MapLibreMap) {
       source: "stops",
       filter: ["has", "point_count"],
       paint: {
-        "circle-color": "#1a1a18",
-        "circle-radius": ["step", ["get", "point_count"], 14, 8, 17, 25, 20],
-        "circle-opacity": 0.82,
+        "circle-color": [
+          "case",
+          [">", ["get", "verified_sum"], 0],
+          "#2f5d50",
+          "#1a1a18",
+        ],
+        "circle-radius": ["step", ["get", "point_count"], 15, 8, 18, 25, 22],
+        "circle-opacity": 0.88,
         "circle-stroke-width": 2,
         "circle-stroke-color": "#f7f6f3",
       },
     });
-    // Cluster count as circle size only — avoids glyph/font mismatches across styles.
 
+    // Cluster density via circle size only — avoids glyph/font mismatches across styles.
+
+    // Halo under selected / hover
     map.addLayer({
-      id: "stops-points",
+      id: "stops-halo",
       type: "circle",
       source: "stops",
       filter: ["!", ["has", "point_count"]],
       paint: {
         "circle-radius": [
           "case",
+          ["boolean", ["feature-state", "hover"], false],
+          18,
           ["==", ["get", "selected"], 1],
-          9,
-          ["==", ["get", "verified"], 1],
-          7,
-          5.5,
+          17,
+          0,
         ],
-        "circle-color": [
-          "case",
-          ["==", ["get", "verified"], 1],
-          "#2f5d50",
-          ["==", ["get", "status"], "rejected"],
-          "#9a3412",
-          ["==", ["get", "kind"], "remote"],
-          "#9a3412",
-          ["==", ["get", "kind"], "climb"],
-          "#2f5d50",
-          ["==", ["get", "kind"], "decision"],
-          "#2f5d50",
-          ["==", ["get", "kind"], "sleep"],
-          "#5b4a3a",
-          ["==", ["get", "kind"], "stage"],
-          "#1a1a18",
-          ["==", ["get", "group"], "water"],
-          "#3b6ea5",
-          "#6b7280",
-        ],
+        "circle-color": "rgba(47, 93, 80, 0.18)",
         "circle-opacity": [
           "case",
-          ["==", ["get", "status"], "rejected"],
-          0.35,
+          ["==", ["get", "selected"], 1],
+          1,
+          ["boolean", ["feature-state", "hover"], false],
+          0.85,
+          0,
+        ],
+        "circle-stroke-width": 0,
+      },
+    });
+
+    // Unverified / normal markers
+    map.addLayer({
+      id: "stops-icons",
+      type: "symbol",
+      source: "stops",
+      filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "verified"], 1]],
+      layout: {
+        "icon-image": ["get", "sprite"],
+        "icon-size": [
+          "case",
+          ["==", ["get", "selected"], 1],
+          1.05,
+          ["boolean", ["feature-state", "hover"], false],
+          1.02,
           0.92,
         ],
-        "circle-stroke-width": ["case", ["==", ["get", "selected"], 1], 2.5, 1],
-        "circle-stroke-color": ["case", ["==", ["get", "selected"], 1], "#1a1a18", "#f7f6f3"],
+        "icon-allow-overlap": false,
+        "icon-ignore-placement": false,
+        "symbol-sort-key": ["get", "z"],
+      },
+      paint: {
+        "icon-opacity": [
+          "case",
+          ["==", ["get", "rejected"], 1],
+          0.55,
+          0.96,
+        ],
+      },
+    });
+
+    // Verified markers — always above unverified
+    map.addLayer({
+      id: "stops-verified",
+      type: "symbol",
+      source: "stops",
+      filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "verified"], 1]],
+      layout: {
+        "icon-image": ["get", "sprite"],
+        "icon-size": [
+          "case",
+          ["==", ["get", "selected"], 1],
+          1.08,
+          ["boolean", ["feature-state", "hover"], false],
+          1.04,
+          0.98,
+        ],
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+        "symbol-sort-key": ["+", ["get", "z"], 10],
+      },
+      paint: {
+        "icon-opacity": 1,
       },
     });
   }
 }
+
+const HIT_LAYERS = ["stops-icons", "stops-verified", "stops-clusters"];
 
 export default function PlanMap({
   points,
@@ -261,6 +338,7 @@ export default function PlanMap({
   selectedId,
   className = "",
   fitKey,
+  searching = false,
   onSelectMarker,
   onViewChange,
   onLongPress,
@@ -269,9 +347,14 @@ export default function PlanMap({
   const mapRef = useRef<MapLibreMap | null>(null);
   const userMovedRef = useRef(false);
   const longPressRef = useRef<{ x: number; y: number; timer: number } | null>(null);
+  const hoveredIdRef = useRef<string | null>(null);
   const onSelectRef = useRef(onSelectMarker);
   const onViewRef = useRef(onViewChange);
   const onLongRef = useRef(onLongPress);
+  const pointsRef = useRef(points);
+  const markersRef = useRef(markers);
+  const selectedRef = useRef(selectedId);
+  const searchingRef = useRef(searching);
 
   useEffect(() => {
     onSelectRef.current = onSelectMarker;
@@ -282,6 +365,18 @@ export default function PlanMap({
   useEffect(() => {
     onLongRef.current = onLongPress;
   }, [onLongPress]);
+  useEffect(() => {
+    pointsRef.current = points;
+  }, [points]);
+  useEffect(() => {
+    markersRef.current = markers;
+  }, [markers]);
+  useEffect(() => {
+    selectedRef.current = selectedId;
+  }, [selectedId]);
+  useEffect(() => {
+    searchingRef.current = searching;
+  }, [searching]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -298,7 +393,7 @@ export default function PlanMap({
       attributionControl: { compact: true },
       dragRotate: false,
       pitchWithRotate: false,
-      fadeDuration: 0,
+      fadeDuration: 180,
       maxPitch: 0,
     });
     mapRef.current = map;
@@ -319,7 +414,6 @@ export default function PlanMap({
       "top-right",
     );
 
-    // Ensure canvas matches flex stage size (0×0 at first paint → blank white).
     requestAnimationFrame(() => {
       if (!cancelled) map.resize();
     });
@@ -358,10 +452,19 @@ export default function PlanMap({
     map.on("zoomstart", onZoomStart);
     map.on("moveend", onMoveEnd);
 
+    const clearHover = () => {
+      if (hoveredIdRef.current) {
+        try {
+          map.setFeatureState({ source: "stops", id: hoveredIdRef.current }, { hover: false });
+        } catch {
+          /* ignore */
+        }
+        hoveredIdRef.current = null;
+      }
+    };
+
     const onClick = (e: MapMouseEvent) => {
-      const feats = map.queryRenderedFeatures(e.point, {
-        layers: ["stops-points", "stops-clusters"],
-      });
+      const feats = map.queryRenderedFeatures(e.point, { layers: HIT_LAYERS });
       if (!feats.length) {
         onSelectRef.current?.("");
         return;
@@ -373,21 +476,50 @@ export default function PlanMap({
         source.getClusterExpansionZoom(clusterId).then((zoom) => {
           const geom = f.geometry as { type: string; coordinates: number[] };
           const coords = geom.coordinates as [number, number];
-          map.easeTo({ center: coords, zoom });
+          map.easeTo({ center: coords, zoom, duration: 420 });
         });
         return;
       }
-      const id = String(f.properties?.id || "");
-      if (id) onSelectRef.current?.(id);
+      const id = String(f.properties?.id || f.id || "");
+      if (id) {
+        onSelectRef.current?.(id);
+        const geom = f.geometry as { type: string; coordinates: number[] };
+        if (geom?.coordinates) {
+          const [lon, lat] = geom.coordinates;
+          const pad = map.project([lon, lat]);
+          const { width, height } = map.getCanvas();
+          const nearEdge =
+            pad.x < 48 || pad.y < 48 || pad.x > width - 48 || pad.y > height - 120;
+          if (nearEdge) {
+            map.easeTo({ center: [lon, lat], duration: 380, offset: [0, -40] });
+          }
+        }
+      }
     };
     map.on("click", onClick);
 
-    map.on("mouseenter", "stops-points", () => {
-      map.getCanvas().style.cursor = "pointer";
-    });
-    map.on("mouseleave", "stops-points", () => {
-      map.getCanvas().style.cursor = "";
-    });
+    const onMove = (e: MapMouseEvent) => {
+      const feats = map.queryRenderedFeatures(e.point, {
+        layers: ["stops-icons", "stops-verified"],
+      });
+      const id = feats[0] ? String(feats[0].properties?.id || feats[0].id || "") : null;
+      if (id === hoveredIdRef.current) return;
+      clearHover();
+      if (id) {
+        hoveredIdRef.current = id;
+        try {
+          map.setFeatureState({ source: "stops", id }, { hover: true });
+        } catch {
+          /* ignore */
+        }
+        map.getCanvas().style.cursor = "pointer";
+      } else {
+        map.getCanvas().style.cursor = "";
+      }
+    };
+    map.on("mousemove", onMove);
+    map.on("mouseleave", clearHover);
+
     map.on("mouseenter", "stops-clusters", () => {
       map.getCanvas().style.cursor = "pointer";
     });
@@ -432,23 +564,30 @@ export default function PlanMap({
     el.addEventListener("touchend", clearLong);
     el.addEventListener("touchcancel", clearLong);
 
-    const onStyle = () => {
+    const syncData = () => {
       if (cancelled) return;
       try {
         map.resize();
         ensureLayers(map);
-        const routeSrc = map.getSource("route") as GeoJSONSource | undefined;
-        routeSrc?.setData(routeToGeoJSON(points));
-        const endsSrc = map.getSource("ends") as GeoJSONSource | undefined;
-        endsSrc?.setData(endsToGeoJSON(points));
-        const stopsSrc = map.getSource("stops") as GeoJSONSource | undefined;
-        stopsSrc?.setData(markersToGeoJSON(markers, selectedId));
-        fitRoute(map, points);
-        userMovedRef.current = false;
-        emitView();
+        (map.getSource("route") as GeoJSONSource | undefined)?.setData(
+          routeToGeoJSON(pointsRef.current),
+        );
+        (map.getSource("ends") as GeoJSONSource | undefined)?.setData(
+          endsToGeoJSON(pointsRef.current),
+        );
+        (map.getSource("stops") as GeoJSONSource | undefined)?.setData(
+          markersToGeoJSON(markersRef.current, selectedRef.current, searchingRef.current),
+        );
       } catch {
         /* style race */
       }
+    };
+
+    const onStyle = () => {
+      syncData();
+      fitRoute(map, pointsRef.current);
+      userMovedRef.current = false;
+      emitView();
     };
 
     map.on("load", onStyle);
@@ -457,7 +596,6 @@ export default function PlanMap({
     map.on("error", (e) => {
       if (cancelled || usedFallback) return;
       const msg = String((e as { error?: { message?: string } })?.error?.message || "");
-      // Abandon primary style only before it loads (CSP/network). Ignore later tile misses.
       if (!map.isStyleLoaded()) applyFallback(msg || "map error");
     });
 
@@ -471,6 +609,7 @@ export default function PlanMap({
       window.clearTimeout(fallbackTimer);
       ro?.disconnect();
       clearLong();
+      clearHover();
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", clearLong);
@@ -478,8 +617,6 @@ export default function PlanMap({
       map.remove();
       mapRef.current = null;
     };
-    // Mount once — data synced in separate effects.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -500,12 +637,12 @@ export default function PlanMap({
     try {
       ensureLayers(map);
       (map.getSource("stops") as GeoJSONSource | undefined)?.setData(
-        markersToGeoJSON(markers, selectedId),
+        markersToGeoJSON(markers, selectedId, searching),
       );
     } catch {
       /* ignore */
     }
-  }, [markers, selectedId]);
+  }, [markers, selectedId, searching]);
 
   useEffect(() => {
     const map = mapRef.current;

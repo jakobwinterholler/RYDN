@@ -62,7 +62,7 @@ export const RIDE_LAYERS: Record<PlanLayerId, boolean> = {
   fuel: true,
   h24: true,
   bike: true,
-  sleep: false,
+  sleep: true,
   pharmacy: true,
   verified: true,
   rejected: false,
@@ -74,17 +74,16 @@ export const RIDE_LAYERS: Record<PlanLayerId, boolean> = {
 export const QUICK_ACTIONS: {
   id: QuickActionId;
   label: string;
-  emoji: string;
   layer: PlanLayerId;
 }[] = [
-  { id: "water", label: "Water", emoji: "💧", layer: "water" },
-  { id: "food", label: "Food", emoji: "🍽️", layer: "food" },
-  { id: "fuel", label: "Fuel", emoji: "⛽", layer: "fuel" },
-  { id: "h24", label: "24h", emoji: "🌙", layer: "h24" },
-  { id: "bike", label: "Bike", emoji: "🔧", layer: "bike" },
-  { id: "sleep", label: "Sleep", emoji: "🛏️", layer: "sleep" },
-  { id: "pharmacy", label: "Pharmacy", emoji: "💊", layer: "pharmacy" },
-  { id: "verified", label: "Verified", emoji: "✓", layer: "verified" },
+  { id: "water", label: "Water", layer: "water" },
+  { id: "food", label: "Food", layer: "food" },
+  { id: "fuel", label: "Fuel", layer: "fuel" },
+  { id: "h24", label: "24h", layer: "h24" },
+  { id: "bike", label: "Bike", layer: "bike" },
+  { id: "sleep", label: "Sleep", layer: "sleep" },
+  { id: "pharmacy", label: "Pharmacy", layer: "pharmacy" },
+  { id: "verified", label: "Verified", layer: "verified" },
 ];
 
 export const LAYER_TOGGLES: { id: PlanLayerId; label: string }[] = [

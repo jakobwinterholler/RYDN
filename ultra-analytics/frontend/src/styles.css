@@ -5356,16 +5356,34 @@ input {
 /* ==========================================================================
    Planning workspace — map-first (scoped; do not affect Analytics)
    ========================================================================== */
+
+/* Full-viewport lock so iOS Safari chrome / Dynamic Island cannot cover the map. */
+.page-enter:has(.plan-workspace) {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
 .plan-workspace {
-  position: relative;
+  position: fixed;
+  inset: 0;
+  z-index: 40;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   height: 100dvh;
   max-height: 100dvh;
+  box-sizing: border-box;
+  /* Safe areas on the shell — map stage starts below header, never under nav/island. */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
   overflow: hidden;
   background: var(--paper);
   color: var(--ink);
+  overscroll-behavior: none;
 }
 
 .plan-workspace__top {
@@ -5375,7 +5393,6 @@ input {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  padding-top: max(8px, env(safe-area-inset-top));
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--paper) 92%, transparent);
   backdrop-filter: blur(10px);
@@ -5449,6 +5466,11 @@ input {
   inset: 0;
   width: 100%;
   height: 100%;
+}
+
+.plan-map .maplibregl-ctrl-top-right {
+  top: 8px;
+  right: 8px;
 }
 
 .plan-map .maplibregl-ctrl-group {
@@ -5551,7 +5573,7 @@ input {
   position: absolute;
   left: 10px;
   right: 10px;
-  bottom: max(12px, env(safe-area-inset-bottom));
+  bottom: 12px;
   z-index: 10;
   display: flex;
   gap: 6px;
@@ -5563,6 +5585,7 @@ input {
   background: color-mix(in srgb, var(--paper-elevated) 94%, transparent);
   backdrop-filter: blur(10px);
   scrollbar-width: none;
+  transition: transform 0.22s ease, opacity 0.22s ease;
 }
 
 .plan-qa::-webkit-scrollbar {
@@ -5586,6 +5609,11 @@ input {
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.plan-qa__btn:active {
+  transform: scale(0.97);
 }
 
 .plan-qa__btn.is-on {
@@ -5594,9 +5622,17 @@ input {
   color: var(--accent);
 }
 
-.plan-qa__emoji {
-  font-size: 16px;
+.plan-qa__icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
   line-height: 1;
+  color: inherit;
+}
+
+.plan-qa__icon .rydn-plan-icon {
+  display: block;
 }
 
 .plan-layers {
@@ -5698,6 +5734,27 @@ input {
   text-align: right;
 }
 
+.plan-ride-panel__item + .plan-ride-panel__item {
+  border-top: 1px solid var(--line);
+}
+
+.plan-ride-panel__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plan-ride-panel__nav {
+  display: flex;
+  gap: 12px;
+  padding: 0 0 8px;
+  font-size: 12px;
+}
+
+.plan-ride-panel__nav a {
+  color: var(--accent);
+}
+
 .plan-sheet {
   position: absolute;
   left: 0;
@@ -5706,11 +5763,27 @@ input {
   z-index: 14;
   max-height: min(48vh, 420px);
   overflow: auto;
-  padding: 10px 16px calc(88px + env(safe-area-inset-bottom));
+  padding: 10px 16px 88px;
   border-top: 1px solid var(--line-strong);
   border-radius: 18px 18px 0 0;
   background: var(--paper-elevated);
   -webkit-overflow-scrolling: touch;
+  animation: planSheetIn 0.22s ease;
+}
+
+@keyframes planSheetIn {
+  from {
+    opacity: 0.6;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.plan-sheet--verified {
+  border-top-color: color-mix(in srgb, var(--accent) 45%, var(--line-strong));
 }
 
 .plan-sheet__handle {
@@ -5737,10 +5810,24 @@ input {
 
 .plan-sheet__eyebrow {
   margin: 0 0 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--ink-tertiary);
+}
+
+.plan-sheet__eyebrow-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.plan-sheet__hours {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--ink-secondary);
 }
 
 .plan-sheet__title {
@@ -5847,7 +5934,7 @@ input {
 
 .plan-briefing__body {
   overflow: auto;
-  padding: 14px 16px calc(16px + env(safe-area-inset-bottom));
+  padding: 14px 16px 16px;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -5874,7 +5961,7 @@ input {
 }
 
 .plan-workspace--ride .plan-qa {
-  bottom: max(12px, env(safe-area-inset-bottom));
+  bottom: 12px;
 }
 
 @media (min-width: 900px) {

@@ -22,6 +22,7 @@ import Icon from "./ui/Icon";
 import RydnLoader from "./ui/RydnLoader";
 import ScoreLine from "./ui/ScoreLine";
 import PlanMap, { type PlanMapBBox, PLAN_MAP_STYLE_NOTE } from "./plan/PlanMap";
+import { RydnPlanIcon, iconForCategory, iconForQuickAction } from "./plan/icons";
 import {
   DEFAULT_LAYERS,
   LAYER_TOGGLES,
@@ -34,6 +35,25 @@ import {
   type PlanMarker,
   type QuickActionId,
 } from "./plan/planLayers";
+
+function mapsLinks(lat: number, lon: number, name?: string | null) {
+  const q = encodeURIComponent(name || `${lat},${lon}`);
+  return {
+    google: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=bicycling`,
+    apple: `https://maps.apple.com/?daddr=${lat},${lon}&dirflg=c`,
+    place: `https://www.google.com/maps/search/?api=1&query=${q}`,
+    streetView: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lon}`,
+  };
+}
+
+function fmtEtaFromKm(km: number, speedKmh = 22): string {
+  if (!Number.isFinite(km) || km < 0) return "—";
+  const hours = km / speedKmh;
+  if (hours < 1) return `~${Math.max(1, Math.round(hours * 60))} min`;
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  return m > 0 ? `~${h}h ${m}m` : `~${h}h`;
+}
 
 interface Props {
   routeId: string;
@@ -182,6 +202,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [emergencyHits, setEmergencyHits] = useState<
     { marker: PlanMarker; km: number }[] | null
   >(null);
+  const [qaAdvanced, setQaAdvanced] = useState<QuickActionId | null>(null);
+  const qaPressRef = useRef<{ id: QuickActionId; timer: number; long: boolean } | null>(null);
   const reviewTimers = useRef<number[]>([]);
   const analysisRef = useRef<RouteAnalysis | null>(null);
   const routeRef = useRef<PlannedRouteDetail | null>(null);
@@ -550,10 +572,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     };
     return {
       water: ahead((s) => s.group === "water"),
-      gas24: ahead((s) => s.category === "Gas station" && !!s.is24h),
-      supermarket: ahead((s) => s.category === "Supermarket"),
+      gas24: ahead((s) => s.category === "Gas station" || (s.category || "").toLowerCase().includes("gas") || (s.category || "").toLowerCase().includes("fuel")),
+      supermarket: ahead((s) => s.category === "Supermarket" || s.group === "resupply"),
       pharmacy: ahead((s) => s.category === "Pharmacy"),
-      bike: ahead((s) => s.category === "Bike shop"),
+      bike: ahead((s) => s.category === "Bike shop" || (s.group === "service" && (s.category || "").toLowerCase().includes("bike"))),
+      sleep: ahead((s) => s.group === "sleep"),
     };
   }, [recommended, rideKm]);
 
@@ -579,6 +602,36 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     } else {
       setLayers((L) => ({ ...L, [id]: true }));
     }
+  };
+
+  const clearQaPress = () => {
+    if (qaPressRef.current) {
+      window.clearTimeout(qaPressRef.current.timer);
+      qaPressRef.current = null;
+    }
+  };
+
+  const onQaPointerDown = (id: QuickActionId) => {
+    clearQaPress();
+    qaPressRef.current = {
+      id,
+      long: false,
+      timer: window.setTimeout(() => {
+        if (qaPressRef.current?.id === id) {
+          qaPressRef.current.long = true;
+          setQaAdvanced(id);
+        }
+      }, 480),
+    };
+  };
+
+  const onQaClick = (id: QuickActionId) => {
+    if (qaPressRef.current?.long || qaAdvanced === id) {
+      clearQaPress();
+      return;
+    }
+    clearQaPress();
+    toggleQa(id);
   };
 
   const onViewChange = (
@@ -760,6 +813,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             markers={visibleMarkers}
             selectedId={selectedId}
             fitKey={route.id}
+            searching={searchingArea}
             onSelectMarker={onSelectMarker}
             onViewChange={onViewChange}
             onLongPress={onLongPress}
@@ -814,10 +868,24 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               key={a.id}
               type="button"
               className={`plan-qa__btn${qa === a.id ? " is-on" : ""}`}
-              onClick={() => toggleQa(a.id)}
+              onClick={() => onQaClick(a.id)}
+              onPointerDown={() => onQaPointerDown(a.id)}
+              onPointerUp={clearQaPress}
+              onPointerLeave={clearQaPress}
+              onPointerCancel={clearQaPress}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setQaAdvanced(a.id);
+              }}
+              aria-pressed={qa === a.id}
+              title={`${a.label} · long-press for filters`}
             >
-              <span className="plan-qa__emoji" aria-hidden>
-                {a.emoji}
+              <span className="plan-qa__icon" aria-hidden>
+                <RydnPlanIcon
+                  id={iconForQuickAction(a.id)}
+                  size={18}
+                  variant={qa === a.id ? "selected" : "outlined"}
+                />
               </span>
               <span>{a.label}</span>
             </button>
@@ -861,35 +929,65 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             <div className="plan-ride-panel__list">
               {(
                 [
-                  ["Water", rideGlance.water],
-                  ["24h gas", rideGlance.gas24],
-                  ["Market", rideGlance.supermarket],
-                  ["Pharmacy", rideGlance.pharmacy],
-                  ["Bike", rideGlance.bike],
+                  ["Water", rideGlance.water, "waterFountain" as const],
+                  ["Fuel", rideGlance.gas24, "gasStation" as const],
+                  ["Market", rideGlance.supermarket, "supermarket" as const],
+                  ["Pharmacy", rideGlance.pharmacy, "pharmacy" as const],
+                  ["Bike", rideGlance.bike, "bikeShop" as const],
+                  ["Sleep", rideGlance.sleep, "sleepSpot" as const],
                 ] as const
-              ).map(([label, stop]) => (
-                <button
-                  key={label}
-                  type="button"
-                  className="plan-ride-panel__row"
-                  disabled={!stop}
-                  onClick={() => stop && setSelectedId(stop.id)}
-                >
-                  <span>{label}</span>
-                  <span>
-                    {stop
-                      ? `${(stop.distanceAlongKm - rideKm).toFixed(0)} km · ${stop.name || stop.category}`
-                      : "None verified"}
-                  </span>
-                </button>
-              ))}
+              ).map(([label, stop, iconId]) => {
+                const aheadKm = stop ? stop.distanceAlongKm - rideKm : null;
+                return (
+                  <div key={label} className="plan-ride-panel__item">
+                    <button
+                      type="button"
+                      className="plan-ride-panel__row"
+                      disabled={!stop}
+                      onClick={() => stop && setSelectedId(stop.id)}
+                    >
+                      <span className="plan-ride-panel__label">
+                        <RydnPlanIcon id={iconId} size={16} />
+                        {label}
+                      </span>
+                      <span>
+                        {stop && aheadKm != null
+                          ? `${aheadKm.toFixed(0)} km · ${fmtEtaFromKm(aheadKm)} · ${stop.name || stop.category}`
+                          : "None verified"}
+                      </span>
+                    </button>
+                    {stop && (
+                      <div className="plan-ride-panel__nav">
+                        <a
+                          href={mapsLinks(stop.lat, stop.lon, stop.name).google}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Google
+                        </a>
+                        <a
+                          href={mapsLinks(stop.lat, stop.lon, stop.name).apple}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Apple
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </aside>
         )}
 
         {/* Stop / peek sheet */}
         {(selectedStop || peek) && (
-          <div className="plan-sheet" role="dialog" aria-label="Selection">
+          <div
+            className={`plan-sheet${selectedStop?.reviewStatus === "verified" ? " plan-sheet--verified" : ""}`}
+            role="dialog"
+            aria-label="Selection"
+          >
             <div className="plan-sheet__handle" aria-hidden />
             <button
               type="button"
@@ -902,6 +1000,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             {selectedStop && (
               <>
                 <p className="plan-sheet__eyebrow">
+                  <RydnPlanIcon
+                    id={iconForCategory(selectedStop.category, selectedStop.group)}
+                    size={14}
+                    className="plan-sheet__eyebrow-icon"
+                  />
                   {selectedStop.category}
                   {selectedStop.is24h ? " · 24h" : ""}
                   {selectedStop.reviewStatus === "verified" ? " · Verified" : ""}
@@ -913,19 +1016,50 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                   {selectedStop.distanceOffRouteM != null
                     ? ` · ${selectedStop.distanceOffRouteM} m off route`
                     : ""}
+                  {selectedStop.distanceSincePreviousKm != null
+                    ? ` · ${selectedStop.distanceSincePreviousKm.toFixed(1)} km since previous`
+                    : ""}
                   {selectedStop.distanceAlongKm
                     ? ` · km ${selectedStop.distanceAlongKm.toFixed(0)}`
                     : ""}
                 </p>
+                {selectedStop.openingHours && (
+                  <p className="plan-sheet__hours">{selectedStop.openingHours}</p>
+                )}
                 {selectedStop.qualityLabel && selectedStop.qualityLabel !== "Area find" && (
                   <p className="plan-sheet__why">{recommendWhy(selectedStop)}</p>
                 )}
                 <div className="plan-sheet__links">
-                  {selectedStop.googleMapsUrl && (
-                    <a href={selectedStop.googleMapsUrl} target="_blank" rel="noreferrer">
+                  {(selectedStop.googleMapsUrl ||
+                    mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place) && (
+                    <a
+                      href={
+                        selectedStop.googleMapsUrl ||
+                        mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
+                      }
+                      target="_blank"
+                      rel="noreferrer"
+                    >
                       Google Maps
                     </a>
                   )}
+                  <a
+                    href={
+                      selectedStop.streetViewUrl ||
+                      mapsLinks(selectedStop.lat, selectedStop.lon).streetView
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Street View
+                  </a>
+                  <a
+                    href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).apple}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Apple Maps
+                  </a>
                   {selectedStop.website && (
                     <a href={selectedStop.website} target="_blank" rel="noreferrer">
                       Website
@@ -989,6 +1123,67 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                 </p>
               </>
             )}
+          </div>
+        )}
+
+        {/* QA advanced filter sheet */}
+        {qaAdvanced && (
+          <div className="plan-sheet plan-sheet--qa" role="dialog" aria-label="Filter options">
+            <div className="plan-sheet__handle" aria-hidden />
+            <button
+              type="button"
+              className="plan-sheet__close"
+              aria-label="Close"
+              onClick={() => setQaAdvanced(null)}
+            >
+              ×
+            </button>
+            <p className="plan-sheet__eyebrow">Quick filter</p>
+            <h2 className="plan-sheet__title">
+              {QUICK_ACTIONS.find((a) => a.id === qaAdvanced)?.label || "Filter"}
+            </h2>
+            <p className="plan-sheet__why">
+              Instant map filter — no reload. Long-press any Quick Action for these options.
+            </p>
+            <div className="plan-sheet__actions">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  toggleQa(qaAdvanced);
+                  setQaAdvanced(null);
+                }}
+              >
+                {qa === qaAdvanced ? "Clear filter" : "Apply filter"}
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => {
+                  setQa(qaAdvanced);
+                  setLayers((L) => ({
+                    ...L,
+                    ...(qaAdvanced === "verified"
+                      ? { verified: true }
+                      : { [qaAdvanced]: true, verified: true }),
+                  }));
+                  setQaAdvanced(null);
+                }}
+              >
+                Verified only
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => {
+                  setQa(null);
+                  setLayers(DEFAULT_LAYERS);
+                  setQaAdvanced(null);
+                }}
+              >
+                Reset layers
+              </button>
+            </div>
           </div>
         )}
 
