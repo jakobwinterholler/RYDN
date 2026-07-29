@@ -33,7 +33,7 @@ import {
   markerVisible,
   nearestOf,
   pointAlongRoute,
-  searchLimitForBbox,
+  searchLimitForQa,
   stopMatchesLayer,
   type PlanLayerId,
   type PlanMarker,
@@ -273,7 +273,10 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const seenSearchIdsRef = useRef<Set<string>>(new Set());
   const searchGenRef = useRef(0);
   const searchStatusTimerRef = useRef<number | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
   const autoSearchQaRef = useRef<QuickActionId | null>(null);
+  /** Hard cap so Search never sticks on Searching… */
+  const SEARCH_TIMEOUT_MS = 12_000;
 
   useEffect(() => {
     let cancelled = false;
@@ -324,6 +327,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         window.clearInterval(searchStatusTimerRef.current);
         searchStatusTimerRef.current = null;
       }
+      searchAbortRef.current?.abort();
+      searchAbortRef.current = null;
     };
   }, []);
 
@@ -775,14 +780,21 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   };
 
   const searchThisArea = async () => {
-    if (!mapBbox || !route) return;
+    if (!mapBbox || !route || searchingArea) return;
+    // Visible bbox only — never the full route envelope.
+    const bbox = mapBbox;
     const gen = ++searchGenRef.current;
-    const SEARCH_BATCH = searchLimitForBbox(mapBbox);
+    searchAbortRef.current?.abort();
+    const ac = new AbortController();
+    searchAbortRef.current = ac;
+    const timeoutId = window.setTimeout(() => ac.abort(), SEARCH_TIMEOUT_MS);
+
+    const SEARCH_BATCH = searchLimitForQa(qa, bbox);
     const activeQa = qa;
     setSearchingArea(true);
     setError(null);
-    setShowSearchArea(false);
-    // Immediate alive feedback — never leave the UI frozen on Search.
+    // Keep button mounted; label switches to Searching… while disabled.
+    setShowSearchArea(true);
     let statusStep = 0;
     setSearchStatus(searchStatusForQa(activeQa, 0));
     if (searchStatusTimerRef.current != null) window.clearInterval(searchStatusTimerRef.current);
@@ -798,12 +810,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       if (s.reviewStatus === "verified") excludeBase.push(s.id);
     }
 
-    // Progressive: query north + south halves in parallel so markers appear
-    // as each Overpass tile returns (don't wait for the full viewport).
-    const midLat = (mapBbox.south + mapBbox.north) / 2;
+    // Progressive: north + south halves of the *current* viewport only.
+    const midLat = (bbox.south + bbox.north) / 2;
     const tiles: PlanMapBBox[] = [
-      { south: mapBbox.south, west: mapBbox.west, north: midLat, east: mapBbox.east },
-      { south: midLat, west: mapBbox.west, north: mapBbox.north, east: mapBbox.east },
+      { south: bbox.south, west: bbox.west, north: midLat, east: bbox.east },
+      { south: midLat, west: bbox.west, north: bbox.north, east: bbox.east },
     ];
     const perTile = Math.ceil(SEARCH_BATCH / tiles.length);
     let added = 0;
@@ -826,13 +837,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         const byId = new Map(prev.map((s) => [s.id, s]));
         for (const s of batch) {
           const existing = byId.get(s.id);
-          // Never overwrite a verified stop with a fresh unreviewed find.
           if (existing?.reviewStatus === "verified") continue;
           byId.set(s.id, s);
         }
         return Array.from(byId.values()).slice(-120);
       });
-      // Results arriving — jump to ranking / loading status
       if (added > 0) setSearchStatus(searchStatusForQa(activeQa, 2));
     };
 
@@ -844,37 +853,42 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             group,
             limit: perTile,
             exclude,
+            signal: ac.signal,
           });
           absorb(res);
         }),
       );
-      // If tiles under-filled, one full-bbox follow-up for remaining slots.
-      if (added < SEARCH_BATCH && gen === searchGenRef.current) {
-        const res = await searchRouteViewportPois(route.id, mapBbox, {
+      if (added < SEARCH_BATCH && gen === searchGenRef.current && !ac.signal.aborted) {
+        const res = await searchRouteViewportPois(route.id, bbox, {
           group,
           limit: SEARCH_BATCH - added,
           exclude: [...excludeBase, ...Array.from(seenSearchIdsRef.current)],
+          signal: ac.signal,
         });
         absorb(res);
       }
       if (gen === searchGenRef.current) {
         setSearchHasMore(anyMore || added >= SEARCH_BATCH);
-        if (added === 0 && !anyMore) setShowSearchArea(true);
       }
     } catch (e) {
-      if (gen === searchGenRef.current) setError((e as Error).message);
+      if (gen !== searchGenRef.current) return;
+      if (ac.signal.aborted) {
+        setError("Search timed out — zoom in a bit and try again.");
+      } else {
+        setError((e as Error).message);
+      }
     } finally {
+      window.clearTimeout(timeoutId);
       if (searchStatusTimerRef.current != null) {
         window.clearInterval(searchStatusTimerRef.current);
         searchStatusTimerRef.current = null;
       }
+      // Always clear loading for this generation — never leave Searching… stuck.
       if (gen === searchGenRef.current) {
-        // Brief settle so results fade in
-        window.setTimeout(() => {
-          if (gen !== searchGenRef.current) return;
-          setSearchingArea(false);
-          setSearchStatus(null);
-        }, 180);
+        setSearchingArea(false);
+        setSearchStatus(null);
+        setShowSearchArea(true);
+        if (searchAbortRef.current === ac) searchAbortRef.current = null;
       }
     }
   };
@@ -976,7 +990,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             <button
               type="button"
               className="plan-nearest__row"
-              onClick={() => setSelectedId(nearest.marker.id)}
+              onClick={() => {
+                setSelectedId(nearest.marker.id);
+                // Card → map: highlight + fly camera to the same stop
+                setFocusIds([nearest.marker.id]);
+              }}
             >
               <span>{nearest.marker.name || nearest.marker.category || "Stop"}</span>
               <span>
@@ -1001,7 +1019,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                 Searching…
               </>
             ) : searchHasMore && seenSearchIdsRef.current.size > 0 ? (
-              "Search this area again"
+              "Search again"
             ) : (
               "Search this area"
             )}

@@ -314,9 +314,10 @@ function ensureLayers(map: MapLibreMap) {
       type: "geojson",
       data: markersToGeoJSON([], null, false),
       promoteId: "id",
+      // Cluster only when zoomed way out — prefer real category icons.
       cluster: true,
-      clusterRadius: 42,
-      clusterMaxZoom: 13,
+      clusterRadius: 28,
+      clusterMaxZoom: 10,
       clusterProperties: {
         sumWater: ["+", ["get", "isWater"]],
         sumSage: ["+", ["get", "isSage"]],
@@ -648,10 +649,11 @@ export default function PlanMap({
           const [lon, lat] = geom.coordinates;
           const pad = map.project([lon, lat]);
           const { width, height } = map.getCanvas();
+          // Keep selected marker clear of the bottom sheet / edges
           const nearEdge =
-            pad.x < 48 || pad.y < 48 || pad.x > width - 48 || pad.y > height - 120;
+            pad.x < 48 || pad.y < 56 || pad.x > width - 48 || pad.y > height - 160;
           if (nearEdge) {
-            map.easeTo({ center: [lon, lat], duration: 380, offset: [0, -40] });
+            map.easeTo({ center: [lon, lat], duration: 380, offset: [0, -56] });
           }
         }
       }
@@ -784,6 +786,16 @@ export default function PlanMap({
     const idSet = new Set(focusIds);
     const targets = markersRef.current.filter((m) => idSet.has(m.id));
     if (targets.length < 1) return;
+    // Single card/marker pick → ease + leave room for the sheet
+    if (targets.length === 1) {
+      map.easeTo({
+        center: [targets[0].lon, targets[0].lat],
+        zoom: Math.max(map.getZoom(), 14),
+        duration: 420,
+        offset: [0, -56],
+      });
+      return;
+    }
     const bounds = new maplibregl.LngLatBounds(
       [targets[0].lon, targets[0].lat],
       [targets[0].lon, targets[0].lat],
@@ -791,10 +803,10 @@ export default function PlanMap({
     for (const m of targets) bounds.extend([m.lon, m.lat]);
     map.fitBounds(bounds, {
       padding: { top: 72, bottom: 140, left: 48, right: 72 },
-      maxZoom: 13.5,
+      maxZoom: 14,
       duration: 520,
     });
-    // Only when the focus set identity changes (Quick Action toggle)
+    // Only when the focus set identity changes (QA toggle / card tap)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusIds?.join(",")]);
 

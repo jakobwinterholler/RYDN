@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LAYERS,
+  LAYER_TOGGLES,
+  QA_EXTRA_CAP,
+  QA_NEAREST_N,
   applyQuickActionEmphasis,
   markerVisible,
+  searchLimitForQa,
   stopMatchesLayer,
   type PlanMarker,
 } from "./planLayers";
@@ -105,5 +109,17 @@ describe("Search → markerVisible pipeline", () => {
     const out = applyQuickActionEmphasis(markers, "food", { lat: 48.14, lon: 11.55 });
     expect(out.length).toBeGreaterThan(0);
     expect(out.some((m) => m.emphasize)).toBe(true);
+  });
+
+  it("caps recommendations at ~6–10 (water/markets) and higher for 24h", () => {
+    const tight = { south: 48.13, west: 11.54, north: 48.14, east: 11.56 };
+    expect(searchLimitForQa("water", tight)).toBeLessThanOrEqual(10);
+    expect(searchLimitForQa("food", tight)).toBeGreaterThanOrEqual(6);
+    expect(searchLimitForQa("h24", tight)).toBeGreaterThanOrEqual(searchLimitForQa("food", tight));
+    expect(QA_NEAREST_N + QA_EXTRA_CAP).toBeLessThanOrEqual(12);
+  });
+
+  it("does not expose Verified as a layers-panel category", () => {
+    expect(LAYER_TOGGLES.some((t) => t.id === "verified")).toBe(false);
   });
 });

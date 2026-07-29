@@ -13,13 +13,15 @@ export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
     "M4.5 18c1.8-1.2 3.2-1.2 5 0s3.2 1.2 5 0 3.2-1.2 5 0",
     "M12 4.5v6",
   ],
+  /** Shopping basket — Markets */
   supermarket: [
-    "M5 8.5h14l-1.2 10.2a1.5 1.5 0 01-1.5 1.3H7.7a1.5 1.5 0 01-1.5-1.3L5 8.5z",
-    "M8.5 8.5V7a3.5 3.5 0 017 0v1.5",
+    "M6 9.5h12l-1 9.5H7L6 9.5z",
+    "M9 9.5V8a3 3 0 016 0v1.5",
+    "M8.5 13h7M8.5 16h7",
   ],
+  /** Crescent moon — 24h shops (reads instantly at map scale) */
   shop24h: [
-    "M5 8.5h14l-1.2 10.2a1.5 1.5 0 01-1.5 1.3H7.7a1.5 1.5 0 01-1.5-1.3L5 8.5z",
-    "M12 11.5v4M10 13.5h4",
+    "M14.2 4.8a7.2 7.2 0 104.8 12.2 6.2 6.2 0 01-4.8-12.2z",
   ],
   gasStation: [
     "M5.5 20.5V6.5a1 1 0 011-1h7a1 1 0 011 1v14",
@@ -91,10 +93,12 @@ export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
     "M12 3.5a8.5 8.5 0 100 17 8.5 8.5 0 000-17z",
     "M8.5 8.5l7 7M15.5 8.5l-7 7",
   ],
+  /** Bed — Sleep */
   sleepSpot: [
-    "M3.5 17.5h17",
-    "M4.5 17.5V11a2 2 0 012-2h5.5v8.5",
-    "M12 12.5h5.5a2 2 0 012 2v3",
+    "M3.5 18h17",
+    "M4.5 18V10.5a1.5 1.5 0 011.5-1.5H11v9",
+    "M11 12.5h6.5a2 2 0 012 2V18",
+    "M4.5 8.5V6.5",
   ],
   resupply: [
     "M5 8.5h14l-1.2 10.2a1.5 1.5 0 01-1.5 1.3H7.7a1.5 1.5 0 01-1.5-1.3L5 8.5z",

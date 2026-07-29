@@ -48,10 +48,10 @@ export interface PlanMarker {
 }
 
 /** How many nearest POIs get full emphasis under a Quick Action. */
-export const QA_NEAREST_N = 5;
+export const QA_NEAREST_N = 6;
 
-/** Soft cap for non-emphasized extras while a Quick Action is on. */
-export const QA_EXTRA_CAP = 10;
+/** Soft cap for non-emphasized extras while a Quick Action is on (≈10 total). */
+export const QA_EXTRA_CAP = 4;
 
 /** Show service POIs within this corridor of the route (sleep may be farther). */
 export const CORRIDOR_MAX_M = 500;
@@ -91,17 +91,16 @@ export const QUICK_ACTIONS: {
 }[] = [
   { id: "water", label: "Water", layer: "water", emoji: "💧" },
   { id: "food", label: "Markets", layer: "food", emoji: "🛒" },
-  { id: "h24", label: "24h", layer: "h24", emoji: "⛽" },
+  { id: "h24", label: "24h", layer: "h24", emoji: "🌙" },
   { id: "sleep", label: "Sleep", layer: "sleep", emoji: "🛏" },
 ];
 
-/** Layers panel — primary planning categories only (no hospital/ATM/pharmacy/bike dump). */
+/** Layers panel — verified is a badge on icons, not a toolbar category. */
 export const LAYER_TOGGLES: { id: PlanLayerId; label: string }[] = [
   { id: "water", label: "Water" },
   { id: "food", label: "Markets" },
-  { id: "h24", label: "24h fuel shops" },
+  { id: "h24", label: "24h shops" },
   { id: "sleep", label: "Sleep" },
-  { id: "verified", label: "Verified" },
   { id: "rejected", label: "Rejected" },
   { id: "climbs", label: "Climbs" },
   { id: "remote", label: "Remote" },
@@ -290,18 +289,35 @@ export function applyQuickActionEmphasis(
   }));
 }
 
-/** Best ~5–15 results from viewport span (zoomed out → fewer). */
+/** Best recommendations for the visible bbox — quality over quantity. */
 export function searchLimitForBbox(bbox: {
   south: number;
   west: number;
   north: number;
   east: number;
 }): number {
+  return searchLimitForQa(null, bbox);
+}
+
+/**
+ * Caps by Quick Action:
+ * Water / Markets / Sleep → 6–10 best
+ * 24h → a few more useful shops (still hard-capped)
+ */
+export function searchLimitForQa(
+  qa: QuickActionId | null,
+  bbox: { south: number; west: number; north: number; east: number },
+): number {
   const span = Math.max(bbox.north - bbox.south, Math.abs(bbox.east - bbox.west));
-  if (span > 1.2) return 5;
+  if (qa === "h24") {
+    if (span > 1.2) return 8;
+    if (span > 0.55) return 12;
+    return 16;
+  }
+  // water · markets · sleep · all
+  if (span > 1.2) return 6;
   if (span > 0.55) return 8;
-  if (span > 0.22) return 12;
-  return 15;
+  return 10;
 }
 
 /** Interpolate a lat/lon along route points by distance fraction (ride progress). */

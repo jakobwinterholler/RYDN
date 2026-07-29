@@ -314,6 +314,7 @@ export type ViewportSearchOpts = {
   limit?: number;
   /** Already-seen / verified ids — Search-again skips these. */
   exclude?: string[];
+  signal?: AbortSignal;
 };
 
 /** Next scored POI batch for the visible map bbox (Overpass via backend). */
@@ -330,10 +331,10 @@ export async function searchRouteViewportPois(
     north: String(bbox.north),
     east: String(bbox.east),
     group: opts.group || "all",
-    limit: String(opts.limit ?? 15),
+    limit: String(opts.limit ?? 10),
   });
   if (opts.exclude?.length) q.set("exclude", opts.exclude.join(","));
-  const res = await request(`/api/routes/${id}/pois?${q}`);
+  const res = await request(`/api/routes/${id}/pois?${q}`, { signal: opts.signal });
   if (!res.ok) await fail(res, "Could not search this area.");
   return (await res.json()) as ViewportPoisResult;
 }

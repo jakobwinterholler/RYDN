@@ -71,8 +71,9 @@ test.describe("PlanMap marker pipeline", () => {
           supermarket: !!map.hasImage?.("rydn-supermarket-emphasized"),
           water: !!map.hasImage?.("rydn-waterFountain-emphasized"),
           shop24h: !!map.hasImage?.("rydn-shop24h-emphasized"),
-          hotel: !!map.hasImage?.("rydn-hotel-verified"),
+          sleep: !!map.hasImage?.("rydn-sleepSpot-emphasizedVerified"),
         },
+        clusterCount: map.queryRenderedFeatures(undefined, { layers: ["stops-clusters"] }).length,
         layerError: layerIds.includes("stops-icons") ? null : "stops-icons missing",
       };
     });
@@ -81,22 +82,23 @@ test.describe("PlanMap marker pipeline", () => {
     expect(probe.hasIconsLayer).toBe(true);
     expect(probe.hasVerifiedLayer).toBe(true);
     expect(probe.iconCount).toBeGreaterThanOrEqual(4);
+    expect(probe.clusterCount).toBe(0); // zoom 15 — real icons, not cluster dots
     expect(probe.spriteOk.supermarket).toBe(true);
     expect(probe.spriteOk.water).toBe(true);
     expect(probe.spriteOk.shop24h).toBe(true);
-    expect(probe.spriteOk.hotel).toBe(true);
+    expect(probe.spriteOk.sleep).toBe(true);
 
-    // Sprites must be category icons — not missing / empty
+    // Sprites must be category icons — drop / basket / moon / bed
     const spriteList = (probe.sprites || []).map(String);
     expect(spriteList.some((s) => s.includes("waterFountain"))).toBe(true);
     expect(spriteList.some((s) => s.includes("supermarket"))).toBe(true);
     expect(spriteList.some((s) => s.includes("shop24h"))).toBe(true);
-    expect(spriteList.some((s) => s.includes("hotel") || s.includes("sleep"))).toBe(true);
+    expect(spriteList.some((s) => s.includes("sleepSpot"))).toBe(true);
 
     const categories = [
       { id: "area-node-market-1", expectSprite: "supermarket" },
       { id: "area-node-24h-1", expectSprite: "shop24h" },
-      { id: "area-node-sleep-1", expectSprite: "hotel" },
+      { id: "area-node-sleep-1", expectSprite: "sleepSpot" },
       { id: "area-node-water-1", expectSprite: "waterFountain" },
     ];
 

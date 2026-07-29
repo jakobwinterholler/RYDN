@@ -44,8 +44,16 @@ export function iconForMarker(m: PlanMarker): PlanIconId {
   if (m.kind === "climb" || m.kind === "decision") return "climb";
   if (m.kind === "remote") return "remote";
   if (m.kind === "stage") return "stage";
-  if (m.kind === "sleep" || m.group === "sleep") {
-    return iconForCategory(m.category, "sleep");
+  // Sleep QA always uses the bed glyph — category subtypes stay in the sheet.
+  if (m.kind === "sleep" || m.group === "sleep") return "sleepSpot";
+  // 24h / fuel shops → moon (not a shopping bag)
+  const cat = (m.category || "").toLowerCase();
+  if (
+    cat.includes("24h") ||
+    cat.includes("fuel shop") ||
+    (m.is24h && (cat.includes("gas") || cat.includes("fuel") || cat.includes("convenience")))
+  ) {
+    return "shop24h";
   }
   if (m.status === "rejected") return iconForCategory(m.category, m.group);
   return iconForCategory(m.category, m.group);

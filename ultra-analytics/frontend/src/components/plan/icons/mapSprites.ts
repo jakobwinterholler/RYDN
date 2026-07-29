@@ -59,6 +59,7 @@ function drawGlyph(
     "camping",
     "climb",
   ];
+  // Moon + bed read clearer as stroke+fill at small map sizes
   const doFill = fillIds.includes(iconId);
   for (const d of paths) {
     const p = new Path2D(d);
