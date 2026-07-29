@@ -45,7 +45,6 @@ interface Props {
   onSelectMarker?: (id: string) => void;
   /** Map center — used for nearest panel. Debounced by parent via this callback. */
   onViewChange?: (center: { lat: number; lon: number }, bbox: PlanMapBBox, userMoved: boolean) => void;
-  onLongPress?: (lat: number, lon: number) => void;
 }
 
 function validPts(points: number[][]): number[][] {
@@ -88,7 +87,7 @@ function markersToGeoJSON(
   });
   return {
     type: "FeatureCollection" as const,
-    features: sorted.slice(0, 420).map((m) => {
+    features: sorted.slice(0, 80).map((m) => {
       const icon = iconForMarker(m);
       const verified = m.status === "verified";
       const rejected = m.status === "rejected";
@@ -379,16 +378,13 @@ export default function PlanMap({
   searching = false,
   onSelectMarker,
   onViewChange,
-  onLongPress,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const userMovedRef = useRef(false);
-  const longPressRef = useRef<{ x: number; y: number; timer: number } | null>(null);
   const hoveredIdRef = useRef<string | null>(null);
   const onSelectRef = useRef(onSelectMarker);
   const onViewRef = useRef(onViewChange);
-  const onLongRef = useRef(onLongPress);
   const pointsRef = useRef(points);
   const markersRef = useRef(markers);
   const selectedRef = useRef(selectedId);
@@ -400,9 +396,6 @@ export default function PlanMap({
   useEffect(() => {
     onViewRef.current = onViewChange;
   }, [onViewChange]);
-  useEffect(() => {
-    onLongRef.current = onLongPress;
-  }, [onLongPress]);
   useEffect(() => {
     pointsRef.current = points;
   }, [points]);
@@ -565,43 +558,6 @@ export default function PlanMap({
       map.getCanvas().style.cursor = "";
     });
 
-    const clearLong = () => {
-      if (longPressRef.current) {
-        window.clearTimeout(longPressRef.current.timer);
-        longPressRef.current = null;
-      }
-    };
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return;
-      const t = e.touches[0];
-      clearLong();
-      longPressRef.current = {
-        x: t.clientX,
-        y: t.clientY,
-        timer: window.setTimeout(() => {
-          const rect = el.getBoundingClientRect();
-          const point = new maplibregl.Point(t.clientX - rect.left, t.clientY - rect.top);
-          const ll = map.unproject(point);
-          onLongRef.current?.(ll.lat, ll.lng);
-          longPressRef.current = null;
-        }, 520),
-      };
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (!longPressRef.current || e.touches.length !== 1) return;
-      const t = e.touches[0];
-      if (
-        Math.abs(t.clientX - longPressRef.current.x) > 12 ||
-        Math.abs(t.clientY - longPressRef.current.y) > 12
-      ) {
-        clearLong();
-      }
-    };
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("touchmove", onTouchMove, { passive: true });
-    el.addEventListener("touchend", clearLong);
-    el.addEventListener("touchcancel", clearLong);
-
     const syncData = () => {
       if (cancelled) return;
       try {
@@ -646,12 +602,7 @@ export default function PlanMap({
       cancelled = true;
       window.clearTimeout(fallbackTimer);
       ro?.disconnect();
-      clearLong();
       clearHover();
-      el.removeEventListener("touchstart", onTouchStart);
-      el.removeEventListener("touchmove", onTouchMove);
-      el.removeEventListener("touchend", clearLong);
-      el.removeEventListener("touchcancel", clearLong);
       map.remove();
       mapRef.current = null;
     };

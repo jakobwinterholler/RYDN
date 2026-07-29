@@ -330,6 +330,7 @@ def update_route(uid: str, route_id: str, patch: Dict[str, Any]) -> Optional[dic
                 "openingHours": snap.get("openingHours"),
                 "website": snap.get("website"),
                 "is24h": bool(snap.get("is24h")),
+                "hasShop": snap.get("hasShop"),
                 "qualityStars": int(snap.get("qualityStars") or 4),
                 "qualityLabel": snap.get("qualityLabel") or "Verified",
                 "qualityScore": snap.get("qualityScore"),

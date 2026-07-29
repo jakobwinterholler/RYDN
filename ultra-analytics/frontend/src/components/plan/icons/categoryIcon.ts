@@ -11,9 +11,11 @@ export function iconForCategory(category?: string | null, group?: string | null)
   if (cat.includes("natural") || cat.includes("spring") || cat.includes("stream")) return "naturalWater";
   if (grp === "water" || cat.includes("water")) return "waterFountain";
 
-  if (cat.includes("24") || cat.includes("convenience")) return "shop24h";
-  if (cat.includes("supermarket") || cat.includes("grocery")) return "supermarket";
-  if (cat.includes("gas") || cat.includes("fuel")) return "gasStation";
+  if (cat.includes("24h shop") || (cat.includes("24") && cat.includes("shop"))) return "shop24h";
+  if (cat.includes("convenience")) return "shop24h";
+  if (cat.includes("supermarket") || cat.includes("grocery") || cat.includes("market")) return "supermarket";
+  if (cat.includes("fuel shop") || ((cat.includes("gas") || cat.includes("fuel")) && !cat.includes("bike")))
+    return "shop24h";
   if (cat.includes("bike") || cat.includes("bicycle")) return "bikeShop";
   if (cat.includes("mechanic") || cat.includes("repair")) return "mechanic";
   if (cat.includes("pharmacy") || cat.includes("chemist")) return "pharmacy";
@@ -26,16 +28,16 @@ export function iconForCategory(category?: string | null, group?: string | null)
   if (cat.includes("hospital") || cat.includes("clinic")) return "hospital";
   if (cat.includes("atm") || cat.includes("bank")) return "atm";
   if (cat.includes("toilet") || cat.includes("restroom") || cat.includes("wc")) return "toilet";
-  if (cat.includes("bakery")) return "resupply";
+  if (cat.includes("bakery")) return "supermarket";
 
   if (grp === "sleep") return "sleepSpot";
-  if (grp === "resupply") return "resupply";
+  if (grp === "resupply") return "supermarket";
   if (grp === "dining") return "restaurant";
   if (grp === "service") return "mechanic";
   if (grp === "emergency") return "emergency";
 
   // Prefer a family glyph over a generic GIS pin
-  return "resupply";
+  return "supermarket";
 }
 
 export function iconForMarker(m: PlanMarker): PlanIconId {
@@ -50,23 +52,17 @@ export function iconForMarker(m: PlanMarker): PlanIconId {
 }
 
 export function iconForQuickAction(
-  id: "water" | "food" | "fuel" | "h24" | "bike" | "sleep" | "pharmacy" | "verified",
+  id: "water" | "food" | "h24" | "sleep" | "verified",
 ): PlanIconId {
   switch (id) {
     case "water":
       return "waterFountain";
     case "food":
       return "supermarket";
-    case "fuel":
-      return "gasStation";
     case "h24":
       return "shop24h";
-    case "bike":
-      return "bikeShop";
     case "sleep":
       return "sleepSpot";
-    case "pharmacy":
-      return "pharmacy";
     case "verified":
       return "verified";
   }

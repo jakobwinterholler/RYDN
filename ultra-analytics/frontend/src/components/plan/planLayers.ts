@@ -4,6 +4,9 @@
  * - Default calm map: route + verified + major warnings (remote) + selected.
  * - Quick Actions: show ONLY that category; emphasize nearest 5; cap the rest.
  *
+ * Primary Quick Actions (planning speed):
+ * Water · Markets · 24h (fuel shops) · Sleep · Verified
+ *
  * Nearest reference (documented default):
  * - Plan mode → map viewport center (falls back to route start).
  * - Ride mode → rider progress along the route (rideKm), else map center.
@@ -23,15 +26,8 @@ export type PlanLayerId =
   | "remote"
   | "stages";
 
-export type QuickActionId =
-  | "water"
-  | "food"
-  | "fuel"
-  | "h24"
-  | "bike"
-  | "sleep"
-  | "pharmacy"
-  | "verified";
+/** Primary Quick Actions — tap only, no hidden gestures. */
+export type QuickActionId = "water" | "food" | "h24" | "sleep" | "verified";
 
 export type PlanMarkerKind = "climb" | "poi" | "sleep" | "remote" | "stage" | "decision" | "area";
 
@@ -44,6 +40,7 @@ export interface PlanMarker {
   category?: string;
   status?: string;
   is24h?: boolean;
+  hasShop?: boolean;
   name?: string | null;
   qualityStars?: number;
   distanceOffRouteM?: number;
@@ -57,7 +54,7 @@ export interface PlanMarker {
 export const QA_NEAREST_N = 5;
 
 /** Soft cap for non-emphasized extras while a Quick Action is on (clustered on map). */
-export const QA_EXTRA_CAP = 28;
+export const QA_EXTRA_CAP = 10;
 
 /**
  * Calm default — answer nothing until asked.
@@ -93,22 +90,17 @@ export const QUICK_ACTIONS: {
   emoji: string;
 }[] = [
   { id: "water", label: "Water", layer: "water", emoji: "💧" },
-  { id: "food", label: "Food", layer: "food", emoji: "🛒" },
-  { id: "fuel", label: "Fuel", layer: "fuel", emoji: "⛽" },
-  { id: "h24", label: "24h", layer: "h24", emoji: "🕒" },
-  { id: "bike", label: "Bike", layer: "bike", emoji: "🚲" },
+  { id: "food", label: "Markets", layer: "food", emoji: "🛒" },
+  { id: "h24", label: "24h", layer: "h24", emoji: "⛽" },
   { id: "sleep", label: "Sleep", layer: "sleep", emoji: "🛏" },
-  { id: "pharmacy", label: "Pharmacy", layer: "pharmacy", emoji: "💊" },
-  { id: "verified", label: "Verified", layer: "verified", emoji: "✓" },
+  { id: "verified", label: "Verified", layer: "verified", emoji: "✔" },
 ];
 
+/** Layers panel — primary planning categories only (no hospital/ATM/pharmacy/bike dump). */
 export const LAYER_TOGGLES: { id: PlanLayerId; label: string }[] = [
   { id: "water", label: "Water" },
-  { id: "food", label: "Food / markets" },
-  { id: "fuel", label: "Fuel" },
-  { id: "h24", label: "24h" },
-  { id: "bike", label: "Bike shops" },
-  { id: "pharmacy", label: "Pharmacy" },
+  { id: "food", label: "Markets" },
+  { id: "h24", label: "24h fuel shops" },
   { id: "sleep", label: "Sleep" },
   { id: "verified", label: "Verified" },
   { id: "rejected", label: "Rejected" },
@@ -116,6 +108,16 @@ export const LAYER_TOGGLES: { id: PlanLayerId; label: string }[] = [
   { id: "remote", label: "Remote" },
   { id: "stages", label: "Stages" },
 ];
+
+function isFuelShop(m: PlanMarker): boolean {
+  const cat = (m.category || "").toLowerCase();
+  if (cat.includes("24h shop") || cat.includes("fuel shop")) return true;
+  if (!(cat.includes("gas") || cat.includes("fuel"))) return false;
+  if (m.hasShop === true) return true;
+  if (m.hasShop === false) return false;
+  // Legacy markers: 24h fuel usually means a shop, not a bare pump
+  return !!m.is24h;
+}
 
 export function stopMatchesLayer(m: PlanMarker, layer: PlanLayerId): boolean {
   const cat = (m.category || "").toLowerCase();
@@ -125,16 +127,16 @@ export function stopMatchesLayer(m: PlanMarker, layer: PlanLayerId): boolean {
       return group === "water" || cat.includes("water") || cat.includes("drinking");
     case "food":
       return (
-        group === "resupply" ||
-        group === "dining" ||
-        ["supermarket", "convenience", "bakery", "café", "cafe", "restaurant", "fast food"].some(
-          (x) => cat.includes(x),
-        )
+        (group === "resupply" ||
+          ["supermarket", "convenience", "bakery", "market"].some((x) => cat.includes(x))) &&
+        !isFuelShop(m)
       );
     case "fuel":
-      return cat.includes("gas") || cat.includes("fuel");
     case "h24":
-      return !!m.is24h;
+      // 24h fuel stations with shops — not bare pumps
+      if (isFuelShop(m)) return layer === "fuel" ? true : !!m.is24h || cat.includes("24h");
+      if (cat.includes("convenience") && m.is24h) return true;
+      return false;
     case "bike":
       return group === "service" && cat.includes("bike");
     case "pharmacy":
@@ -172,7 +174,6 @@ export function markerVisible(
 
   // Warnings / structure — never flooded by QA unless they match
   if (m.kind === "decision") {
-    // Critical decisions stay on the calm map (major warnings)
     if (qa) return false;
     return true;
   }
@@ -205,7 +206,7 @@ export function markerVisible(
   if (isVerified && layers.verified) return true;
 
   // Explicit layer toggles (Layers panel) can still surface unverified services
-  const serviceLayers: PlanLayerId[] = ["water", "food", "fuel", "h24", "bike", "pharmacy", "sleep"];
+  const serviceLayers: PlanLayerId[] = ["water", "food", "fuel", "h24", "sleep"];
   return serviceLayers.some((id) => layers[id] && stopMatchesLayer(m, id));
 }
 
@@ -281,6 +282,20 @@ export function applyQuickActionEmphasis(
     emphasize: nearestIds.has(m.id) || m.id === selectedId,
     dimmed: !nearestIds.has(m.id) && m.id !== selectedId,
   }));
+}
+
+/** Best ~5–15 results from viewport span (zoomed out → fewer). */
+export function searchLimitForBbox(bbox: {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}): number {
+  const span = Math.max(bbox.north - bbox.south, Math.abs(bbox.east - bbox.west));
+  if (span > 1.2) return 5;
+  if (span > 0.55) return 8;
+  if (span > 0.22) return 12;
+  return 15;
 }
 
 /** Interpolate a lat/lon along route points by distance fraction (ride progress). */

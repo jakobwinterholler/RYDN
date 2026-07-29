@@ -25,9 +25,9 @@ const TONE_FILL: Record<SpriteTone, string> = {
 
 function toneForIcon(id: PlanIconId): SpriteTone {
   if (id === "waterFountain" || id === "naturalWater") return "water";
-  if (id === "gasStation") return "fuel";
+  if (id === "gasStation" || id === "shop24h") return "fuel";
   if (id === "sleepSpot" || id === "hotel" || id === "camping" || id === "shelter") return "sleep";
-  if (id === "verified" || id === "climb") return "sage";
+  if (id === "verified" || id === "climb" || id === "supermarket") return "sage";
   if (id === "rejected" || id === "remote" || id === "emergency") return "reject";
   return "ink";
 }

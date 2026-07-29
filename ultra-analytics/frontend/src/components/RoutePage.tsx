@@ -33,22 +33,12 @@ import {
   markerVisible,
   nearestOf,
   pointAlongRoute,
+  searchLimitForBbox,
   stopMatchesLayer,
   type PlanLayerId,
   type PlanMarker,
   type QuickActionId,
 } from "./plan/planLayers";
-
-const SEARCH_BATCH = 15;
-const SERVICE_EMOJI: Record<string, string> = {
-  water: "💧",
-  food: "🛒",
-  fuel: "⛽",
-  "24h": "🕒",
-  bike: "🚲",
-  sleep: "🛏",
-  pharmacy: "💊",
-};
 
 function mapViewportPoi(p: {
   id: string;
@@ -64,6 +54,7 @@ function mapViewportPoi(p: {
   openingHours?: string | null;
   website?: string | null;
   is24h?: boolean;
+  hasShop?: boolean;
   googleMapsUrl?: string | null;
   qualityStars?: number;
   qualityLabel?: string;
@@ -86,6 +77,7 @@ function mapViewportPoi(p: {
     openingHours: p.openingHours,
     website: p.website,
     is24h: p.is24h,
+    hasShop: p.hasShop,
     qualityStars: p.qualityStars ?? 3,
     qualityLabel: p.qualityLabel || "Area find",
     qualityScore: p.qualityScore,
@@ -200,10 +192,6 @@ const CHECKS: {
   },
 ];
 
-function stars(n: number) {
-  return "★".repeat(Math.max(0, Math.min(5, n))) + "☆".repeat(Math.max(0, 5 - n));
-}
-
 function recommendWhy(stop: RecommendedStop): string {
   const parts: string[] = [];
   if (stop.qualityStars >= 5) parts.push("Top reliability for ultra resupply");
@@ -214,17 +202,17 @@ function recommendWhy(stop: RecommendedStop): string {
   else if (stop.distanceOffRouteM <= 250) parts.push("short detour off the line");
   if (stop.group === "water") parts.push("water coverage for the next gap");
   else if (stop.group === "sleep") parts.push("sleep option near a stage break");
-  else if (stop.category === "Gas station") parts.push("fuel, water, and late hours in one stop");
+  else if (stop.category === "24h Shop" || stop.category === "Fuel shop" || stop.category === "Gas station")
+    parts.push("fuel, water, and late hours in one stop");
   else if (stop.category === "Supermarket") parts.push("full resupply without hunting side streets");
   return `${parts.join(" · ")}.`;
 }
 
 function qaToOverpassGroup(qa: QuickActionId | null): string {
-  if (!qa || qa === "verified" || qa === "h24") return "all";
+  if (!qa || qa === "verified") return "all";
   if (qa === "water") return "water";
   if (qa === "food") return "resupply";
-  if (qa === "fuel") return "fuel";
-  if (qa === "bike" || qa === "pharmacy") return "service";
+  if (qa === "h24") return "fuel";
   if (qa === "sleep") return "sleep";
   return "all";
 }
@@ -261,11 +249,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [searchingArea, setSearchingArea] = useState(false);
   const [searchHasMore, setSearchHasMore] = useState(false);
   const [areaPois, setAreaPois] = useState<RecommendedStop[]>([]);
-  const [emergencyHits, setEmergencyHits] = useState<
-    { marker: PlanMarker; km: number }[] | null
-  >(null);
-  const [qaAdvanced, setQaAdvanced] = useState<QuickActionId | null>(null);
-  const qaPressRef = useRef<{ id: QuickActionId; timer: number; long: boolean } | null>(null);
   const reviewTimers = useRef<number[]>([]);
   const analysisRef = useRef<RouteAnalysis | null>(null);
   const routeRef = useRef<PlannedRouteDetail | null>(null);
@@ -563,6 +546,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         category: s.category,
         status: s.reviewStatus,
         is24h: s.is24h,
+        hasShop: s.hasShop,
         name: s.name,
         qualityStars: s.qualityStars,
         distanceOffRouteM: s.distanceOffRouteM,
@@ -579,6 +563,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         category: s.category,
         status: s.reviewStatus || "unreviewed",
         is24h: s.is24h,
+        hasShop: s.hasShop,
         name: s.name,
         qualityStars: s.qualityStars,
         distanceOffRouteM: s.distanceOffRouteM,
@@ -710,10 +695,20 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     };
     return {
       water: ahead((s) => s.group === "water"),
-      gas24: ahead((s) => s.category === "Gas station" || (s.category || "").toLowerCase().includes("gas") || (s.category || "").toLowerCase().includes("fuel")),
-      supermarket: ahead((s) => s.category === "Supermarket" || s.group === "resupply"),
-      pharmacy: ahead((s) => s.category === "Pharmacy"),
-      bike: ahead((s) => s.category === "Bike shop" || (s.group === "service" && (s.category || "").toLowerCase().includes("bike"))),
+      markets: ahead(
+        (s) =>
+          s.category === "Supermarket" ||
+          s.category === "Convenience" ||
+          (s.group === "resupply" && !(s.category || "").toLowerCase().includes("gas")),
+      ),
+      shop24: ahead(
+        (s) =>
+          !!s.is24h &&
+          (s.hasShop ||
+            (s.category || "").toLowerCase().includes("gas") ||
+            (s.category || "").toLowerCase().includes("fuel") ||
+            (s.category || "").toLowerCase().includes("24h")),
+      ),
       sleep: ahead((s) => s.group === "sleep"),
     };
   }, [recommended, rideKm]);
@@ -735,37 +730,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
   const toggleQa = (id: QuickActionId) => {
     setQa((prev) => (prev === id ? null : id));
-    // Quick Actions are exclusive filters — do not flood Layers toggles on.
-  };
-
-  const clearQaPress = () => {
-    if (qaPressRef.current) {
-      window.clearTimeout(qaPressRef.current.timer);
-      qaPressRef.current = null;
-    }
-  };
-
-  const onQaPointerDown = (id: QuickActionId) => {
-    clearQaPress();
-    qaPressRef.current = {
-      id,
-      long: false,
-      timer: window.setTimeout(() => {
-        if (qaPressRef.current?.id === id) {
-          qaPressRef.current.long = true;
-          setQaAdvanced(id);
-        }
-      }, 480),
-    };
-  };
-
-  const onQaClick = (id: QuickActionId) => {
-    if (qaPressRef.current?.long || qaAdvanced === id) {
-      clearQaPress();
-      return;
-    }
-    clearQaPress();
-    toggleQa(id);
   };
 
   const onViewChange = (
@@ -781,6 +745,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const searchThisArea = async () => {
     if (!mapBbox || !route) return;
     const gen = ++searchGenRef.current;
+    const SEARCH_BATCH = searchLimitForBbox(mapBbox);
     setSearchingArea(true);
     setError(null);
     setShowSearchArea(false);
@@ -823,7 +788,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           if (existing?.reviewStatus === "verified") continue;
           byId.set(s.id, s);
         }
-        return Array.from(byId.values()).slice(-400);
+        return Array.from(byId.values()).slice(-120);
       });
     };
 
@@ -857,19 +822,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     } finally {
       if (gen === searchGenRef.current) setSearchingArea(false);
     }
-  };
-
-  const onLongPress = (lat: number, lon: number) => {
-    // Emergency stub — top 3 nearest loaded markers (no turn-by-turn).
-    const scored = allMarkers
-      .filter((m) => m.kind === "poi" || m.kind === "area" || m.kind === "sleep")
-      .map((m) => ({
-        marker: m,
-        km: Math.hypot(m.lat - lat, m.lon - lon) * 111,
-      }))
-      .sort((a, b) => a.km - b.km)
-      .slice(0, 3);
-    setEmergencyHits(scored);
   };
 
   if (error && !route) {
@@ -977,7 +929,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             searching={searchingArea}
             onSelectMarker={onSelectMarker}
             onViewChange={onViewChange}
-            onLongPress={onLongPress}
           />
         )}
 
@@ -1019,24 +970,16 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </button>
         )}
 
-        {/* Quick Actions — simple emoji icons for instant recognition */}
+        {/* Quick Actions — emoji for one-handed scan; map uses SVG markers */}
         <nav className="plan-qa" aria-label="Quick actions">
           {QUICK_ACTIONS.map((a) => (
             <button
               key={a.id}
               type="button"
               className={`plan-qa__btn${qa === a.id ? " is-on" : ""}`}
-              onClick={() => onQaClick(a.id)}
-              onPointerDown={() => onQaPointerDown(a.id)}
-              onPointerUp={clearQaPress}
-              onPointerLeave={clearQaPress}
-              onPointerCancel={clearQaPress}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setQaAdvanced(a.id);
-              }}
+              onClick={() => toggleQa(a.id)}
               aria-pressed={qa === a.id}
-              title={`${a.label} · long-press for filters`}
+              title={a.label}
             >
               <span className="plan-qa__icon" aria-hidden>
                 {a.emoji}
@@ -1073,7 +1016,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         {mode === "ride" && (
           <aside className="plan-ride-panel plan-ride-panel--minimal" aria-label="Ride mode">
             <label className="field plan-ride-panel__pos">
-              <span>Km {rideKm.toFixed(0)} · tap Water / Food / Fuel / Sleep</span>
+              <span>Km {rideKm.toFixed(0)} · tap Water / Markets / 24h / Sleep</span>
               <input
                 type="range"
                 min={0}
@@ -1129,35 +1072,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     ? `${selectedStop.distanceOffRouteM} m off route`
                     : "On route"}
                   {selectedStop.openingHours ? ` · ${selectedStop.openingHours}` : ""}
-                  {` · ${selectedStop.category}`}
-                </p>
-                <p className="plan-sheet__meta-row">
-                  <span>
-                    {selectedStop.resupplyScore != null
-                      ? `Score ${selectedStop.resupplyScore}`
-                      : selectedStop.qualityStars != null
-                        ? stars(selectedStop.qualityStars)
-                        : ""}{" "}
-                    {selectedStop.qualityLabel || "Resupply"}
-                    {(selectedStop.services || []).length > 0
-                      ? ` · ${(selectedStop.services || [])
-                          .map((s) => SERVICE_EMOJI[s] || s)
-                          .join(" ")}`
-                      : ""}
-                  </span>
-                  <span
-                    className={
-                      selectedStop.reviewStatus === "verified"
-                        ? "plan-sheet__badge plan-sheet__badge--ok"
-                        : "plan-sheet__badge"
-                    }
-                  >
-                    {selectedStop.reviewStatus === "verified"
-                      ? "✓ Verified"
-                      : selectedStop.reviewStatus === "rejected"
-                        ? "Rejected"
-                        : "Unverified"}
-                  </span>
                 </p>
                 <div className="plan-sheet__links">
                   {(selectedStop.googleMapsUrl ||
@@ -1244,87 +1158,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                 </p>
               </>
             )}
-          </div>
-        )}
-
-        {/* QA advanced filter sheet */}
-        {qaAdvanced && (
-          <div className="plan-sheet plan-sheet--qa plan-sheet--compact" role="dialog" aria-label="Filter options">
-            <div className="plan-sheet__handle" aria-hidden />
-            <button
-              type="button"
-              className="plan-sheet__close"
-              aria-label="Close"
-              onClick={() => setQaAdvanced(null)}
-            >
-              ×
-            </button>
-            <p className="plan-sheet__eyebrow">Quick Action</p>
-            <h2 className="plan-sheet__title">
-              {QUICK_ACTIONS.find((a) => a.id === qaAdvanced)?.label || "Filter"}
-            </h2>
-            <p className="plan-sheet__why">
-              Shows this category only · highlights the nearest {QA_NEAREST_N} · extras capped.
-            </p>
-            <div className="plan-sheet__actions">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  toggleQa(qaAdvanced);
-                  setQaAdvanced(null);
-                }}
-              >
-                {qa === qaAdvanced ? "Clear" : "Show nearest"}
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() => {
-                  setQa(null);
-                  setLayers(DEFAULT_LAYERS);
-                  setQaAdvanced(null);
-                }}
-              >
-                Calm map
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Emergency long-press stub */}
-        {emergencyHits && (
-          <div className="plan-sheet plan-sheet--emergency" role="dialog" aria-label="Nearby">
-            <div className="plan-sheet__handle" aria-hidden />
-            <button
-              type="button"
-              className="plan-sheet__close"
-              aria-label="Close"
-              onClick={() => setEmergencyHits(null)}
-            >
-              ×
-            </button>
-            <p className="plan-sheet__eyebrow">Nearby (long-press)</p>
-            <h2 className="plan-sheet__title">3 closest loaded stops</h2>
-            <p className="plan-sheet__why">
-              Navigation stub — open Maps for turn-by-turn. Live GPS tracking not enabled yet.
-            </p>
-            <ul className="plan-emergency-list">
-              {emergencyHits.map(({ marker, km }) => (
-                <li key={marker.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedId(marker.id);
-                      setEmergencyHits(null);
-                    }}
-                  >
-                    <strong>{marker.name || marker.category || "Stop"}</strong>
-                    <span>~{km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
           </div>
         )}
       </div>

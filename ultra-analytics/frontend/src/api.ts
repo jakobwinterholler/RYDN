@@ -290,6 +290,7 @@ export interface ViewportPoisResult {
     openingHours?: string | null;
     website?: string | null;
     is24h?: boolean;
+    hasShop?: boolean;
     reviewStatus?: string;
     googleMapsUrl?: string | null;
     qualityStars?: number;

@@ -18,24 +18,84 @@ OVERPASS_URLS = (
 )
 
 # (category, osm_key, osm_value, group)
+# Primary planning set — water, markets, fuel (filtered to shops), sleep.
+# No hospitals, ATMs, pharmacies, bike shops, or dining dump.
 POI_RULES: Tuple[Tuple[str, str, str, str], ...] = (
     ("Supermarket", "shop", "supermarket", "resupply"),
     ("Convenience", "shop", "convenience", "resupply"),
-    ("Bakery", "shop", "bakery", "resupply"),
     ("Gas station", "amenity", "fuel", "resupply"),
-    ("Bike shop", "shop", "bicycle", "service"),
-    ("Pharmacy", "amenity", "pharmacy", "service"),
     ("Drinking water", "amenity", "drinking_water", "water"),
     ("Water tap", "man_made", "water_tap", "water"),
-    ("Café", "amenity", "cafe", "dining"),
-    ("Restaurant", "amenity", "restaurant", "dining"),
-    ("Fast food", "amenity", "fast_food", "dining"),
     ("Hotel", "tourism", "hotel", "sleep"),
     ("Hostel", "tourism", "hostel", "sleep"),
     ("Campsite", "tourism", "camp_site", "sleep"),
     ("Shelter", "tourism", "wilderness_hut", "sleep"),
     ("Alpine hut", "tourism", "alpine_hut", "sleep"),
 )
+
+# Secondary — kept for full-route analysis / remote-gap context only.
+SECONDARY_POI_RULES: Tuple[Tuple[str, str, str, str], ...] = (
+    ("Bakery", "shop", "bakery", "resupply"),
+    ("Bike shop", "shop", "bicycle", "service"),
+    ("Pharmacy", "amenity", "pharmacy", "service"),
+    ("Café", "amenity", "cafe", "dining"),
+    ("Restaurant", "amenity", "restaurant", "dining"),
+    ("Fast food", "amenity", "fast_food", "dining"),
+)
+
+ALL_POI_RULES: Tuple[Tuple[str, str, str, str], ...] = POI_RULES + SECONDARY_POI_RULES
+
+# Viewport / Search primary groups — no pharmacy/bike/dining flood.
+VIEWPORT_PRIMARY_GROUPS = frozenset({"water", "resupply", "sleep", "fuel", "all"})
+
+
+def _fuel_has_shop(tags: Dict[str, str]) -> bool:
+    """True when a fuel station likely has a shop (not a bare pump)."""
+    shop = (tags.get("shop") or "").strip().lower()
+    if shop and shop not in ("no", "false", "0"):
+        return True
+    if (tags.get("convenience") or "").lower() in ("yes", "true", "1"):
+        return True
+    if (tags.get("fuel:shop") or tags.get("service:shop") or "").lower() in (
+        "yes",
+        "true",
+        "1",
+    ):
+        return True
+    # Brand / name cues for staffed stations with shops
+    blob = " ".join(
+        str(tags.get(k) or "")
+        for k in ("name", "brand", "operator", "amenity")
+    ).lower()
+    hints = (
+        "select",
+        "shop",
+        "store",
+        "express",
+        "market",
+        "circle k",
+        "7-eleven",
+        "7 eleven",
+        "rewe to go",
+        "spar",
+        "avec",
+        "night & day",
+    )
+    if any(h in blob for h in hints):
+        return True
+    # 24/7 fuel almost always has a shop / kiosk in Europe
+    hours = (tags.get("opening_hours") or "").lower().replace(" ", "")
+    if "24/7" in hours or hours in ("24hours", "24h") or "mo-su24" in hours:
+        return True
+    return False
+
+
+def _is_24h_hours(hours: Optional[str]) -> bool:
+    if not hours:
+        return False
+    h = hours.lower().replace(" ", "")
+    return "24/7" in h or h in ("24hours", "24h") or "mo-su24" in h
+
 
 _CACHE_DIR = None  # resolved lazily
 
@@ -69,7 +129,7 @@ def _bbox(track: Sequence[Sequence[Any]], pad_deg: float = 0.08) -> Tuple[float,
 def _build_query(south: float, west: float, north: float, east: float) -> str:
     parts = []
     seen = set()
-    for _cat, key, val, _grp in POI_RULES:
+    for _cat, key, val, _grp in ALL_POI_RULES:
         pair = (key, val)
         if pair in seen:
             continue
@@ -81,7 +141,7 @@ def _build_query(south: float, west: float, north: float, east: float) -> str:
 
 
 def _category_from_tags(tags: Dict[str, str]) -> Optional[Tuple[str, str]]:
-    for cat, key, val, grp in POI_RULES:
+    for cat, key, val, grp in ALL_POI_RULES:
         if tags.get(key) == val:
             return cat, grp
     return None
@@ -215,6 +275,18 @@ def fetch_route_pois(
             "openingHours": tags.get("opening_hours"),
             "website": tags.get("website") or tags.get("contact:website"),
         }
+        if category == "Gas station":
+            has_shop = _fuel_has_shop(tags)
+            is24 = _is_24h_hours(tags.get("opening_hours"))
+            item["hasShop"] = has_shop
+            item["is24h"] = is24
+            if has_shop and is24:
+                item["category"] = "24h Shop"
+            elif has_shop:
+                item["category"] = "Fuel shop"
+            else:
+                # Bare pumps stay tagged but are demoted in scoring / skipped in Search
+                item["category"] = "Gas station"
         if group == "sleep":
             sleep.append(item)
         else:
@@ -236,7 +308,7 @@ def _build_viewport_query(
     east: float,
     group: Optional[str] = None,
 ) -> str:
-    """Tighter Overpass query for a map viewport — fewer OSM keys than full-route fetch."""
+    """Tighter Overpass query for a map viewport — primary planning categories only."""
     parts = []
     seen = set()
     for cat, key, val, grp in POI_RULES:
@@ -245,7 +317,12 @@ def _build_viewport_query(
                 continue
             if group == "water" and grp != "water":
                 continue
-            if group in ("resupply", "dining", "service", "sleep") and grp != group:
+            if group == "resupply" and cat not in ("Supermarket", "Convenience"):
+                continue
+            if group == "sleep" and grp != "sleep":
+                continue
+            if group in ("dining", "service"):
+                # Secondary groups not in primary POI_RULES — empty intentional
                 continue
         pair = (key, val)
         if pair in seen:
@@ -291,8 +368,17 @@ def fetch_viewport_pois(
         }
 
     g = (group or "all").strip().lower()
+    # Zoom-aware soft cap: wide span → fewer markers for readability
+    span = max(north - south, abs(east - west))
+    if span > 1.2:
+        limit = min(limit, 5)
+    elif span > 0.55:
+        limit = min(limit, 8)
+    elif span > 0.22:
+        limit = min(limit, 12)
+
     cache_key = hashlib.sha1(
-        f"vp:{south:.3f},{west:.3f},{north:.3f},{east:.3f}:{g}".encode()
+        f"vp3:{south:.3f},{west:.3f},{north:.3f},{east:.3f}:{g}".encode()
     ).hexdigest()[:16]
     path = _cache_path(cache_key)
     cache_status = "miss"
@@ -327,12 +413,37 @@ def fetch_viewport_pois(
         if not cat_grp:
             continue
         category, grp = cat_grp
+
+        # Drop secondary categories from Search (pharmacy / bike / dining)
+        if category in ("Pharmacy", "Bike shop", "Café", "Restaurant", "Fast food", "Bakery"):
+            continue
+
+        hours = tags.get("opening_hours")
+        is24 = _is_24h_hours(hours)
+        has_shop = False
+        out_cat = category
+
+        if category == "Gas station":
+            has_shop = _fuel_has_shop(tags)
+            if not has_shop:
+                continue  # bare pumps out of primary Search
+            out_cat = "24h Shop" if is24 else "Fuel shop"
+            # Fuel QA wants 24h shops; "all" accepts any fuel shop
+            if g == "fuel" and not is24:
+                # Still include strong shop stations; prefer 24h via scoring
+                pass
+
         if g == "fuel" and category != "Gas station":
             continue
         if g == "water" and grp != "water":
             continue
-        if g in ("resupply", "dining", "service", "sleep") and grp != g:
+        if g == "resupply" and category not in ("Supermarket", "Convenience"):
             continue
+        if g == "sleep" and grp != "sleep":
+            continue
+        if g in ("dining", "service"):
+            continue
+
         ll = _element_ll(el)
         if not ll:
             continue
@@ -353,7 +464,6 @@ def fetch_viewport_pois(
             if grp == "sleep" and off_m > 1500:
                 continue
 
-        hours = tags.get("opening_hours")
         pois.append(
             {
                 "id": f"area-{osm_type}-{osm_id}",
@@ -362,7 +472,7 @@ def fetch_viewport_pois(
                 "name": tags.get("name") or tags.get("brand") or tags.get("operator") or None,
                 "brand": tags.get("brand"),
                 "operator": tags.get("operator"),
-                "category": category,
+                "category": out_cat,
                 "group": grp,
                 "lat": round(lat, 5),
                 "lon": round(lon, 5),
@@ -370,8 +480,8 @@ def fetch_viewport_pois(
                 "distanceOffRouteM": round(off_m),
                 "openingHours": hours,
                 "website": tags.get("website") or tags.get("contact:website"),
-                "is24h": (hours or "").strip().lower() in ("24/7", "24h")
-                or "24/7" in (hours or "").lower().replace(" ", ""),
+                "is24h": is24,
+                "hasShop": has_shop if category == "Gas station" else None,
                 "reviewStatus": "unreviewed",
                 "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
             }

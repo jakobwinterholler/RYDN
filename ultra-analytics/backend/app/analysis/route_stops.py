@@ -18,9 +18,11 @@ _CATEGORY_STARS: Dict[str, int] = {
     "Water tap": 4,
     "Convenience": 5,
     "Supermarket": 4,  # adjusted by brand size below
-    "Gas station": 4,
-    "Pharmacy": 4,
-    "Bike shop": 4,
+    "24h Shop": 5,
+    "Fuel shop": 4,
+    "Gas station": 2,  # bare pump — demoted
+    "Pharmacy": 2,
+    "Bike shop": 2,
     "Bakery": 3,
     "Hotel": 4,
     "Hostel": 3,
@@ -151,20 +153,19 @@ def stop_services(poi: Dict[str, Any]) -> List[str]:
     out: List[str] = []
     if group == "water" or "water" in cat.lower():
         out.append("water")
-    if cat in ("Supermarket", "Convenience", "Bakery") or group == "resupply":
+    if cat in ("Supermarket", "Convenience", "Bakery") or (
+        group == "resupply" and cat not in ("Gas station", "24h Shop", "Fuel shop")
+    ):
         out.append("food")
-    if cat == "Gas station":
+    if cat in ("Gas station", "24h Shop", "Fuel shop"):
         out.append("fuel")
-        out.append("food")  # often drinks/snacks
+        if poi.get("hasShop") or cat in ("24h Shop", "Fuel shop"):
+            out.append("food")
     if group == "dining":
         out.append("food")
-    if cat == "Bike shop":
-        out.append("bike")
-    if cat == "Pharmacy":
-        out.append("pharmacy")
     if group == "sleep":
         out.append("sleep")
-    if _is_24h(poi.get("openingHours")):
+    if _is_24h(poi.get("openingHours")) or cat == "24h Shop" or poi.get("is24h"):
         out.append("24h")
     # de-dupe preserve order
     seen = set()
@@ -206,9 +207,12 @@ def score_stop(poi: Dict[str, Any], *, nearby_count: int = 0) -> Dict[str, Any]:
     elif cat == "Convenience":
         base = 5.0
 
-    is24 = _is_24h(hours)
-    if cat == "Gas station" and is24:
-        base = max(base, 4.8)
+    is24 = _is_24h(hours) or bool(poi.get("is24h")) or cat == "24h Shop"
+    has_shop = bool(poi.get("hasShop")) or cat in ("24h Shop", "Fuel shop")
+    if cat in ("24h Shop", "Fuel shop") or (cat == "Gas station" and has_shop and is24):
+        base = max(base, 5.0 if is24 else 4.4)
+    elif cat == "Gas station" and not has_shop:
+        base = min(base, 2.0)
     elif is24 and group in ("resupply", "water"):
         base = min(5.3, base + 0.4)
 
@@ -229,16 +233,17 @@ def score_stop(poi: Dict[str, Any], *, nearby_count: int = 0) -> Dict[str, Any]:
 
     hours_factor = 1.08 if hours else 0.94
 
-    # Dining is lower priority for ultra resupply.
+    # Dining / pharmacy / bike / bare pumps are not primary planning answers.
     dining_penalty = 0.62 if cat in _DINING else 1.0
-
-    # Bike shops / pharmacies are useful but not primary food/water.
-    service_factor = 0.92 if group == "service" else 1.0
+    if cat in ("Pharmacy", "Bike shop"):
+        dining_penalty = 0.55
+    if cat == "Gas station" and not has_shop:
+        dining_penalty = 0.45
 
     # Prefer small neighborhood shops explicitly in the continuous score.
     size_factor = 1.08 if size == "small" else (0.78 if size == "large" else 1.0)
 
-    raw = base * prox * cluster * hours_factor * dining_penalty * service_factor * size_factor
+    raw = base * prox * cluster * hours_factor * dining_penalty * size_factor
     stars = max(1, min(5, int(round(min(5.0, raw)))))
     # 0–100 resupply score for sorting / UI (not capped to star scale).
     resupply_score = int(round(max(0.0, min(100.0, raw * 18.5))))
@@ -256,9 +261,10 @@ def score_stop(poi: Dict[str, Any], *, nearby_count: int = 0) -> Dict[str, Any]:
 
     priority = (
         group in ("water", "resupply")
-        or cat in ("Gas station", "Convenience", "Drinking water")
+        or cat in ("24h Shop", "Fuel shop", "Convenience", "Drinking water")
         or (cat == "Supermarket" and size != "large")
-    )
+        or (cat == "Gas station" and has_shop and is24)
+    ) and cat not in ("Pharmacy", "Bike shop")
 
     return {
         **poi,
@@ -270,6 +276,7 @@ def score_stop(poi: Dict[str, Any], *, nearby_count: int = 0) -> Dict[str, Any]:
         "storeSize": size,
         "services": stop_services(poi),
         "is24h": is24,
+        "hasShop": has_shop if cat in ("Gas station", "24h Shop", "Fuel shop") else poi.get("hasShop"),
         "priority": priority,
     }
 
@@ -389,8 +396,12 @@ def select_recommended_stops(
             continue
         if any(c["id"] == sid for c in chosen):
             continue
-        # Skip low-value dining unless sparse.
+        # Skip low-value dining / pharmacy / bike / bare pumps.
         if s.get("category") in _DINING and (s.get("resupplyScore") or 0) < 55:
+            continue
+        if s.get("category") in ("Pharmacy", "Bike shop"):
+            continue
+        if s.get("category") == "Gas station" and not s.get("hasShop"):
             continue
         # Skip large hypers when better options exist.
         if s.get("storeSize") == "large" and s.get("category") == "Supermarket":

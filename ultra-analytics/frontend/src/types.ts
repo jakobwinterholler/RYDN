@@ -307,6 +307,8 @@ export interface RecommendedStop extends RoutePoi {
   storeSize?: "small" | "large" | "unknown" | string;
   services?: string[];
   is24h?: boolean;
+  /** Fuel stations: true when OSM indicates an on-site shop (not a bare pump). */
+  hasShop?: boolean;
   priority?: boolean;
   reviewStatus: "verified" | "rejected" | "skipped" | "unreviewed" | string;
   distanceSincePreviousKm?: number;

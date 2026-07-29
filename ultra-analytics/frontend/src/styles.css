@@ -5426,15 +5426,23 @@ input {
 
 .plan-workspace__top-actions .chip,
 .plan-workspace__top-actions .btn {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
   min-height: 32px;
   height: 32px;
   padding: 0 10px;
   font-size: 12px;
+  line-height: 1;
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .plan-workspace__top-actions .route-mode-tabs {
   display: flex;
+  align-items: center;
   gap: 2px;
   flex-shrink: 0;
 }
@@ -5806,8 +5814,31 @@ input {
 }
 
 .plan-sheet--compact {
-  max-height: min(42vh, 340px);
-  padding: 8px 16px 84px;
+  max-height: min(38vh, 300px);
+  padding: 6px 14px calc(72px + env(safe-area-inset-bottom, 0px));
+}
+
+.plan-sheet--compact .plan-sheet__title {
+  font-size: 17px;
+  margin: 0 0 4px;
+}
+
+.plan-sheet--compact .plan-sheet__rating {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.plan-sheet--compact .plan-sheet__links {
+  margin-bottom: 8px;
+  gap: 10px;
+}
+
+.plan-sheet--compact .plan-sheet__actions {
+  gap: 8px;
+}
+
+.plan-sheet--compact .plan-sheet__actions .btn {
+  min-height: 40px;
 }
 
 .plan-sheet__meta-row {
