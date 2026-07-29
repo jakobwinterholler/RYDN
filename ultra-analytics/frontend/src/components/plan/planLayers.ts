@@ -90,15 +90,16 @@ export const QUICK_ACTIONS: {
   id: QuickActionId;
   label: string;
   layer: PlanLayerId;
+  emoji: string;
 }[] = [
-  { id: "water", label: "Water", layer: "water" },
-  { id: "food", label: "Food", layer: "food" },
-  { id: "fuel", label: "Fuel", layer: "fuel" },
-  { id: "h24", label: "24h", layer: "h24" },
-  { id: "bike", label: "Bike", layer: "bike" },
-  { id: "sleep", label: "Sleep", layer: "sleep" },
-  { id: "pharmacy", label: "Pharmacy", layer: "pharmacy" },
-  { id: "verified", label: "Verified", layer: "verified" },
+  { id: "water", label: "Water", layer: "water", emoji: "💧" },
+  { id: "food", label: "Food", layer: "food", emoji: "🛒" },
+  { id: "fuel", label: "Fuel", layer: "fuel", emoji: "⛽" },
+  { id: "h24", label: "24h", layer: "h24", emoji: "🕒" },
+  { id: "bike", label: "Bike", layer: "bike", emoji: "🚲" },
+  { id: "sleep", label: "Sleep", layer: "sleep", emoji: "🛏" },
+  { id: "pharmacy", label: "Pharmacy", layer: "pharmacy", emoji: "💊" },
+  { id: "verified", label: "Verified", layer: "verified", emoji: "✓" },
 ];
 
 export const LAYER_TOGGLES: { id: PlanLayerId; label: string }[] = [

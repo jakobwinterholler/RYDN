@@ -260,6 +260,8 @@ export interface PlannedRouteDetail extends PlannedRouteSummary {
   points: number[][];
   preparation: RoutePreparation;
   stopReviews?: Record<string, string>;
+  /** Permanently saved verified stops (including area search finds). */
+  savedStops?: Record<string, RecommendedStop | Record<string, unknown>>;
 }
 
 export interface RouteClimb {
@@ -300,6 +302,10 @@ export interface RecommendedStop extends RoutePoi {
   qualityStars: number;
   qualityLabel: string;
   qualityScore?: number;
+  /** 0–100 ultra resupply usefulness (sort key). */
+  resupplyScore?: number;
+  storeSize?: "small" | "large" | "unknown" | string;
+  services?: string[];
   is24h?: boolean;
   priority?: boolean;
   reviewStatus: "verified" | "rejected" | "skipped" | "unreviewed" | string;

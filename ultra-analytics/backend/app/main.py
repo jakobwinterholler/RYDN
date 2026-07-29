@@ -317,9 +317,18 @@ def get_route_viewport_pois(
     north: float,
     east: float,
     group: str = "all",
+    limit: int = 15,
+    exclude: str = "",
     user: dict = Depends(current_user),
 ) -> JSONResponse:
-    """Viewport POI search (Overpass proxy) for Planning map Search-this-area."""
+    """Viewport POI search — next scored batch for Search / Search-again.
+
+    Query:
+      south,west,north,east — map bbox
+      group — water|resupply|fuel|service|sleep|dining|all
+      limit — batch size (default 15, max 40)
+      exclude — comma-separated already-seen / verified stop ids
+    """
     detail = routes_store.get_route_detail(user["id"], route_id)
     if not detail:
         raise HTTPException(status_code=404, detail="Route not found.")
@@ -327,7 +336,30 @@ def get_route_viewport_pois(
         raise HTTPException(status_code=400, detail="Invalid bounding box.")
     from .analysis.route_pois import fetch_viewport_pois
 
-    payload = fetch_viewport_pois(south, west, north, east, group=group or "all")
+    exclude_ids = [x.strip() for x in (exclude or "").split(",") if x.strip()]
+    # Also skip permanently verified stops so Search-again never reloads them.
+    reviews = detail.get("stopReviews") or {}
+    for sid, st in reviews.items():
+        if st == "verified" and sid not in exclude_ids:
+            exclude_ids.append(sid)
+    for sid in (detail.get("savedStops") or {}):
+        if sid not in exclude_ids:
+            exclude_ids.append(sid)
+
+    route = routes_store.get_route(user["id"], route_id) or {}
+    track = route.get("track") or route.get("points") or []
+    batch_limit = max(1, min(40, int(limit or 15)))
+
+    payload = fetch_viewport_pois(
+        south,
+        west,
+        north,
+        east,
+        group=group or "all",
+        track=track,
+        exclude_ids=exclude_ids,
+        limit=batch_limit,
+    )
     return JSONResponse(payload)
 
 

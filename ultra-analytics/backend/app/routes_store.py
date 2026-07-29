@@ -47,6 +47,49 @@ def _analysis_path(uid: str, route_id: str) -> str:
     return os.path.join(_routes_dir(uid), f"{route_id}.analysis.json")
 
 
+def _merge_saved_into_analysis(
+    uid: str, route_id: str, saved: Dict[str, dict]
+) -> None:
+    """Ensure verified search finds stay in recommendedStops across reloads."""
+    cache = _analysis_path(uid, route_id)
+    if not os.path.isfile(cache) or not saved:
+        return
+    try:
+        with open(cache, "r", encoding="utf-8") as f:
+            analysis = json.load(f)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return
+    stops = list(analysis.get("recommendedStops") or [])
+    by_id = {str(s.get("id")): s for s in stops if isinstance(s, dict) and s.get("id")}
+    for sid, snap in saved.items():
+        if not isinstance(snap, dict):
+            continue
+        existing = by_id.get(str(sid))
+        if existing:
+            existing["reviewStatus"] = "verified"
+            for k in ("resupplyScore", "services", "qualityStars", "qualityLabel"):
+                if snap.get(k) is not None:
+                    existing[k] = snap[k]
+        else:
+            stops.append({**snap, "reviewStatus": "verified", "id": str(sid)})
+            by_id[str(sid)] = stops[-1]
+    analysis["recommendedStops"] = stops
+    verified = sum(1 for s in stops if isinstance(s, dict) and s.get("reviewStatus") == "verified")
+    summary = dict(analysis.get("summary") or {})
+    summary["verifiedStopCount"] = verified
+    summary["recommendedStopCount"] = sum(
+        1 for s in stops if isinstance(s, dict) and s.get("reviewStatus") != "rejected"
+    )
+    analysis["summary"] = summary
+    try:
+        tmp = f"{cache}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(analysis, f)
+        os.replace(tmp, cache)
+    except OSError:
+        pass
+
+
 def _patch_analysis_reviews(uid: str, route_id: str, reviews: Dict[str, str]) -> None:
     """Apply stop review statuses to the cached analysis without re-running POI/climb work.
 
@@ -260,6 +303,43 @@ def update_route(uid: str, route_id: str, patch: Dict[str, Any]) -> Optional[dic
         # Lightweight: patch review fields on cached analysis instead of wiping it
         # (full re-analysis was the main reason Verify felt frozen).
         _patch_analysis_reviews(uid, route_id, reviews)
+    if "savedStops" in patch and isinstance(patch["savedStops"], dict):
+        # Permanent verified stop snapshots (esp. area-* search finds).
+        saved = dict(route.get("savedStops") or {})
+        for sid, snap in patch["savedStops"].items():
+            key = str(sid)[:64]
+            if snap is None:
+                saved.pop(key, None)
+                continue
+            if not isinstance(snap, dict):
+                continue
+            lat, lon = snap.get("lat"), snap.get("lon")
+            if lat is None or lon is None:
+                continue
+            saved[key] = {
+                "id": key,
+                "osmId": snap.get("osmId"),
+                "osmType": snap.get("osmType") or "node",
+                "name": snap.get("name"),
+                "category": snap.get("category") or "Stop",
+                "group": snap.get("group") or "resupply",
+                "lat": float(lat),
+                "lon": float(lon),
+                "distanceAlongKm": float(snap.get("distanceAlongKm") or 0),
+                "distanceOffRouteM": int(snap.get("distanceOffRouteM") or 0),
+                "openingHours": snap.get("openingHours"),
+                "website": snap.get("website"),
+                "is24h": bool(snap.get("is24h")),
+                "qualityStars": int(snap.get("qualityStars") or 4),
+                "qualityLabel": snap.get("qualityLabel") or "Verified",
+                "qualityScore": snap.get("qualityScore"),
+                "resupplyScore": snap.get("resupplyScore"),
+                "services": list(snap.get("services") or [])[:8],
+                "reviewStatus": "verified",
+                "googleMapsUrl": snap.get("googleMapsUrl"),
+            }
+        route["savedStops"] = saved
+        _merge_saved_into_analysis(uid, route_id, saved)
     if "notes" in patch:
         prep = dict(route.get("preparation") or PREPARATION_DEFAULTS)
         prep["notes"] = str(patch["notes"] or "")[:4000]
@@ -277,6 +357,7 @@ def get_route_detail(uid: str, route_id: str) -> Optional[dict]:
         "points": route.get("points") or [],
         "preparation": route.get("preparation") or dict(PREPARATION_DEFAULTS),
         "stopReviews": route.get("stopReviews") or {},
+        "savedStops": route.get("savedStops") or {},
         "dateStart": route.get("dateStart"),
         "dateEnd": route.get("dateEnd"),
     }
@@ -306,6 +387,14 @@ def get_route_analysis(
             target_ok = abs(float(cached.get("targetStageKm") or 250) - float(target_stage_km)) < 0.5
             suspicious = elev >= 800 and climbs == 0
             if target_ok and schema_ok and not suspicious:
+                saved = route.get("savedStops") or {}
+                if saved:
+                    _merge_saved_into_analysis(uid, route_id, saved)
+                    try:
+                        with open(cache, "r", encoding="utf-8") as f:
+                            return json.load(f)
+                    except (OSError, json.JSONDecodeError, TypeError):
+                        pass
                 return cached
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             pass

@@ -1,16 +1,24 @@
-"""Smart stop scoring — rank candidates, recommend ~10–30 for an Ultra."""
+"""Smart stop scoring — rank candidates, recommend ~10–30 for an Ultra.
+
+Priority for resupply planning:
+  1. Drinking water
+  2. Small neighborhood supermarkets / convenience (Condis, Spar, Express, …)
+  3. Fuel / pharmacy / bike (useful services)
+  Below: restaurants, cafés, large hypermarkets
+"""
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-# Base reliability by category (stars 1–5).
+# Base reliability by category (stars 1–5) — water & small shops lead.
 _CATEGORY_STARS: Dict[str, int] = {
-    "Gas station": 5,
-    "Supermarket": 5,
     "Drinking water": 5,
     "Water tap": 4,
-    "Convenience": 4,
+    "Convenience": 5,
+    "Supermarket": 4,  # adjusted by brand size below
+    "Gas station": 4,
     "Pharmacy": 4,
     "Bike shop": 4,
     "Bakery": 3,
@@ -26,6 +34,80 @@ _CATEGORY_STARS: Dict[str, int] = {
 
 _DINING = {"Café", "Restaurant", "Fast food"}
 
+# Small neighborhood banners — prefer over hypermarkets for ultra resupply.
+_SMALL_MARKET_HINTS = (
+    "condis",
+    "spar",
+    "eurospa",
+    "carrefour express",
+    "carrefour city",
+    "carrefour contact",
+    "carrefour market",
+    "bonpreu",
+    "bon preu",
+    "consum",
+    "dia ",
+    "dia market",
+    "aldi",
+    "lidl",
+    "caprabo",
+    "mercadona",  # mid-size but ultra-useful in ES
+    "simply",
+    "simply market",
+    "coop",
+    "coopérative",
+    "minicoop",
+    "ah to go",
+    "ah convenience",
+    "tesco express",
+    "tesco metro",
+    "sainsbury's local",
+    "sainsburys local",
+    "marks & spencer simply food",
+    "m&s simply food",
+    "7-eleven",
+    "7 eleven",
+    "open late",
+    "night & day",
+    "petit casino",
+    "casino shop",
+    "monoprix",
+    "franprix",
+    "super u",
+    "u express",
+    "intermarché express",
+    "intermarche express",
+    "netto",
+    "penny",
+    "rewe to go",
+    "rewe city",
+    "edeka",
+    "migros",
+    "coop pronto",
+    "avec",
+    "k kiosk",
+)
+
+# Large format / hyper — demote vs neighborhood markets.
+_HYPER_HINTS = (
+    "hypermarket",
+    "hipermercado",
+    "carrefour hyper",
+    "auchan",
+    "alcampo",
+    "eroski center",
+    "eroski hipermercado",
+    "tesco extra",
+    "tesco hyper",
+    "asda superstore",
+    "walmart",
+    "costco",
+    "makro",
+    "metro cash",
+    "ikea",
+    "decathlon",  # not food resupply
+)
+
 
 def _is_24h(hours: Optional[str]) -> bool:
     if not hours:
@@ -34,65 +116,161 @@ def _is_24h(hours: Optional[str]) -> bool:
     return "24/7" in h or h in ("24hours", "24h") or "mo-su24" in h
 
 
+def _text_blob(poi: Dict[str, Any]) -> str:
+    parts = [
+        str(poi.get("name") or ""),
+        str(poi.get("brand") or ""),
+        str(poi.get("operator") or ""),
+        str(poi.get("category") or ""),
+    ]
+    return " ".join(parts).lower()
+
+
+def _store_size(poi: Dict[str, Any]) -> str:
+    """Return 'small' | 'large' | 'unknown' for shop size preference."""
+    cat = poi.get("category") or ""
+    if cat == "Convenience":
+        return "small"
+    if cat != "Supermarket":
+        return "unknown"
+    blob = _text_blob(poi)
+    if any(h in blob for h in _HYPER_HINTS):
+        return "large"
+    if any(h in blob for h in _SMALL_MARKET_HINTS):
+        return "small"
+    # Bare "supermarket" without hyper cues → treat as neighborhood-scale.
+    if re.search(r"\b(express|city|local|market|mini)\b", blob):
+        return "small"
+    return "unknown"
+
+
+def stop_services(poi: Dict[str, Any]) -> List[str]:
+    """Human-facing service tags for marker cards."""
+    cat = poi.get("category") or ""
+    group = poi.get("group") or ""
+    out: List[str] = []
+    if group == "water" or "water" in cat.lower():
+        out.append("water")
+    if cat in ("Supermarket", "Convenience", "Bakery") or group == "resupply":
+        out.append("food")
+    if cat == "Gas station":
+        out.append("fuel")
+        out.append("food")  # often drinks/snacks
+    if group == "dining":
+        out.append("food")
+    if cat == "Bike shop":
+        out.append("bike")
+    if cat == "Pharmacy":
+        out.append("pharmacy")
+    if group == "sleep":
+        out.append("sleep")
+    if _is_24h(poi.get("openingHours")):
+        out.append("24h")
+    # de-dupe preserve order
+    seen = set()
+    uniq = []
+    for s in out:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    return uniq
+
+
 def stop_key(poi: Dict[str, Any]) -> str:
     return f"{poi.get('osmType', 'node')}:{poi.get('osmId', 0)}"
 
 
 def score_stop(poi: Dict[str, Any], *, nearby_count: int = 0) -> Dict[str, Any]:
-    """Confidence score for a single OSM candidate."""
+    """Confidence / resupply usefulness score for a single OSM candidate."""
     cat = poi.get("category") or ""
     group = poi.get("group") or ""
     hours = poi.get("openingHours")
     off = float(poi.get("distanceOffRouteM") or 999)
-    base = _CATEGORY_STARS.get(cat, 2)
+    base = float(_CATEGORY_STARS.get(cat, 2))
+    size = _store_size(poi)
 
-    # 24h gas / shops are ultra gold.
+    # Water is the highest-value ultra resource.
+    if group == "water" or cat == "Drinking water":
+        base = 5.2
+    elif cat == "Water tap":
+        base = 4.4
+
+    # Small markets beat large hypers and dining.
+    if cat == "Supermarket":
+        if size == "small":
+            base = 5.1
+        elif size == "large":
+            base = 3.2
+        else:
+            base = 4.3
+    elif cat == "Convenience":
+        base = 5.0
+
     is24 = _is_24h(hours)
     if cat == "Gas station" and is24:
-        base = 5
-    elif is24 and group == "resupply":
-        base = min(5, base + 1)
+        base = max(base, 4.8)
+    elif is24 and group in ("resupply", "water"):
+        base = min(5.3, base + 0.4)
 
     # Proximity: on-route is trustworthy; far off is weaker.
     if off <= 80:
         prox = 1.0
     elif off <= 250:
-        prox = 0.85
+        prox = 0.88
     elif off <= 500:
-        prox = 0.7
+        prox = 0.72
+    elif off <= 900:
+        prox = 0.55
     else:
-        prox = 0.5
+        prox = 0.4
 
-    # Cluster bonus — more mapped amenities nearby → better mapping / town.
-    cluster = min(1.15, 1.0 + nearby_count * 0.03)
+    # Light cluster bonus — nearby mapped amenities → better town/mapping.
+    cluster = min(1.12, 1.0 + nearby_count * 0.025)
 
-    # Opening hours known → slight confidence bump.
-    hours_factor = 1.08 if hours else 0.95
+    hours_factor = 1.08 if hours else 0.94
 
     # Dining is lower priority for ultra resupply.
-    dining_penalty = 0.75 if cat in _DINING else 1.0
+    dining_penalty = 0.62 if cat in _DINING else 1.0
 
-    raw = base * prox * cluster * hours_factor * dining_penalty
-    stars = max(1, min(5, int(round(raw))))
-    if stars >= 5:
+    # Bike shops / pharmacies are useful but not primary food/water.
+    service_factor = 0.92 if group == "service" else 1.0
+
+    # Prefer small neighborhood shops explicitly in the continuous score.
+    size_factor = 1.08 if size == "small" else (0.78 if size == "large" else 1.0)
+
+    raw = base * prox * cluster * hours_factor * dining_penalty * service_factor * size_factor
+    stars = max(1, min(5, int(round(min(5.0, raw)))))
+    # 0–100 resupply score for sorting / UI (not capped to star scale).
+    resupply_score = int(round(max(0.0, min(100.0, raw * 18.5))))
+
+    if resupply_score >= 85 or stars >= 5:
         label = "Excellent"
-    elif stars == 4:
+    elif resupply_score >= 70 or stars == 4:
         label = "Reliable"
-    elif stars == 3:
+    elif resupply_score >= 55 or stars == 3:
         label = "Acceptable"
     elif stars == 2:
         label = "Avoid if possible"
     else:
         label = "Unknown"
 
+    priority = (
+        group in ("water", "resupply")
+        or cat in ("Gas station", "Convenience", "Drinking water")
+        or (cat == "Supermarket" and size != "large")
+    )
+
     return {
         **poi,
-        "id": stop_key(poi),
+        "id": poi.get("id") or stop_key(poi),
         "qualityStars": stars,
         "qualityLabel": label,
         "qualityScore": round(raw, 2),
+        "resupplyScore": resupply_score,
+        "storeSize": size,
+        "services": stop_services(poi),
         "is24h": is24,
-        "priority": group in ("resupply", "water", "service") or cat == "Gas station",
+        "priority": priority,
     }
 
 
@@ -109,6 +287,42 @@ def _cluster_counts(pois: Sequence[Dict[str, Any]], radius_km: float = 3.0) -> D
         )
         counts[k] = n
     return counts
+
+
+def rank_candidates(
+    pois: Sequence[Dict[str, Any]],
+    *,
+    exclude_ids: Optional[Sequence[str]] = None,
+    limit: int = 15,
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Score + sort candidates; return (top batch, has_more)."""
+    exclude = {str(x) for x in (exclude_ids or []) if x}
+    clusters = _cluster_counts(pois)
+    scored = []
+    for p in pois:
+        sid = str(p.get("id") or stop_key(p))
+        if sid in exclude:
+            continue
+        # Also skip osm-key form if present in exclude
+        alt = stop_key(p)
+        if alt in exclude or f"area-{p.get('osmType', 'node')}-{p.get('osmId', 0)}" in exclude:
+            continue
+        s = score_stop(p, nearby_count=clusters.get(stop_key(p), 0))
+        if p.get("reviewStatus") == "verified":
+            continue
+        scored.append(s)
+
+    scored.sort(
+        key=lambda s: (
+            0 if s.get("priority") else 1,
+            -(s.get("resupplyScore") or 0),
+            -(s.get("qualityScore") or 0),
+            s.get("distanceOffRouteM") or 999,
+        )
+    )
+    batch = scored[: max(0, limit)]
+    has_more = len(scored) > len(batch)
+    return batch, has_more
 
 
 def select_recommended_stops(
@@ -142,6 +356,7 @@ def select_recommended_stops(
         scored,
         key=lambda s: (
             0 if s.get("priority") else 1,
+            -(s.get("resupplyScore") or 0),
             -s["qualityScore"],
             s.get("distanceOffRouteM") or 999,
         ),
@@ -175,7 +390,10 @@ def select_recommended_stops(
         if any(c["id"] == sid for c in chosen):
             continue
         # Skip low-value dining unless sparse.
-        if s.get("category") in _DINING and s["qualityStars"] < 3:
+        if s.get("category") in _DINING and (s.get("resupplyScore") or 0) < 55:
+            continue
+        # Skip large hypers when better options exist.
+        if s.get("storeSize") == "large" and s.get("category") == "Supermarket":
             continue
         km = float(s.get("distanceAlongKm") or 0)
         if too_close(km):
@@ -194,7 +412,7 @@ def select_recommended_stops(
                 continue
             if any(c["id"] == sid for c in chosen):
                 continue
-            if s.get("category") in _DINING and s["qualityStars"] < 3:
+            if s.get("category") in _DINING and (s.get("resupplyScore") or 0) < 50:
                 continue
             km = float(s.get("distanceAlongKm") or 0)
             if any(abs(km - u) < loose for u in used_kms):

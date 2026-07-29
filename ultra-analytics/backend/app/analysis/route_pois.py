@@ -204,6 +204,8 @@ def fetch_route_pois(
             "osmId": osm_id,
             "osmType": osm_type,
             "name": tags.get("name") or tags.get("brand") or tags.get("operator") or None,
+            "brand": tags.get("brand"),
+            "operator": tags.get("operator"),
             "category": category,
             "group": group,
             "lat": round(lat, 5),
@@ -262,12 +264,20 @@ def fetch_viewport_pois(
     east: float,
     *,
     group: Optional[str] = None,
-    max_results: int = 200,
+    max_results: int = 400,
+    track: Optional[Sequence[Sequence[Any]]] = None,
+    exclude_ids: Optional[Sequence[str]] = None,
+    limit: int = 15,
+    max_off_route_m: float = 900.0,
 ) -> Dict[str, Any]:
-    """POIs for a visible map bbox only — progressive Search-this-area loads.
+    """POIs for a visible map bbox — scored batch for Search-this-area.
 
-    Cached by rounded bbox + group. Does not project onto a route track.
+    Returns the next ~`limit` candidates sorted by resupply score, skipping
+    `exclude_ids` (already-seen / verified). Projects onto `track` when given
+    so off-route distance and along-route km are real.
     """
+    from .route_stops import rank_candidates
+
     # Clamp absurdly large viewports (whole-continent pans).
     if north - south > 2.5 or east - west > 2.5:
         return {
@@ -275,6 +285,9 @@ def fetch_viewport_pois(
             "cache": "skipped",
             "error": "Zoom in closer to search this area.",
             "truncated": False,
+            "hasMore": False,
+            "batchSize": limit,
+            "excludedCount": len(exclude_ids or []),
         }
 
     g = (group or "all").strip().lower()
@@ -303,6 +316,7 @@ def fetch_viewport_pois(
             error = str(exc)
             elements = []
 
+    step = max(1, len(track) // 800) if track and len(track) >= 2 else 4
     pois: List[Dict[str, Any]] = []
     seen: set[Tuple[str, int]] = set()
     for el in elements:
@@ -329,21 +343,35 @@ def fetch_viewport_pois(
         if key in seen:
             continue
         seen.add(key)
+
+        along_km = 0.0
+        off_m = 0.0
+        if track and len(track) >= 2:
+            along_km, off_m = _project_onto_track(lat, lon, track, sample_step=step)
+            if grp != "sleep" and off_m > max_off_route_m:
+                continue
+            if grp == "sleep" and off_m > 1500:
+                continue
+
+        hours = tags.get("opening_hours")
         pois.append(
             {
                 "id": f"area-{osm_type}-{osm_id}",
                 "osmId": osm_id,
                 "osmType": osm_type,
                 "name": tags.get("name") or tags.get("brand") or tags.get("operator") or None,
+                "brand": tags.get("brand"),
+                "operator": tags.get("operator"),
                 "category": category,
                 "group": grp,
                 "lat": round(lat, 5),
                 "lon": round(lon, 5),
-                "distanceAlongKm": 0,
-                "distanceOffRouteM": 0,
-                "openingHours": tags.get("opening_hours"),
+                "distanceAlongKm": round(along_km, 2),
+                "distanceOffRouteM": round(off_m),
+                "openingHours": hours,
                 "website": tags.get("website") or tags.get("contact:website"),
-                "is24h": (tags.get("opening_hours") or "").strip().lower() in ("24/7", "24h"),
+                "is24h": (hours or "").strip().lower() in ("24/7", "24h")
+                or "24/7" in (hours or "").lower().replace(" ", ""),
                 "reviewStatus": "unreviewed",
                 "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
             }
@@ -351,9 +379,14 @@ def fetch_viewport_pois(
         if len(pois) >= max_results:
             break
 
+    batch, has_more = rank_candidates(pois, exclude_ids=exclude_ids, limit=limit)
     return {
-        "pois": pois,
+        "pois": batch,
         "cache": cache_status,
         "error": error,
         "truncated": len(elements) > max_results,
+        "hasMore": has_more,
+        "batchSize": limit,
+        "candidateCount": len(pois),
+        "excludedCount": len(exclude_ids or []),
     }

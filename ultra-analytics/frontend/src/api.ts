@@ -292,25 +292,46 @@ export interface ViewportPoisResult {
     is24h?: boolean;
     reviewStatus?: string;
     googleMapsUrl?: string | null;
+    qualityStars?: number;
+    qualityLabel?: string;
+    qualityScore?: number;
+    resupplyScore?: number;
+    storeSize?: string;
+    services?: string[];
   }>;
   cache?: string;
   error?: string | null;
   truncated?: boolean;
+  hasMore?: boolean;
+  batchSize?: number;
+  candidateCount?: number;
+  excludedCount?: number;
 }
 
-/** Progressive POI load for the visible map bbox (Overpass via backend). */
+export type ViewportSearchOpts = {
+  group?: string;
+  limit?: number;
+  /** Already-seen / verified ids — Search-again skips these. */
+  exclude?: string[];
+};
+
+/** Next scored POI batch for the visible map bbox (Overpass via backend). */
 export async function searchRouteViewportPois(
   id: string,
   bbox: { south: number; west: number; north: number; east: number },
-  group: string = "all",
+  groupOrOpts: string | ViewportSearchOpts = "all",
 ): Promise<ViewportPoisResult> {
+  const opts: ViewportSearchOpts =
+    typeof groupOrOpts === "string" ? { group: groupOrOpts } : groupOrOpts || {};
   const q = new URLSearchParams({
     south: String(bbox.south),
     west: String(bbox.west),
     north: String(bbox.north),
     east: String(bbox.east),
-    group,
+    group: opts.group || "all",
+    limit: String(opts.limit ?? 15),
   });
+  if (opts.exclude?.length) q.set("exclude", opts.exclude.join(","));
   const res = await request(`/api/routes/${id}/pois?${q}`);
   if (!res.ok) await fail(res, "Could not search this area.");
   return (await res.json()) as ViewportPoisResult;
@@ -325,6 +346,7 @@ export async function patchRoute(
     dateEnd: string | null;
     notes: string;
     stopReviews: Record<string, string | null>;
+    savedStops: Record<string, import("./types").RecommendedStop | null>;
     preparation: Partial<{
       routeUnderstood: boolean;
       stopsVerified: boolean;

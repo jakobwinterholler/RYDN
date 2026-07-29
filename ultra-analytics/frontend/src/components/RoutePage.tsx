@@ -22,7 +22,7 @@ import Icon from "./ui/Icon";
 import RydnLoader from "./ui/RydnLoader";
 import ScoreLine from "./ui/ScoreLine";
 import PlanMap, { type PlanMapBBox, PLAN_MAP_STYLE_NOTE } from "./plan/PlanMap";
-import { RydnPlanIcon, iconForCategory, iconForQuickAction } from "./plan/icons";
+import { RydnPlanIcon, iconForCategory } from "./plan/icons";
 import {
   DEFAULT_LAYERS,
   LAYER_TOGGLES,
@@ -38,6 +38,64 @@ import {
   type PlanMarker,
   type QuickActionId,
 } from "./plan/planLayers";
+
+const SEARCH_BATCH = 15;
+const SERVICE_EMOJI: Record<string, string> = {
+  water: "💧",
+  food: "🛒",
+  fuel: "⛽",
+  "24h": "🕒",
+  bike: "🚲",
+  sleep: "🛏",
+  pharmacy: "💊",
+};
+
+function mapViewportPoi(p: {
+  id: string;
+  osmId: number;
+  osmType: string;
+  name: string | null;
+  category: string;
+  group: string;
+  lat: number;
+  lon: number;
+  distanceAlongKm: number;
+  distanceOffRouteM: number;
+  openingHours?: string | null;
+  website?: string | null;
+  is24h?: boolean;
+  googleMapsUrl?: string | null;
+  qualityStars?: number;
+  qualityLabel?: string;
+  qualityScore?: number;
+  resupplyScore?: number;
+  storeSize?: string;
+  services?: string[];
+}): RecommendedStop {
+  return {
+    id: p.id,
+    osmId: p.osmId,
+    osmType: p.osmType,
+    name: p.name,
+    category: p.category,
+    group: p.group,
+    lat: p.lat,
+    lon: p.lon,
+    distanceAlongKm: p.distanceAlongKm,
+    distanceOffRouteM: p.distanceOffRouteM,
+    openingHours: p.openingHours,
+    website: p.website,
+    is24h: p.is24h,
+    qualityStars: p.qualityStars ?? 3,
+    qualityLabel: p.qualityLabel || "Area find",
+    qualityScore: p.qualityScore,
+    resupplyScore: p.resupplyScore,
+    storeSize: p.storeSize,
+    services: p.services,
+    reviewStatus: "unreviewed",
+    googleMapsUrl: p.googleMapsUrl,
+  };
+}
 
 function mapsLinks(lat: number, lon: number, name?: string | null) {
   const q = encodeURIComponent(name || `${lat},${lon}`);
@@ -201,6 +259,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [mapBbox, setMapBbox] = useState<PlanMapBBox | null>(null);
   const [showSearchArea, setShowSearchArea] = useState(false);
   const [searchingArea, setSearchingArea] = useState(false);
+  const [searchHasMore, setSearchHasMore] = useState(false);
   const [areaPois, setAreaPois] = useState<RecommendedStop[]>([]);
   const [emergencyHits, setEmergencyHits] = useState<
     { marker: PlanMarker; km: number }[] | null
@@ -210,6 +269,9 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const reviewTimers = useRef<number[]>([]);
   const analysisRef = useRef<RouteAnalysis | null>(null);
   const routeRef = useRef<PlannedRouteDetail | null>(null);
+  /** IDs already returned by Search — next Search skips these. */
+  const seenSearchIdsRef = useRef<Set<string>>(new Set());
+  const searchGenRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,6 +287,17 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         setDateEnd(r.dateEnd || "");
         setAnalysis(a);
         if (a.targetStageKm) setTargetKm(Math.round(a.targetStageKm));
+        // Restore permanently saved verified finds (never disappear on re-search).
+        const saved = Object.values(r.savedStops || {}) as RecommendedStop[];
+        if (saved.length) {
+          setAreaPois(
+            saved.map((s) => ({
+              ...s,
+              reviewStatus: "verified",
+            })),
+          );
+          for (const s of saved) seenSearchIdsRef.current.add(s.id);
+        }
       })
       .catch((e) => !cancelled && setError((e as Error).message))
       .finally(() => !cancelled && setAnalyzing(false));
@@ -334,22 +407,47 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     if (!currentRoute || !currentAnalysis || reviewMotion) return;
 
     const list = currentAnalysis.recommendedStops || [];
-    const currentIdx = list.findIndex((s) => s.id === stopId);
-    if (currentIdx < 0) return;
+    let currentIdx = list.findIndex((s) => s.id === stopId);
+    const areaStop = areaPois.find((s) => s.id === stopId);
+    // Area search finds can be verified even before they are in recommendedStops.
+    if (currentIdx < 0 && !areaStop) return;
 
-    const rawPrev = list[currentIdx]?.reviewStatus || "unreviewed";
+    const fromList = currentIdx >= 0 ? list[currentIdx] : areaStop!;
+    const rawPrev = fromList?.reviewStatus || "unreviewed";
     const previousStatus: ReviewStatus | "unreviewed" =
       rawPrev === "verified" || rawPrev === "rejected" || rawPrev === "skipped"
         ? rawPrev
         : "unreviewed";
     const previousReviews = { ...(currentRoute.stopReviews || {}) };
+    const previousSaved = { ...(currentRoute.savedStops || {}) };
     const snapshotAnalysis = currentAnalysis;
-    const hasNext = currentIdx < list.length - 1;
-    const advanceTo = Math.min(currentIdx + 1, Math.max(0, list.length - 1));
-    const nextStopId = list[advanceTo]?.id ?? null;
+    const hasNext = currentIdx >= 0 && currentIdx < list.length - 1;
+    const advanceTo = currentIdx >= 0 ? Math.min(currentIdx + 1, Math.max(0, list.length - 1)) : 0;
+    const nextStopId = hasNext ? list[advanceTo]?.id ?? null : null;
 
     setError(null);
-    setAnalysis(applyStopReview(currentAnalysis, stopId, status));
+    if (currentIdx >= 0) {
+      setAnalysis(applyStopReview(currentAnalysis, stopId, status));
+    }
+    setAreaPois((prev) =>
+      prev.map((s) => (s.id === stopId ? { ...s, reviewStatus: status } : s)),
+    );
+    // Promote verified area finds into analysis so they stay on the calm map.
+    if (status === "verified" && areaStop && currentIdx < 0) {
+      setAnalysis(
+        applyStopReview(
+          {
+            ...currentAnalysis,
+            recommendedStops: [
+              ...(currentAnalysis.recommendedStops || []),
+              { ...areaStop, reviewStatus: "verified" },
+            ],
+          },
+          stopId,
+          "verified",
+        ),
+      );
+    }
     setRoute({
       ...currentRoute,
       stopReviews: { ...previousReviews, [stopId]: status },
@@ -370,14 +468,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         setReviewMotion(null);
       } else {
         setReviewMotion(null);
-        if (status === "verified" || status === "rejected") {
-          // Keep sheet on same stop so rider sees confirmation, then clear lightly.
-          window.setTimeout(() => {
-            if (analysisRef.current?.recommendedStops?.find((s) => s.id === stopId)) {
-              /* keep selection */
-            }
-          }, 80);
-        }
       }
     }, hasNext && briefingOpen && briefingTab === "verify"
       ? REVIEW_FEEDBACK_MS + REVIEW_EXIT_MS
@@ -385,13 +475,25 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
     reviewTimers.current = [exitTimer, advanceTimer];
 
-    void patchRoute(currentRoute.id, { stopReviews: { [stopId]: status } })
+    const snap = areaStop || fromList;
+    const patchBody: Parameters<typeof patchRoute>[1] = {
+      stopReviews: { [stopId]: status },
+    };
+    if (status === "verified" && snap) {
+      patchBody.savedStops = { [stopId]: { ...snap, reviewStatus: "verified" } };
+      seenSearchIdsRef.current.add(stopId);
+    } else if (status !== "verified") {
+      patchBody.savedStops = { [stopId]: null };
+    }
+
+    void patchRoute(currentRoute.id, patchBody)
       .then((updated) => {
         setRoute((prev) => {
           if (!prev || prev.id !== updated.id) return prev;
           return {
             ...prev,
             stopReviews: updated.stopReviews ?? prev.stopReviews,
+            savedStops: updated.savedStops ?? prev.savedStops,
             preparation: updated.preparation ?? prev.preparation,
             status: updated.status ?? prev.status,
             updatedAt: updated.updatedAt ?? prev.updatedAt,
@@ -403,15 +505,18 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         reviewTimers.current = [];
         setReviewMotion(null);
         const latest = analysisRef.current || snapshotAnalysis;
-        setAnalysis(applyStopReview(latest, stopId, previousStatus));
+        if (currentIdx >= 0) setAnalysis(applyStopReview(latest, stopId, previousStatus));
+        setAreaPois((prev) =>
+          prev.map((s) => (s.id === stopId ? { ...s, reviewStatus: previousStatus } : s)),
+        );
         setRoute((prev) => {
           if (!prev) return prev;
           const next = { ...(prev.stopReviews || {}) };
           if (previousStatus === "unreviewed") delete next[stopId];
           else next[stopId] = previousStatus;
-          return { ...prev, stopReviews: next };
+          return { ...prev, stopReviews: next, savedStops: previousSaved };
         });
-        setVerifyIndex(currentIdx);
+        if (currentIdx >= 0) setVerifyIndex(currentIdx);
         setSelectedId(stopId);
         setError("Couldn't save verification. Please try again.");
       });
@@ -475,6 +580,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         status: s.reviewStatus || "unreviewed",
         is24h: s.is24h,
         name: s.name,
+        qualityStars: s.qualityStars,
         distanceOffRouteM: s.distanceOffRouteM,
       });
     }
@@ -674,40 +780,82 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
   const searchThisArea = async () => {
     if (!mapBbox || !route) return;
+    const gen = ++searchGenRef.current;
     setSearchingArea(true);
     setError(null);
-    try {
-      const res = await searchRouteViewportPois(route.id, mapBbox, qaToOverpassGroup(qa));
+    setShowSearchArea(false);
+
+    const group = qaToOverpassGroup(qa);
+    const excludeBase = Array.from(seenSearchIdsRef.current);
+    for (const s of analysisRef.current?.recommendedStops || []) {
+      if (s.reviewStatus === "verified") excludeBase.push(s.id);
+    }
+
+    // Progressive: query north + south halves in parallel so markers appear
+    // as each Overpass tile returns (don't wait for the full viewport).
+    const midLat = (mapBbox.south + mapBbox.north) / 2;
+    const tiles: PlanMapBBox[] = [
+      { south: mapBbox.south, west: mapBbox.west, north: midLat, east: mapBbox.east },
+      { south: midLat, west: mapBbox.west, north: mapBbox.north, east: mapBbox.east },
+    ];
+    const perTile = Math.ceil(SEARCH_BATCH / tiles.length);
+    let added = 0;
+    let anyMore = false;
+
+    const absorb = (res: Awaited<ReturnType<typeof searchRouteViewportPois>>) => {
+      if (gen !== searchGenRef.current) return;
       if (res.error) setError(res.error);
-      const mapped: RecommendedStop[] = (res.pois || []).map((p) => ({
-        id: p.id,
-        osmId: p.osmId,
-        osmType: p.osmType,
-        name: p.name,
-        category: p.category,
-        group: p.group,
-        lat: p.lat,
-        lon: p.lon,
-        distanceAlongKm: p.distanceAlongKm,
-        distanceOffRouteM: p.distanceOffRouteM,
-        openingHours: p.openingHours,
-        website: p.website,
-        is24h: p.is24h,
-        qualityStars: 3,
-        qualityLabel: "Area find",
-        reviewStatus: "unreviewed",
-        googleMapsUrl: p.googleMapsUrl,
-      }));
+      if (res.hasMore) anyMore = true;
+      const mapped = (res.pois || [])
+        .filter((p) => !seenSearchIdsRef.current.has(p.id))
+        .map(mapViewportPoi)
+        .sort((a, b) => (b.resupplyScore || 0) - (a.resupplyScore || 0));
+      if (!mapped.length) return;
+      const room = Math.max(0, SEARCH_BATCH - added);
+      const batch = mapped.slice(0, room);
+      for (const s of batch) seenSearchIdsRef.current.add(s.id);
+      added += batch.length;
       setAreaPois((prev) => {
         const byId = new Map(prev.map((s) => [s.id, s]));
-        for (const s of mapped) byId.set(s.id, s);
+        for (const s of batch) {
+          const existing = byId.get(s.id);
+          // Never overwrite a verified stop with a fresh unreviewed find.
+          if (existing?.reviewStatus === "verified") continue;
+          byId.set(s.id, s);
+        }
         return Array.from(byId.values()).slice(-400);
       });
-      setShowSearchArea(false);
+    };
+
+    try {
+      await Promise.all(
+        tiles.map(async (tile) => {
+          const exclude = [...excludeBase, ...Array.from(seenSearchIdsRef.current)];
+          const res = await searchRouteViewportPois(route.id, tile, {
+            group,
+            limit: perTile,
+            exclude,
+          });
+          absorb(res);
+        }),
+      );
+      // If tiles under-filled, one full-bbox follow-up for remaining slots.
+      if (added < SEARCH_BATCH && gen === searchGenRef.current) {
+        const res = await searchRouteViewportPois(route.id, mapBbox, {
+          group,
+          limit: SEARCH_BATCH - added,
+          exclude: [...excludeBase, ...Array.from(seenSearchIdsRef.current)],
+        });
+        absorb(res);
+      }
+      if (gen === searchGenRef.current) {
+        setSearchHasMore(anyMore || added >= SEARCH_BATCH);
+        if (added === 0 && !anyMore) setShowSearchArea(true);
+      }
     } catch (e) {
-      setError((e as Error).message);
+      if (gen === searchGenRef.current) setError((e as Error).message);
     } finally {
-      setSearchingArea(false);
+      if (gen === searchGenRef.current) setSearchingArea(false);
     }
   };
 
@@ -761,25 +909,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     <div className={`plan-workspace${mode === "ride" ? " plan-workspace--ride" : ""}`}>
       <header className="plan-workspace__top">
         <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to Ultras">
-          <Icon name="chevronLeft" size={22} />
+          <Icon name="chevronLeft" size={20} />
         </button>
-        <div className="plan-workspace__title">
-          <input
-            className="plan-workspace__name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onBlur={() => void saveName()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") e.currentTarget.blur();
-            }}
-            disabled={busy}
-            aria-label="Route name"
-          />
-          <p className="plan-workspace__meta">
-            {Math.round(route.distanceKm)} km · {route.elevationGainM.toLocaleString("en-US")} m
-            {verifiedCount > 0 ? ` · ${verifiedCount} verified` : ""}
-          </p>
-        </div>
         <div className="plan-workspace__top-actions">
           <div className="route-mode-tabs" role="tablist" aria-label="Plan or Ride">
             <button
@@ -824,6 +955,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             className="btn btn--ghost"
             onClick={() => void loadAnalysis({ refresh: true })}
             disabled={analyzing}
+            aria-label="Refresh analysis"
           >
             {analyzing ? "…" : "Refresh"}
           </button>
@@ -871,18 +1003,23 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </aside>
         )}
 
-        {showSearchArea && mode === "plan" && (
+        {searchingArea && mode === "plan" && (
+          <div className="plan-search-pill" role="status" aria-live="polite">
+            Searching…
+          </div>
+        )}
+
+        {!searchingArea && mode === "plan" && (showSearchArea || searchHasMore) && (
           <button
             type="button"
             className="plan-search-area"
-            disabled={searchingArea}
             onClick={() => void searchThisArea()}
           >
-            {searchingArea ? "Searching…" : "Search this area"}
+            {searchHasMore && seenSearchIdsRef.current.size > 0 ? "Search again" : "Search"}
           </button>
         )}
 
-        {/* Quick Actions */}
+        {/* Quick Actions — simple emoji icons for instant recognition */}
         <nav className="plan-qa" aria-label="Quick actions">
           {QUICK_ACTIONS.map((a) => (
             <button
@@ -902,11 +1039,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               title={`${a.label} · long-press for filters`}
             >
               <span className="plan-qa__icon" aria-hidden>
-                <RydnPlanIcon
-                  id={iconForQuickAction(a.id)}
-                  size={18}
-                  variant={qa === a.id ? "selected" : "outlined"}
-                />
+                {a.emoji}
               </span>
               <span>{a.label}</span>
             </button>
@@ -996,11 +1129,21 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     ? `${selectedStop.distanceOffRouteM} m off route`
                     : "On route"}
                   {selectedStop.openingHours ? ` · ${selectedStop.openingHours}` : ""}
+                  {` · ${selectedStop.category}`}
                 </p>
                 <p className="plan-sheet__meta-row">
                   <span>
-                    {selectedStop.qualityStars != null ? stars(selectedStop.qualityStars) : ""}{" "}
-                    {selectedStop.qualityLabel || "Reliability"}
+                    {selectedStop.resupplyScore != null
+                      ? `Score ${selectedStop.resupplyScore}`
+                      : selectedStop.qualityStars != null
+                        ? stars(selectedStop.qualityStars)
+                        : ""}{" "}
+                    {selectedStop.qualityLabel || "Resupply"}
+                    {(selectedStop.services || []).length > 0
+                      ? ` · ${(selectedStop.services || [])
+                          .map((s) => SERVICE_EMOJI[s] || s)
+                          .join(" ")}`
+                      : ""}
                   </span>
                   <span
                     className={
@@ -1010,7 +1153,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     }
                   >
                     {selectedStop.reviewStatus === "verified"
-                      ? "Verified"
+                      ? "✓ Verified"
                       : selectedStop.reviewStatus === "rejected"
                         ? "Rejected"
                         : "Unverified"}
@@ -1046,29 +1189,27 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     </a>
                   )}
                 </div>
-                {!selectedStop.id.startsWith("area-") && (
-                  <div className="plan-sheet__actions">
-                    {(["verified", "rejected"] as ReviewStatus[]).map((status) => {
-                      const active = reviewing?.status === status;
-                      const ghost = status !== "verified";
-                      return (
-                        <button
-                          key={status}
-                          type="button"
-                          className={`btn${ghost ? " btn--ghost" : ""}${active ? " btn--working" : ""}`}
-                          disabled={locked && !active}
-                          aria-busy={active || undefined}
-                          onClick={() => reviewStop(selectedStop.id, status)}
-                        >
-                          {active && reviewing?.phase === "confirming" && (
-                            <span className="btn__spinner" aria-hidden />
-                          )}
-                          {actionLabel(status)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                <div className="plan-sheet__actions">
+                  {(["verified", "rejected"] as ReviewStatus[]).map((status) => {
+                    const active = reviewing?.status === status;
+                    const ghost = status !== "verified";
+                    return (
+                      <button
+                        key={status}
+                        type="button"
+                        className={`btn${ghost ? " btn--ghost" : ""}${active ? " btn--working" : ""}`}
+                        disabled={locked && !active}
+                        aria-busy={active || undefined}
+                        onClick={() => reviewStop(selectedStop.id, status)}
+                      >
+                        {active && reviewing?.phase === "confirming" && (
+                          <span className="btn__spinner" aria-hidden />
+                        )}
+                        {status === "verified" ? "✓ Verify" : actionLabel(status)}
+                      </button>
+                    );
+                  })}
+                </div>
               </>
             )}
             {peek?.kind === "climb" && (
@@ -1409,6 +1550,19 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             {briefingTab === "prep" && (
               <>
                 <h2 className="plan-briefing__heading">Preparation</h2>
+                <label className="field" style={{ marginBottom: 12 }}>
+                  <span>Route name</span>
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onBlur={() => void saveName()}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") e.currentTarget.blur();
+                    }}
+                    disabled={busy}
+                    aria-label="Route name"
+                  />
+                </label>
                 <div className="ultra-page__score" style={{ marginBottom: 12 }}>
                   <ScoreLine
                     distanceKm={route.distanceKm}
