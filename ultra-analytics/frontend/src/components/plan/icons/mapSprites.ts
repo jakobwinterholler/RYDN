@@ -158,14 +158,15 @@ function spriteKey(iconId: PlanIconId, kind: MarkerSpriteKind): string {
 }
 
 /**
- * Large glanceable collectibles.
- * Rendered at 2× (pixelRatio: 2) → logical ~48–56px before MapLibre icon-size.
+ * High-res emoji collectibles.
+ * Canvas 96–112 @ pixelRatio 2 → logical ~48–56px; MapLibre icon-size ~0.5× prior
+ * so on-map markers stay glanceable without dominating place labels.
  */
 function renderSprite(iconId: PlanIconId, kind: MarkerSpriteKind): ImageData {
   const selected = kind === "selected" || kind === "selectedVerified";
   const emphasized =
     kind === "emphasized" || kind === "emphasizedVerified";
-  // Significantly larger than prior 56/64 canvases
+  // High-res canvases (downscaled via icon-size for crisp mobile markers)
   const size = selected ? 112 : emphasized ? 104 : 96;
   const canvas = document.createElement("canvas");
   canvas.width = size;

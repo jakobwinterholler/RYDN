@@ -88,10 +88,26 @@ function toneForMarker(m: PlanMarker): ClusterTone {
   return "sage";
 }
 
+/** Temp search finds (replaced each batch) — permanent verified/system stay settled. */
+function isTempMarker(m: PlanMarker): boolean {
+  return m.layer === "temp" || m.kind === "area";
+}
+
+/** Calm ease-out with mild overshoot (~6%) for marker pop-in. */
+function easeOutBack(t: number): number {
+  const c1 = 1.35;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
+const POP_MS = 300;
+const POP_STAGGER_MS = 42;
+
 function markersToGeoJSON(
   markers: PlanMarker[],
   selectedId: string | null | undefined,
   searching: boolean,
+  popById?: Map<string, number>,
 ) {
   // Cap for paint perf; prefer emphasized + verified + selected when trimming.
   // Clustering lets us keep more points without visual clutter when zoomed out.
@@ -118,6 +134,7 @@ function markersToGeoJSON(
       const tone = toneForMarker(m);
       // Verified + nearest-5 sit above the rest
       const z = selected ? 5 : emphasize ? 4 : verified ? 3 : rejected ? 0 : dimmed ? 1 : 2;
+      const pop = popById?.get(m.id) ?? 1;
       return {
         type: "Feature" as const,
         id: m.id,
@@ -139,6 +156,8 @@ function markersToGeoJSON(
           rejected: rejected ? 1 : 0,
           emphasize: emphasize ? 1 : 0,
           dimmed: dimmed ? 1 : 0,
+          // 0→1(+overshoot) pop-in scale; layout multiplies into icon-size
+          pop,
           z,
           sprite: markerImageId(icon, {
             selected,
@@ -324,6 +343,17 @@ function ensureLayers(map: MapLibreMap) {
   }
 
   // Category-tinted cluster symbols with baked count badges (never grey discs)
+  const clusterSizeExpr: maplibregl.ExpressionSpecification = [
+    "interpolate",
+    ["linear"],
+    ["get", "point_count"],
+    2,
+    0.55,
+    10,
+    0.65,
+    25,
+    0.75,
+  ];
   if (!map.getLayer("stops-clusters")) {
     map.addLayer({
       id: "stops-clusters",
@@ -332,17 +362,7 @@ function ensureLayers(map: MapLibreMap) {
       filter: ["has", "point_count"],
       layout: {
         "icon-image": clusterIconExpr(),
-        "icon-size": [
-          "interpolate",
-          ["linear"],
-          ["get", "point_count"],
-          2,
-          0.78,
-          10,
-          0.9,
-          25,
-          1.05,
-        ],
+        "icon-size": clusterSizeExpr,
         "icon-allow-overlap": true,
         "icon-ignore-placement": true,
       },
@@ -350,9 +370,38 @@ function ensureLayers(map: MapLibreMap) {
         "icon-opacity": 0.96,
       },
     });
+  } else {
+    map.setLayoutProperty("stops-clusters", "icon-size", clusterSizeExpr);
   }
 
-  // Halo under selected / nearest-5 / hover (unclustered only)
+  // Halo under selected / nearest-5 / hover (unclustered only) — sized for half markers
+  const haloRadiusExpr: maplibregl.ExpressionSpecification = [
+    "interpolate",
+    ["linear"],
+    ["zoom"],
+    8,
+    [
+      "case",
+      ["boolean", ["feature-state", "hover"], false],
+      7,
+      ["==", ["get", "selected"], 1],
+      6.5,
+      ["==", ["get", "emphasize"], 1],
+      6,
+      0,
+    ],
+    14,
+    [
+      "case",
+      ["boolean", ["feature-state", "hover"], false],
+      11,
+      ["==", ["get", "selected"], 1],
+      10,
+      ["==", ["get", "emphasize"], 1],
+      9,
+      0,
+    ],
+  ];
   if (!map.getLayer("stops-halo")) {
     map.addLayer({
       id: "stops-halo",
@@ -360,33 +409,7 @@ function ensureLayers(map: MapLibreMap) {
       source: "stops",
       filter: ["!", ["has", "point_count"]],
       paint: {
-        "circle-radius": [
-          "interpolate",
-          ["linear"],
-          ["zoom"],
-          8,
-          [
-            "case",
-            ["boolean", ["feature-state", "hover"], false],
-            14,
-            ["==", ["get", "selected"], 1],
-            13,
-            ["==", ["get", "emphasize"], 1],
-            12,
-            0,
-          ],
-          14,
-          [
-            "case",
-            ["boolean", ["feature-state", "hover"], false],
-            22,
-            ["==", ["get", "selected"], 1],
-            20,
-            ["==", ["get", "emphasize"], 1],
-            18,
-            0,
-          ],
-        ],
+        "circle-radius": haloRadiusExpr,
         "circle-color": "rgba(47, 93, 80, 0.16)",
         "circle-opacity": [
           "case",
@@ -401,11 +424,14 @@ function ensureLayers(map: MapLibreMap) {
         "circle-stroke-width": 0,
       },
     });
+  } else {
+    map.setPaintProperty("stops-halo", "circle-radius", haloRadiusExpr);
   }
 
   // Zoom must be the top-level input to interpolate/step — nesting zoom
   // inside `*` made MapLibre reject the layer (fallback basemap, no icons).
   // feature-state is paint-only — never use it in layout icon-size.
+  // `pop` is a GeoJSON property animated 0→1 for temp search appear.
   const stateMul = (base: number): maplibregl.ExpressionSpecification => [
     "*",
     base,
@@ -419,20 +445,34 @@ function ensureLayers(map: MapLibreMap) {
       0.78,
       0.92,
     ],
+    ["coalesce", ["to-number", ["get", "pop"]], 1],
   ];
+  // ~50% of prior on-map size (sprites stay ~48–56px logical @ pixelRatio 2)
   const iconSizeExpr: maplibregl.ExpressionSpecification = [
     "interpolate",
     ["linear"],
     ["zoom"],
-    // Large glanceable collectibles (sprites already ~48–56px logical @ pixelRatio 2)
     7,
-    stateMul(0.95),
+    stateMul(0.48),
     10,
-    stateMul(1.25),
+    stateMul(0.62),
     13,
-    stateMul(1.55),
+    stateMul(0.78),
     16,
-    stateMul(1.85),
+    stateMul(0.92),
+  ];
+  const iconOpacityExpr: maplibregl.ExpressionSpecification = [
+    "*",
+    [
+      "case",
+      ["==", ["get", "rejected"], 1],
+      0.5,
+      ["==", ["get", "dimmed"], 1],
+      0.42,
+      0.98,
+    ],
+    // Fade with pop (cap at 1 so overshoot only affects scale)
+    ["min", 1, ["max", 0, ["coalesce", ["to-number", ["get", "pop"]], 1]]],
   ];
 
   // Unverified / normal markers — category SymbolLayer (not circles)
@@ -450,20 +490,21 @@ function ensureLayers(map: MapLibreMap) {
         "symbol-sort-key": ["get", "z"],
       },
       paint: {
-        "icon-opacity": [
-          "case",
-          ["==", ["get", "rejected"], 1],
-          0.5,
-          ["==", ["get", "dimmed"], 1],
-          0.42,
-          0.98,
-        ],
-        "icon-opacity-transition": { duration: 280, delay: 0 },
+        "icon-opacity": iconOpacityExpr,
+        "icon-opacity-transition": { duration: 0, delay: 0 },
       },
     });
+  } else {
+    map.setLayoutProperty("stops-icons", "icon-size", iconSizeExpr);
+    map.setPaintProperty("stops-icons", "icon-opacity", iconOpacityExpr);
   }
 
   // Verified markers — same category glyph + green check badge in sprite
+  const verifiedOpacityExpr: maplibregl.ExpressionSpecification = [
+    "*",
+    1,
+    ["min", 1, ["max", 0, ["coalesce", ["to-number", ["get", "pop"]], 1]]],
+  ];
   if (!map.getLayer("stops-verified")) {
     map.addLayer({
       id: "stops-verified",
@@ -478,10 +519,13 @@ function ensureLayers(map: MapLibreMap) {
         "symbol-sort-key": ["+", ["get", "z"], 20],
       },
       paint: {
-        "icon-opacity": 1,
-        "icon-opacity-transition": { duration: 280, delay: 0 },
+        "icon-opacity": verifiedOpacityExpr,
+        "icon-opacity-transition": { duration: 0, delay: 0 },
       },
     });
+  } else {
+    map.setLayoutProperty("stops-verified", "icon-size", iconSizeExpr);
+    map.setPaintProperty("stops-verified", "icon-opacity", verifiedOpacityExpr);
   }
 }
 
@@ -508,6 +552,91 @@ export default function PlanMap({
   const markersRef = useRef(markers);
   const selectedRef = useRef(selectedId);
   const searchingRef = useRef(searching);
+  /** Current icon pop scale per marker id (1 = settled). */
+  const popByIdRef = useRef(new Map<string, number>());
+  /** Ids that have finished pop (or are permanent) — skip re-animate. */
+  const settledPopRef = useRef(new Set<string>());
+  /** Active pop animations: id → { start, delay }. */
+  const popAnimRef = useRef(new Map<string, { start: number; delay: number }>());
+  const popRafRef = useRef<number | null>(null);
+
+  const writeStops = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    try {
+      (map.getSource("stops") as GeoJSONSource | undefined)?.setData(
+        markersToGeoJSON(
+          markersRef.current,
+          selectedRef.current,
+          searchingRef.current,
+          popByIdRef.current,
+        ),
+      );
+    } catch {
+      /* style race */
+    }
+  };
+
+  const tickPop = () => {
+    const now = performance.now();
+    const anims = popAnimRef.current;
+    for (const [id, { start, delay }] of [...anims.entries()]) {
+      const t = (now - start - delay) / POP_MS;
+      if (t < 0) {
+        popByIdRef.current.set(id, 0);
+        continue;
+      }
+      if (t >= 1) {
+        popByIdRef.current.set(id, 1);
+        settledPopRef.current.add(id);
+        anims.delete(id);
+        continue;
+      }
+      popByIdRef.current.set(id, easeOutBack(t));
+    }
+    writeStops();
+    if (anims.size > 0) {
+      popRafRef.current = requestAnimationFrame(tickPop);
+    } else {
+      popRafRef.current = null;
+    }
+  };
+
+  /** Sync pop state for current markers; start staggered pop for new temp finds. */
+  const syncMarkerPops = (list: PlanMarker[]) => {
+    const currentIds = new Set(list.map((m) => m.id));
+    for (const id of [...settledPopRef.current]) {
+      if (!currentIds.has(id)) settledPopRef.current.delete(id);
+    }
+    for (const id of [...popByIdRef.current.keys()]) {
+      if (!currentIds.has(id)) popByIdRef.current.delete(id);
+    }
+    for (const id of [...popAnimRef.current.keys()]) {
+      if (!currentIds.has(id)) popAnimRef.current.delete(id);
+    }
+
+    let stagger = 0;
+    const now = performance.now();
+    for (const m of list) {
+      if (!isTempMarker(m)) {
+        popByIdRef.current.set(m.id, 1);
+        settledPopRef.current.add(m.id);
+        popAnimRef.current.delete(m.id);
+        continue;
+      }
+      if (settledPopRef.current.has(m.id) || popAnimRef.current.has(m.id)) {
+        if (!popByIdRef.current.has(m.id)) popByIdRef.current.set(m.id, 1);
+        continue;
+      }
+      popByIdRef.current.set(m.id, 0);
+      popAnimRef.current.set(m.id, { start: now, delay: stagger * POP_STAGGER_MS });
+      stagger += 1;
+    }
+
+    if (popAnimRef.current.size > 0 && popRafRef.current == null) {
+      popRafRef.current = requestAnimationFrame(tickPop);
+    }
+  };
 
   useEffect(() => {
     onSelectRef.current = onSelectMarker;
@@ -696,9 +825,8 @@ export default function PlanMap({
         (map.getSource("ends") as GeoJSONSource | undefined)?.setData(
           endsToGeoJSON(pointsRef.current),
         );
-        (map.getSource("stops") as GeoJSONSource | undefined)?.setData(
-          markersToGeoJSON(markersRef.current, selectedRef.current, searchingRef.current),
-        );
+        syncMarkerPops(markersRef.current);
+        writeStops();
       } catch {
         /* style race */
       }
@@ -734,6 +862,10 @@ export default function PlanMap({
     return () => {
       cancelled = true;
       window.clearTimeout(fallbackTimer);
+      if (popRafRef.current != null) {
+        cancelAnimationFrame(popRafRef.current);
+        popRafRef.current = null;
+      }
       ro?.disconnect();
       clearHover();
       map.remove();
@@ -758,9 +890,8 @@ export default function PlanMap({
     if (!map || !map.isStyleLoaded()) return;
     try {
       ensureLayers(map);
-      (map.getSource("stops") as GeoJSONSource | undefined)?.setData(
-        markersToGeoJSON(markers, selectedId, searching),
-      );
+      syncMarkerPops(markers);
+      writeStops();
     } catch {
       /* ignore */
     }
