@@ -355,7 +355,7 @@ def get_route_viewport_pois(
     track = route.get("track") or route.get("points") or []
     batch_limit = max(1, min(40, int(limit or 15)))
 
-    # Warm corridor from disk/memory (no Overpass) before filtering.
+    # Warm corridor from disk/memory/analysis (no Overpass) before filtering.
     if track and len(track) >= 2:
         try:
             ensure_search_corridor(track, force_refresh=False, build_if_missing=False)
@@ -371,7 +371,8 @@ def get_route_viewport_pois(
         track=track,
         exclude_ids=exclude_ids,
         limit=batch_limit,
-        overpass_budget_s=3.5,
+        # Stay under client SEARCH_TIMEOUT_MS=5s (RTT + filter + one Overpass try).
+        overpass_budget_s=2.5,
     )
     timings = dict(payload.get("timings") or {})
     timings["requestMs"] = round((_time.perf_counter() - t_req) * 1000, 2)

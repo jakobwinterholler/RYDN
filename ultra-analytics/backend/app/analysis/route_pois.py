@@ -194,23 +194,36 @@ def _fetch_elements(
     total_timeout_s: float = 25.0,
     connect_timeout_s: float = 8.0,
     max_attempts: int = 2,
+    max_mirrors: Optional[int] = None,
 ) -> List[dict]:
+    """POST to Overpass mirrors, respecting a hard wall-clock budget.
+
+    Critical: never stack full per-mirror timeouts (3×3.5s ≈ 10s) past the
+    client Search abort (5s). Deadline is absolute across mirrors/attempts.
+    """
     last_err: Optional[Exception] = None
-    # Fail fast per attempt so a dead mirror cannot stall Search-this-area.
-    timeout = httpx.Timeout(total_timeout_s, connect=connect_timeout_s)
-    for url in OVERPASS_URLS:
+    deadline = time.perf_counter() + max(0.5, total_timeout_s)
+    mirrors = OVERPASS_URLS[: max(1, max_mirrors)] if max_mirrors else OVERPASS_URLS
+    for url in mirrors:
         for attempt in range(max_attempts):
+            remaining = deadline - time.perf_counter()
+            if remaining < 0.6:
+                break
+            timeout = httpx.Timeout(
+                remaining,
+                connect=min(connect_timeout_s, max(0.4, remaining * 0.4)),
+            )
             try:
                 with httpx.Client(timeout=timeout) as client:
                     res = client.post(url, data={"data": query})
                 if res.status_code in (429, 504):
-                    time.sleep(min(1.0, 0.4 * (attempt + 1)))
+                    time.sleep(min(0.35, max(0.0, deadline - time.perf_counter())))
                     continue
                 res.raise_for_status()
                 return list((res.json() or {}).get("elements") or [])
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
-                time.sleep(min(1.0, 0.4 * (attempt + 1)))
+                time.sleep(min(0.25, max(0.0, deadline - time.perf_counter())))
     raise RuntimeError(f"Overpass unavailable: {last_err}")
 
 
@@ -525,6 +538,92 @@ def _ensure_search_corridor_from_projected(
     return data
 
 
+def _analysis_cache_path(fingerprint: str, max_off_route_m: float) -> str:
+    analysis_key = f"analysis:{fingerprint}:{int(max_off_route_m)}"
+    return os.path.join(
+        poi_corridor._cache_root(),
+        f"{hashlib.sha1(analysis_key.encode()).hexdigest()[:16]}.analysis.json",
+    )
+
+
+def _load_analysis_poi_bundle(
+    fingerprint: str,
+) -> Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
+    """Load projected analysis POIs from disk (no network).
+
+    Tries common off-route pads, then any *.analysis.json whose fingerprint matches.
+    """
+    for off in (500, 3000, 800, 1000, 1500):
+        path = _analysis_cache_path(fingerprint, float(off))
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            pois = cached.get("pois")
+            if isinstance(pois, list) and pois:
+                sleep = cached.get("sleep") if isinstance(cached.get("sleep"), list) else []
+                return pois, sleep
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+    # Fingerprint match across any analysis cache files (pad may differ).
+    root = poi_corridor._cache_root()
+    try:
+        names = os.listdir(root)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".analysis.json"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached.get("fingerprint") != fingerprint:
+                continue
+            pois = cached.get("pois")
+            if isinstance(pois, list) and pois:
+                sleep = cached.get("sleep") if isinstance(cached.get("sleep"), list) else []
+                return pois, sleep
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+    return None
+
+
+def hydrate_corridor_from_analysis(
+    track: Sequence[Sequence[Any]],
+) -> Optional[Dict[str, Any]]:
+    """Build Search corridor from analysis POI cache — disk only, no Overpass.
+
+    Prod often has analysis cache from route open but an empty Search corridor
+    (volume cold / preload still running / Overpass timed out). Hydrating here
+    keeps Search under the client 5s abort.
+    """
+    if len(track) < 2:
+        return None
+    fp = poi_corridor.track_fingerprint(track)
+    mem = poi_corridor.get_memory_corridor(fp)
+    if mem and (mem.get("pois") or []):
+        return mem
+    disk = poi_corridor.load_corridor_cache(fp)
+    if disk and (disk.get("pois") or []):
+        poi_corridor.put_memory_corridor(disk)
+        return disk
+    bundle = _load_analysis_poi_bundle(fp)
+    if not bundle:
+        return None
+    pois, sleep = bundle
+    t0 = time.perf_counter()
+    corridor = _ensure_search_corridor_from_projected(track, pois, sleep, force=True)
+    log.info(
+        "search cache=analysis-hydrate fingerprint=%s corridor_pois=%d ms=%.0f",
+        fp,
+        len(corridor.get("pois") or []),
+        (time.perf_counter() - t0) * 1000,
+    )
+    return corridor
+
+
 def ensure_search_corridor(
     track: Sequence[Sequence[Any]],
     *,
@@ -533,9 +632,10 @@ def ensure_search_corridor(
 ) -> Dict[str, Any]:
     """Load or build the Search corridor cache for a track.
 
-    Prefer disk/memory hit. On miss, optionally run Overpass (primary rules) once.
-    Search requests should pass build_if_missing=False so they never block on
-    a full corridor rebuild — Overpass fill stays budgeted inside fetch_viewport_pois.
+    Prefer disk/memory hit. On miss, hydrate from analysis cache (no network).
+    Only when build_if_missing=True do we call Overpass via fetch_route_pois.
+    Search requests pass build_if_missing=False — they must stay under the
+    client 5s abort; Overpass fill stays budgeted inside fetch_viewport_pois.
     """
     empty = {
         "schema": poi_corridor.CACHE_SCHEMA,
@@ -550,12 +650,16 @@ def ensure_search_corridor(
     fp = poi_corridor.track_fingerprint(track)
     if not force_refresh:
         mem = poi_corridor.get_memory_corridor(fp)
-        if mem:
+        if mem and (mem.get("pois") or []):
             return mem
         disk = poi_corridor.load_corridor_cache(fp)
-        if disk:
+        if disk and (disk.get("pois") or []):
             poi_corridor.put_memory_corridor(disk)
             return disk
+        # Local hydrate from analysis — instant vs Overpass; safe for Search.
+        hydrated = hydrate_corridor_from_analysis(track)
+        if hydrated and (hydrated.get("pois") or []):
+            return hydrated
         if not build_if_missing:
             return {**empty, "fingerprint": fp}
 
@@ -651,14 +755,22 @@ def fetch_viewport_pois(
     g = (group or "all").strip().lower()
     track = track or []
 
-    # --- Option A hot path: corridor projected cache ---
+    # --- Option A hot path: corridor projected cache (+ analysis hydrate) ---
     t_cache0 = time.perf_counter()
     corridor = None
+    hydrated_from_analysis = False
     if len(track) >= 2:
         fp = poi_corridor.track_fingerprint(track)
         corridor = poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
-        if corridor:
+        if corridor and (corridor.get("pois") or []):
             poi_corridor.put_memory_corridor(corridor)
+        else:
+            # Prod cold: Search corridor missing but analysis POIs exist from route open.
+            # Hydrate locally (~40ms) — never wait on Overpass for the hot path.
+            hydrated = hydrate_corridor_from_analysis(track)
+            if hydrated and (hydrated.get("pois") or []):
+                corridor = hydrated
+                hydrated_from_analysis = True
     t_cache_ms = (time.perf_counter() - t_cache0) * 1000.0
 
     viewport = (south, west, north, east)
@@ -676,20 +788,25 @@ def fetch_viewport_pois(
                 limit=limit,
                 exclude_ids=exclude_ids,
             )
+            if hydrated_from_analysis:
+                result["cache"] = "analysis-hydrate"
+                if isinstance(result.get("stats"), dict):
+                    result["stats"]["cache"] = "analysis-hydrate"
             timings = dict(result.get("timings") or {})
             timings["cacheLookupMs"] = round(t_cache_ms, 3)
             timings["totalMs"] = round((time.perf_counter() - t0) * 1000, 2)
             timings["serverMs"] = timings["totalMs"]
             result["timings"] = timings
             log.info(
-                "search cache=corridor-hit group=%s candidates=%s returned=%s total_ms=%.1f spatial_ms=%s",
+                "search cache=%s group=%s candidates=%s returned=%s total_ms=%.1f spatial_ms=%s",
+                result.get("cache"),
                 g,
                 result.get("candidateCount"),
                 len(result.get("pois") or []),
                 timings["totalMs"],
                 timings.get("spatialFilterMs"),
             )
-            # Warm corridor answered (including true empty group in viewport).
+            # Warm/hydrated corridor answered (including true empty group in viewport).
             # Only fall through when the corridor itself is empty/broken.
             if (result.get("candidateCount") or 0) > 0 or len(corridor.get("pois") or []) > 0:
                 return result
@@ -740,13 +857,15 @@ def fetch_viewport_pois(
 
     if cache_status == "miss":
         t_op0 = time.perf_counter()
+        # Keep wall clock under client SEARCH_TIMEOUT_MS (5s): one mirror, hard deadline.
+        budget = min(3.0, max(1.2, overpass_budget_s))
         try:
-            # Short budget so client 5s hard cap can still settle cleanly.
             elements = _fetch_elements(
                 _build_viewport_query(south, west, north, east, g),
-                total_timeout_s=max(1.5, overpass_budget_s),
-                connect_timeout_s=min(3.0, overpass_budget_s),
+                total_timeout_s=budget,
+                connect_timeout_s=min(1.5, budget),
                 max_attempts=1,
+                max_mirrors=1,
             )
             overpass_ms = (time.perf_counter() - t_op0) * 1000
             with open(path, "w", encoding="utf-8") as f:
@@ -879,10 +998,13 @@ def fetch_viewport_pois(
     )
     result["timings"] = timings
     result["cache"] = "corridor-miss" if cache_status == "miss" else "viewport-hit"
-    if error and not result.get("pois"):
-        result["error"] = error
-    elif error:
-        result["error"] = None  # partial OK
+    if error and result.get("pois"):
+        result["error"] = None  # partial OK — never fail when results exist
+    elif error and not result.get("pois"):
+        # Overpass timeout/unavailable with zero hits: settle as empty, not hard fail.
+        # Client 5s abort + stacked mirror timeouts previously toasted "Search failed".
+        result["error"] = None
+        result["cache"] = "overpass-miss"
     result["stats"] = {
         "cache": result["cache"],
         "corridorPois": len((corridor or {}).get("pois") or []),

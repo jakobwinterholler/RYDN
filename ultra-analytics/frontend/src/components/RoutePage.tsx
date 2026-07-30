@@ -294,6 +294,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const searchGenRef = useRef(0);
   const searchStatusTimerRef = useRef<number | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
+  /** In-flight corridor preload — Search may wait briefly so cold path hits cache. */
+  const preloadPromiseRef = useRef<Promise<{ ok: boolean; poiCount?: number }> | null>(null);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -328,7 +330,9 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         setVerifiedStops(Array.from(byId.values()));
         setSearchResults([]);
         // Warm Search corridor in background (Option A) — never blocks UI.
-        void preloadRoutePois(routeId).then((pre) => {
+        const prePromise = preloadRoutePois(routeId);
+        preloadPromiseRef.current = prePromise;
+        void prePromise.then((pre) => {
           if (cancelled || !pre.ok) return;
           console.info("[rydn.search.preload]", {
             poiCount: pre.poiCount,
@@ -961,14 +965,28 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     let thrown = false;
     let searchOk = false;
     const tClient = typeof performance !== "undefined" ? performance.now() : Date.now();
-
-    // Abort at hard 5s — spinner must always stop; never stuck Searching.
-    const timeoutId = window.setTimeout(() => {
-      if (gen === searchGenRef.current) ac.abort();
-    }, SEARCH_TIMEOUT_MS);
+    let timeoutId: number | null = null;
 
     try {
-      // Single request — corridor cache makes tiling unnecessary.
+      // If preload is still building the corridor, wait briefly (≤1.2s) so Search
+      // hits analysis-hydrate/cache instead of a cold Overpass race past 5s abort.
+      const pending = preloadPromiseRef.current;
+      if (pending) {
+        await Promise.race([
+          pending.catch(() => ({ ok: false })),
+          new Promise<{ ok: boolean }>((resolve) => {
+            window.setTimeout(() => resolve({ ok: false }), 1200);
+          }),
+        ]);
+      }
+      if (gen !== searchGenRef.current) return;
+
+      // Abort clock starts at the network request — preload wait does not eat the 5s.
+      timeoutId = window.setTimeout(() => {
+        if (gen === searchGenRef.current) ac.abort();
+      }, SEARCH_TIMEOUT_MS);
+
+      // Single request — corridor cache / analysis hydrate makes tiling unnecessary.
       const res = await searchRouteViewportPois(route.id, bbox, {
         group,
         limit: SEARCH_BATCH,
@@ -1008,7 +1026,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         hardError = true;
       }
     } finally {
-      window.clearTimeout(timeoutId);
+      if (timeoutId != null) window.clearTimeout(timeoutId);
       if (searchStatusTimerRef.current != null) {
         window.clearInterval(searchStatusTimerRef.current);
         searchStatusTimerRef.current = null;

@@ -134,8 +134,8 @@ def main() -> int:
             f"candidates={res.get('candidateCount')}  "
             f"offs={[round(p.get('distanceOffRouteM') or 0) for p in pois[:8]]}"
         )
-        if res.get("cache") != "corridor-hit":
-            print(f"FAIL: Manresa {label} expected corridor-hit")
+        if res.get("cache") not in ("corridor-hit", "analysis-hydrate"):
+            print(f"FAIL: Manresa {label} expected corridor-hit/analysis-hydrate")
             return 1
         if ms >= 2000:
             print(f"FAIL: Manresa {label} {ms:.0f}ms >= 2000ms")
@@ -146,6 +146,68 @@ def main() -> int:
                 f"(need 1–15 after search-corridor filter)"
             )
             return 1
+
+    # --- Cold-prod simulation: Search corridor gone, analysis cache remains ---
+    import shutil
+    from app.analysis import poi_corridor
+
+    fp = corridor.get("fingerprint")
+    cache_path = os.path.join(poi_corridor._cache_root(), f"{fp}.json")
+    bak = cache_path + ".proof_bak"
+    had_corridor = os.path.isfile(cache_path)
+    if had_corridor:
+        shutil.move(cache_path, bak)
+    poi_corridor._MEMORY.clear()
+    print(f"\nCold-prod sim (corridor removed, analysis present) fp={fp}")
+    cold_ok = True
+    saw_hydrate = False
+    try:
+        for group, label in (("water", "Water"), ("resupply", "Markets")):
+            t4 = time.perf_counter()
+            res = fetch_viewport_pois(
+                ms_s,
+                ms_w,
+                ms_n,
+                ms_e,
+                group=group,
+                track=track,
+                limit=12,
+                allow_overpass=False,
+            )
+            ms = (time.perf_counter() - t4) * 1000
+            pois = res.get("pois") or []
+            visible = _visible_after_ui(pois, group)
+            print(
+                f"  COLD {label:8s}  ms={ms:7.1f}  cache={res.get('cache')}  "
+                f"api={len(pois)}  ui_visible={len(visible)}"
+            )
+            if res.get("cache") == "analysis-hydrate":
+                saw_hydrate = True
+            if res.get("cache") not in ("analysis-hydrate", "corridor-hit"):
+                print(
+                    f"FAIL: cold {label} expected analysis-hydrate|corridor-hit, "
+                    f"got {res.get('cache')}"
+                )
+                cold_ok = False
+            if ms >= 2000:
+                print(f"FAIL: cold {label} {ms:.0f}ms >= 2000ms")
+                cold_ok = False
+            if len(visible) < 1:
+                print(f"FAIL: cold {label} ui_visible={len(visible)}")
+                cold_ok = False
+        if not saw_hydrate:
+            print("FAIL: cold sim never hit analysis-hydrate")
+            cold_ok = False
+    finally:
+        poi_corridor._MEMORY.clear()
+        if had_corridor and os.path.isfile(bak):
+            # Remove any hydrate-written corridor so we restore the original golden cache
+            if os.path.isfile(cache_path):
+                os.remove(cache_path)
+            shutil.move(bak, cache_path)
+
+    if not cold_ok:
+        return 1
 
     # --- Rural sparse water must still surface when API has hits >500m ---
     # km ~562 on Bikepacking: water offs are all >500m under old UI filter.
@@ -171,6 +233,7 @@ def main() -> int:
     print("\n=== ACCEPTANCE ===")
     print(f"  Cached area search < 2s: PASS (max {max(times):.1f}ms, warm {warm_ms:.1f}ms)")
     print("  Manresa Water/Markets 1–15 visible: PASS")
+    print("  Cold-prod analysis-hydrate Water/Markets: PASS")
     print("  Corridor spatial filter: PASS")
     print(f"  Fingerprint: {corridor.get('fingerprint')}  pad_m={corridor.get('corridorPadM')}")
     return 0

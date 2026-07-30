@@ -152,6 +152,58 @@ class TestViewportUsesCorridor(unittest.TestCase):
         self.assertLess(ms, 500, f"cached search too slow: {ms:.1f}ms")
         self.assertIsNone(res["timings"].get("overpassMs"))
 
+    def test_analysis_hydrate_when_corridor_missing(self):
+        """Prod cold: Search corridor empty, analysis POIs exist → hydrate, no Overpass."""
+        track = [
+            [42.0, 1.0, 100, 0.0],
+            [42.05, 1.05, 110, 5.0],
+            [42.1, 1.1, 120, 10.0],
+        ]
+        fp = track_fingerprint(track)
+        analysis_pois = [
+            _poi(20, 42.04, 1.04, cat="Drinking water", group="water", off=80),
+            _poi(21, 42.05, 1.05, cat="Supermarket", group="resupply", off=120),
+            _poi(22, 42.06, 1.06, cat="Convenience", group="resupply", off=90),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"ULTRA_DATA_DIR": tmp}):
+                poi_corridor._MEMORY.clear()
+                root = poi_corridor._cache_root()
+                os.makedirs(root, exist_ok=True)
+                import hashlib
+                import json
+
+                key = f"analysis:{fp}:500"
+                path = os.path.join(
+                    root, f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.analysis.json"
+                )
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump({"fingerprint": fp, "pois": analysis_pois, "sleep": []}, f)
+
+                # No Search corridor on disk — first Search must hydrate from analysis.
+                t0 = time.perf_counter()
+                water = fetch_viewport_pois(
+                    42.0, 1.0, 42.1, 1.1, group="water", track=track, limit=10, allow_overpass=False
+                )
+                first_ms = (time.perf_counter() - t0) * 1000
+                markets = fetch_viewport_pois(
+                    42.0,
+                    1.0,
+                    42.1,
+                    1.1,
+                    group="resupply",
+                    track=track,
+                    limit=10,
+                    allow_overpass=False,
+                )
+
+        self.assertEqual(water["cache"], "analysis-hydrate")
+        self.assertGreaterEqual(len(water["pois"]), 1)
+        # Second call may be corridor-hit (hydrate persisted) — both are success.
+        self.assertIn(markets["cache"], ("analysis-hydrate", "corridor-hit"))
+        self.assertGreaterEqual(len(markets["pois"]), 1)
+        self.assertLess(first_ms, 2000, f"hydrated search too slow: {first_ms:.1f}ms")
+
 
 if __name__ == "__main__":
     unittest.main()
