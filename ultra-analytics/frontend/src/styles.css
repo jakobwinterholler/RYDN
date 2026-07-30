@@ -6073,17 +6073,17 @@ input {
 }
 
 .plan-sheet--compact {
-  max-height: min(38vh, 300px);
-  padding: 6px 14px calc(72px + env(safe-area-inset-bottom, 0px));
+  max-height: min(42vh, 340px);
+  padding: 8px 16px calc(72px + env(safe-area-inset-bottom, 0px));
 }
 
 .plan-sheet--compact .plan-sheet__title {
-  font-size: 17px;
+  font-size: 18px;
   margin: 0 0 4px;
 }
 
 .plan-sheet--compact .plan-sheet__rating {
-  margin: 0 0 8px;
+  margin: 0 0 12px;
   font-size: 12px;
 }
 
@@ -6098,6 +6098,88 @@ input {
 
 .plan-sheet--compact .plan-sheet__actions .btn {
   min-height: 40px;
+}
+
+.plan-sheet__cat-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+}
+
+.plan-sheet__cta {
+  margin: 0 0 10px;
+}
+
+.plan-sheet__verify {
+  width: 100%;
+  min-height: 48px;
+  height: 48px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.plan-sheet__verify--done,
+.plan-sheet__verify.plan-sheet__verify--done:disabled {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  opacity: 1;
+  cursor: default;
+}
+
+.plan-sheet__verify.btn--working {
+  opacity: 1;
+  cursor: progress;
+}
+
+.plan-sheet__nav {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr 1fr;
+  gap: 8px;
+}
+
+.plan-sheet__nav-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  text-align: center;
+  text-decoration: none;
+  box-sizing: border-box;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.plan-sheet__nav-btn:hover {
+  border-color: var(--ink-secondary);
+  background: var(--paper-elevated);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.plan-sheet__nav-btn:active {
+  transform: scale(0.98);
+}
+
+.plan-sheet__nav-btn--emphasis {
+  border-color: var(--ink);
+  background: var(--paper-elevated);
+  font-weight: 600;
 }
 
 .plan-sheet__meta-row {
@@ -6194,12 +6276,13 @@ input {
 }
 
 .plan-sheet__eyebrow {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 11px;
-  letter-spacing: 0.05em;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-tertiary);
 }

@@ -1379,11 +1379,13 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             {selectedStop && (
               <>
                 <p className="plan-sheet__eyebrow">
-                  <RydnPlanIcon
-                    id={iconForCategory(selectedStop.category, selectedStop.group)}
-                    size={14}
-                    className="plan-sheet__eyebrow-icon"
-                  />
+                  <span className="plan-sheet__cat-chip" aria-hidden>
+                    <RydnPlanIcon
+                      id={iconForCategory(selectedStop.category, selectedStop.group)}
+                      size={14}
+                      className="plan-sheet__eyebrow-icon"
+                    />
+                  </span>
                   {selectedStop.category}
                   {selectedStop.is24h ? " · 24h" : ""}
                 </p>
@@ -1394,9 +1396,38 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     : "On route"}
                   {selectedStop.openingHours ? ` · ${selectedStop.openingHours}` : ""}
                 </p>
-                <div className="plan-sheet__actions">
+                <div className="plan-sheet__cta">
+                  <button
+                    type="button"
+                    className={[
+                      "btn",
+                      "btn--block",
+                      "plan-sheet__verify",
+                      selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
+                        ? "plan-sheet__verify--done"
+                        : "btn--primary",
+                      reviewing?.status === "verified" ? "btn--working" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    disabled={
+                      selectedStop.reviewStatus === "verified" ||
+                      (locked && reviewing?.status !== "verified")
+                    }
+                    aria-busy={reviewing?.status === "verified" || undefined}
+                    onClick={() => reviewStop(selectedStop.id, "verified")}
+                  >
+                    {reviewing?.status === "verified" && reviewing.phase === "confirming" && (
+                      <span className="btn__spinner" aria-hidden />
+                    )}
+                    {selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
+                      ? "Verified ✓"
+                      : "Verify"}
+                  </button>
+                </div>
+                <div className="plan-sheet__nav" role="group" aria-label="Maps actions">
                   <a
-                    className="btn"
+                    className="plan-sheet__nav-btn plan-sheet__nav-btn--emphasis"
                     href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).google}
                     target="_blank"
                     rel="noreferrer"
@@ -1404,7 +1435,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     Navigate
                   </a>
                   <a
-                    className="btn btn--ghost"
+                    className="plan-sheet__nav-btn"
                     href={
                       selectedStop.googleMapsUrl ||
                       mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
@@ -1415,25 +1446,13 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     Maps
                   </a>
                   <a
-                    className="btn btn--ghost"
+                    className="plan-sheet__nav-btn"
                     href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).streetView}
                     target="_blank"
                     rel="noreferrer"
                   >
                     Street View
                   </a>
-                  <button
-                    type="button"
-                    className={`btn btn--ghost${reviewing?.status === "verified" ? " btn--working" : ""}`}
-                    disabled={locked && reviewing?.status !== "verified"}
-                    aria-busy={reviewing?.status === "verified" || undefined}
-                    onClick={() => reviewStop(selectedStop.id, "verified")}
-                  >
-                    {reviewing?.status === "verified" && reviewing.phase === "confirming" && (
-                      <span className="btn__spinner" aria-hidden />
-                    )}
-                    {selectedStop.reviewStatus === "verified" ? "Verified" : "Verify"}
-                  </button>
                 </div>
               </>
             )}
