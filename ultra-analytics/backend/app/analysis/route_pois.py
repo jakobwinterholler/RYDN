@@ -1,9 +1,16 @@
-"""Overpass POIs near a planned route — resupply, dining, sleep, emergency."""
+"""Overpass POIs near a planned route — resupply, dining, sleep, emergency.
+
+Search-this-area (Option A):
+  Corridor projected POIs are preloaded on analysis and cached per track.
+  Viewport search filters that cache spatially — no Overpass on the hot path.
+  Overpass only runs when the viewport is outside the corridor (cold fill).
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -11,6 +18,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import httpx
 
 from ..util.geo import haversine_m
+from . import poi_corridor
+
+log = logging.getLogger("rydn.search")
 
 # Prefer mirrors that respond; kumi.systems often hangs (120s×retries) and
 # blocks Search-this-area until later mirrors are tried.
@@ -178,73 +188,55 @@ def _project_onto_track(
     return best_km, best_d
 
 
-def _fetch_elements(query: str) -> List[dict]:
+def _fetch_elements(
+    query: str,
+    *,
+    total_timeout_s: float = 25.0,
+    connect_timeout_s: float = 8.0,
+    max_attempts: int = 2,
+) -> List[dict]:
     last_err: Optional[Exception] = None
     # Fail fast per attempt so a dead mirror cannot stall Search-this-area.
-    timeout = httpx.Timeout(25.0, connect=8.0)
+    timeout = httpx.Timeout(total_timeout_s, connect=connect_timeout_s)
     for url in OVERPASS_URLS:
-        for attempt in range(2):
+        for attempt in range(max_attempts):
             try:
                 with httpx.Client(timeout=timeout) as client:
                     res = client.post(url, data={"data": query})
                 if res.status_code in (429, 504):
-                    time.sleep(1.5 * (attempt + 1))
+                    time.sleep(min(1.0, 0.4 * (attempt + 1)))
                     continue
                 res.raise_for_status()
                 return list((res.json() or {}).get("elements") or [])
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(min(1.0, 0.4 * (attempt + 1)))
     raise RuntimeError(f"Overpass unavailable: {last_err}")
 
 
-def fetch_route_pois(
+def _elements_to_projected(
+    elements: List[dict],
     track: Sequence[Sequence[Any]],
     *,
-    force_refresh: bool = False,
-    max_off_route_m: float = 500.0,
-) -> Dict[str, Any]:
-    """POIs projected onto the route. Cached by bbox hash."""
-    if len(track) < 2:
-        return {"pois": [], "sleep": [], "cache": "skipped", "error": None}
-
-    south, west, north, east = _bbox(track)
-    cache_key = hashlib.sha1(
-        f"{south:.3f},{west:.3f},{north:.3f},{east:.3f}".encode()
-    ).hexdigest()[:16]
-    path = _cache_path(cache_key)
-    cache_status = "miss"
-    elements: List[dict] = []
-
-    if not force_refresh and os.path.isfile(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                elements = json.load(f)
-            cache_status = "hit"
-        except (OSError, json.JSONDecodeError):
-            elements = []
-
-    error = None
-    if cache_status == "miss":
-        try:
-            elements = _fetch_elements(_build_query(south, west, north, east))
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(elements, f)
-        except Exception as exc:  # noqa: BLE001
-            error = str(exc)
-            elements = []
-
-    # Coarse sample for projection speed
-    step = max(1, len(track) // 800)
+    max_off_route_m: float,
+    primary_only: bool = False,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Project OSM elements onto track → (pois, sleep)."""
+    step = max(1, len(track) // 800) if track and len(track) >= 2 else 4
     pois: List[Dict[str, Any]] = []
     sleep: List[Dict[str, Any]] = []
     seen: set[Tuple[str, int]] = set()
+    rules = POI_RULES if primary_only else ALL_POI_RULES
 
     for el in elements:
         tags = el.get("tags") or {}
         if not isinstance(tags, dict):
             continue
-        cat_grp = _category_from_tags(tags)
+        cat_grp = None
+        for cat, key, val, grp in rules:
+            if tags.get(key) == val:
+                cat_grp = (cat, grp)
+                break
         if not cat_grp:
             continue
         category, group = cat_grp
@@ -259,39 +251,50 @@ def fetch_route_pois(
             continue
         seen.add(key)
 
-        along_km, off_m = _project_onto_track(lat, lon, track, sample_step=step)
+        along_km, off_m = poi_corridor.nearest_off_route_m(
+            lat, lon, track, sample_step=step
+        )
         if off_m > max_off_route_m and group != "sleep":
             continue
-        if off_m > 1500:  # sleep can be a bit further off
+        if off_m > max(1500.0, max_off_route_m) and group == "sleep":
             continue
+        if off_m > 1500 and group == "sleep" and max_off_route_m <= 500:
+            # Legacy analysis sleep cap
+            pass
+
+        hours = tags.get("opening_hours")
+        is24 = _is_24h_hours(hours)
+        has_shop = False
+        out_cat = category
+        if category == "Gas station":
+            has_shop = _fuel_has_shop(tags)
+            if has_shop and is24:
+                out_cat = "24h Shop"
+            elif has_shop:
+                out_cat = "Fuel shop"
+            else:
+                out_cat = "Gas station"
 
         item = {
+            "id": f"area-{osm_type}-{osm_id}",
             "osmId": osm_id,
             "osmType": osm_type,
             "name": tags.get("name") or tags.get("brand") or tags.get("operator") or None,
             "brand": tags.get("brand"),
             "operator": tags.get("operator"),
-            "category": category,
+            "category": out_cat,
             "group": group,
             "lat": round(lat, 5),
             "lon": round(lon, 5),
             "distanceAlongKm": round(along_km, 2),
             "distanceOffRouteM": round(off_m),
-            "openingHours": tags.get("opening_hours"),
+            "openingHours": hours,
             "website": tags.get("website") or tags.get("contact:website"),
+            "is24h": is24,
+            "hasShop": has_shop if category == "Gas station" else None,
+            "reviewStatus": "unreviewed",
+            "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
         }
-        if category == "Gas station":
-            has_shop = _fuel_has_shop(tags)
-            is24 = _is_24h_hours(tags.get("opening_hours"))
-            item["hasShop"] = has_shop
-            item["is24h"] = is24
-            if has_shop and is24:
-                item["category"] = "24h Shop"
-            elif has_shop:
-                item["category"] = "Fuel shop"
-            else:
-                # Bare pumps stay tagged but are demoted in scoring / skipped in Search
-                item["category"] = "Gas station"
         if group == "sleep":
             sleep.append(item)
         else:
@@ -299,7 +302,272 @@ def fetch_route_pois(
 
     pois.sort(key=lambda p: p["distanceAlongKm"])
     sleep.sort(key=lambda p: p["distanceAlongKm"])
+    return pois, sleep
+
+
+def fetch_route_pois(
+    track: Sequence[Sequence[Any]],
+    *,
+    force_refresh: bool = False,
+    max_off_route_m: float = 500.0,
+) -> Dict[str, Any]:
+    """POIs projected onto the route. Cached by track fingerprint (projected).
+
+    Also writes the Search corridor cache (primary categories, wider pad) so
+    Search-this-area never needs Overpass on the hot path.
+    """
+    if len(track) < 2:
+        return {"pois": [], "sleep": [], "cache": "skipped", "error": None}
+
+    t0 = time.perf_counter()
+    fp = poi_corridor.track_fingerprint(track)
+    # Analysis keeps a tighter off-route filter; Search corridor is wider.
+    analysis_key = f"analysis:{fp}:{int(max_off_route_m)}"
+    analysis_path = os.path.join(poi_corridor._cache_root(), f"{hashlib.sha1(analysis_key.encode()).hexdigest()[:16]}.analysis.json")
+
+    if not force_refresh and os.path.isfile(analysis_path):
+        try:
+            with open(analysis_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if isinstance(cached.get("pois"), list):
+                # Prefer existing Search corridor; if missing, rebuild from raw OSM cache.
+                existing = poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
+                if existing:
+                    poi_corridor.put_memory_corridor(existing)
+                else:
+                    # Re-project from raw Overpass cache at corridor width (no network).
+                    south, west, north, east = _bbox(track)
+                    raw_key = hashlib.sha1(
+                        f"{south:.3f},{west:.3f},{north:.3f},{east:.3f}".encode()
+                    ).hexdigest()[:16]
+                    raw_path = _cache_path(raw_key)
+                    if os.path.isfile(raw_path):
+                        try:
+                            with open(raw_path, "r", encoding="utf-8") as rf:
+                                raw_elems = json.load(rf)
+                            pad = poi_corridor.corridor_pad_m()
+                            wp, ws = _elements_to_projected(
+                                raw_elems,
+                                track,
+                                max_off_route_m=pad,
+                                primary_only=False,
+                            )
+                            _ensure_search_corridor_from_projected(track, wp, ws, force=True)
+                        except (OSError, json.JSONDecodeError, TypeError):
+                            _ensure_search_corridor_from_projected(
+                                track,
+                                cached.get("pois") or [],
+                                cached.get("sleep") or [],
+                                force=False,
+                            )
+                    else:
+                        _ensure_search_corridor_from_projected(
+                            track,
+                            cached.get("pois") or [],
+                            cached.get("sleep") or [],
+                            force=False,
+                        )
+                log.info(
+                    "poi_analysis cache=hit fingerprint=%s pois=%d sleep=%d ms=%.0f",
+                    fp,
+                    len(cached.get("pois") or []),
+                    len(cached.get("sleep") or []),
+                    (time.perf_counter() - t0) * 1000,
+                )
+                return {
+                    "pois": cached["pois"],
+                    "sleep": cached.get("sleep") or [],
+                    "cache": "hit",
+                    "error": None,
+                }
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+
+    # Raw Overpass element cache (bbox) — avoid re-download when projecting.
+    south, west, north, east = _bbox(track)
+    raw_key = hashlib.sha1(
+        f"{south:.3f},{west:.3f},{north:.3f},{east:.3f}".encode()
+    ).hexdigest()[:16]
+    raw_path = _cache_path(raw_key)
+    cache_status = "miss"
+    elements: List[dict] = []
+
+    if not force_refresh and os.path.isfile(raw_path):
+        try:
+            with open(raw_path, "r", encoding="utf-8") as f:
+                elements = json.load(f)
+            cache_status = "hit"
+        except (OSError, json.JSONDecodeError):
+            elements = []
+
+    error = None
+    t_op = None
+    if cache_status == "miss" or force_refresh:
+        try:
+            t_op0 = time.perf_counter()
+            elements = _fetch_elements(_build_query(south, west, north, east))
+            t_op = (time.perf_counter() - t_op0) * 1000
+            with open(raw_path, "w", encoding="utf-8") as f:
+                json.dump(elements, f)
+            cache_status = "miss"
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+            elements = []
+
+    t_proj0 = time.perf_counter()
+    # Project once at Search corridor width; analysis keeps a tighter subset.
+    pad = poi_corridor.corridor_pad_m()
+    wide_pois, wide_sleep = _elements_to_projected(
+        elements,
+        track,
+        max_off_route_m=max(pad, max_off_route_m),
+        primary_only=False,
+    )
+    pois = [
+        p
+        for p in wide_pois
+        if float(p.get("distanceOffRouteM") or 0) <= max_off_route_m
+        or (p.get("group") == "sleep")
+    ]
+    # Sleep cap for analysis remains 1500 m.
+    sleep = [s for s in wide_sleep if float(s.get("distanceOffRouteM") or 0) <= 1500]
+    # Non-sleep analysis also drops sleep-group bleed from wide_pois filter above
+    pois = [p for p in pois if p.get("group") != "sleep"]
+    t_proj = (time.perf_counter() - t_proj0) * 1000
+
+    try:
+        with open(analysis_path, "w", encoding="utf-8") as f:
+            json.dump({"pois": pois, "sleep": sleep, "fingerprint": fp}, f)
+    except OSError:
+        pass
+
+    _ensure_search_corridor_from_projected(track, wide_pois, wide_sleep, force=True)
+
+    log.info(
+        "poi_analysis cache=%s fingerprint=%s pois=%d sleep=%d overpass_ms=%s project_ms=%.0f total_ms=%.0f err=%s",
+        cache_status,
+        fp,
+        len(pois),
+        len(sleep),
+        f"{t_op:.0f}" if t_op is not None else "-",
+        t_proj,
+        (time.perf_counter() - t0) * 1000,
+        error,
+    )
     return {"pois": pois, "sleep": sleep, "cache": cache_status, "error": error}
+
+
+def _ensure_search_corridor_from_projected(
+    track: Sequence[Sequence[Any]],
+    pois: Sequence[Dict[str, Any]],
+    sleep: Sequence[Dict[str, Any]],
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Persist primary Search corridor (wider pad) from already-projected POIs."""
+    fp = poi_corridor.track_fingerprint(track)
+    pad = poi_corridor.corridor_pad_m()
+    existing = None if force else (
+        poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
+    )
+    if existing and int(existing.get("schema") or 0) >= poi_corridor.CACHE_SCHEMA:
+        poi_corridor.put_memory_corridor(existing)
+        return existing
+
+    # Primary-only for Search; keep POIs within corridor pad (sleep slightly farther).
+    primary_cats = {r[0] for r in POI_RULES}
+    # Gas station rules map to renamed categories
+    primary_out = {"24h Shop", "Fuel shop", "Gas station"} | primary_cats
+    combined: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, int]] = set()
+    for p in list(pois) + list(sleep):
+        cat = p.get("category") or ""
+        grp = p.get("group") or ""
+        # Map original gas → already renamed in projector
+        if cat not in primary_out and grp not in ("water", "sleep", "resupply"):
+            continue
+        if cat in ("Pharmacy", "Bike shop", "Café", "Restaurant", "Fast food", "Bakery"):
+            continue
+        off = float(p.get("distanceOffRouteM") or 9999)
+        if grp == "sleep":
+            if off > max(1500.0, pad):
+                continue
+        else:
+            if off > pad:
+                continue
+        # Drop bare pumps from Search corridor
+        if cat == "Gas station" and not p.get("hasShop"):
+            continue
+        key = (str(p.get("osmType") or "node"), int(p.get("osmId") or 0))
+        if key in seen:
+            continue
+        seen.add(key)
+        item = dict(p)
+        if not str(item.get("id") or "").startswith("area-"):
+            item["id"] = f"area-{key[0]}-{key[1]}"
+        combined.append(item)
+
+    bb = poi_corridor.corridor_bbox(track, pad)
+    data = {
+        "schema": poi_corridor.CACHE_SCHEMA,
+        "fingerprint": fp,
+        "corridorPadM": pad,
+        "bbox": list(bb),
+        "builtAt": time.time(),
+        "pois": combined,
+    }
+    try:
+        poi_corridor.save_corridor_cache(data)
+    except OSError:
+        pass
+    poi_corridor.put_memory_corridor(data)
+    return data
+
+
+def ensure_search_corridor(
+    track: Sequence[Sequence[Any]],
+    *,
+    force_refresh: bool = False,
+    build_if_missing: bool = True,
+) -> Dict[str, Any]:
+    """Load or build the Search corridor cache for a track.
+
+    Prefer disk/memory hit. On miss, optionally run Overpass (primary rules) once.
+    Search requests should pass build_if_missing=False so they never block on
+    a full corridor rebuild — Overpass fill stays budgeted inside fetch_viewport_pois.
+    """
+    empty = {
+        "schema": poi_corridor.CACHE_SCHEMA,
+        "fingerprint": "empty",
+        "corridorPadM": poi_corridor.corridor_pad_m(),
+        "bbox": [0, 0, 0, 0],
+        "pois": [],
+    }
+    if len(track) < 2:
+        return empty
+
+    fp = poi_corridor.track_fingerprint(track)
+    if not force_refresh:
+        mem = poi_corridor.get_memory_corridor(fp)
+        if mem:
+            return mem
+        disk = poi_corridor.load_corridor_cache(fp)
+        if disk:
+            poi_corridor.put_memory_corridor(disk)
+            return disk
+        if not build_if_missing:
+            return {**empty, "fingerprint": fp}
+
+    # Build via fetch_route_pois (writes both analysis + search caches)
+    pad = poi_corridor.corridor_pad_m()
+    bundle = fetch_route_pois(track, force_refresh=force_refresh, max_off_route_m=pad)
+    mem = poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
+    if mem:
+        return mem
+    # Fallback empty shell
+    return _ensure_search_corridor_from_projected(
+        track, bundle.get("pois") or [], bundle.get("sleep") or [], force=True
+    )
 
 
 # Groups accepted by viewport search (maps to POI_RULES.group or special filters).
@@ -336,7 +604,7 @@ def _build_viewport_query(
         parts.append(f'  node["{key}"="{val}"]({south},{west},{north},{east});')
         parts.append(f'  way["{key}"="{val}"]({south},{west},{north},{east});')
     body = "\n".join(parts) if parts else '  node["amenity"="drinking_water"](0,0,0,0);'
-    return f"[out:json][timeout:45];\n(\n{body}\n);\nout center tags;"
+    return f"[out:json][timeout:20];\n(\n{body}\n);\nout center tags;"
 
 
 def fetch_viewport_pois(
@@ -351,15 +619,15 @@ def fetch_viewport_pois(
     exclude_ids: Optional[Sequence[str]] = None,
     limit: int = 15,
     max_off_route_m: float = 500.0,
+    allow_overpass: bool = True,
+    overpass_budget_s: float = 3.5,
 ) -> Dict[str, Any]:
-    """POIs for a visible map bbox — scored batch for Search-this-area.
+    """POIs for a visible map bbox — corridor cache first, Overpass only as fill.
 
-    Returns the next ~`limit` candidates sorted by resupply score, skipping
-    `exclude_ids` (already-seen / verified). Projects onto `track` when given
-    so off-route distance and along-route km are real.
+    Hot path (viewport ∩ corridor): spatial filter + rank, typically <50 ms.
+    Cold path (outside corridor / empty cache): short Overpass attempt, then merge.
     """
-    from .route_stops import rank_candidates
-
+    t0 = time.perf_counter()
     # Clamp absurdly large viewports (whole-continent pans).
     if north - south > 2.5 or east - west > 2.5:
         return {
@@ -370,25 +638,94 @@ def fetch_viewport_pois(
             "hasMore": False,
             "batchSize": limit,
             "excludedCount": len(exclude_ids or []),
+            "timings": {
+                "totalMs": round((time.perf_counter() - t0) * 1000, 2),
+                "serverMs": 0,
+                "overpassMs": None,
+                "spatialFilterMs": 0,
+            },
+            "stats": {"cache": "skipped", "returned": 0},
         }
 
     g = (group or "all").strip().lower()
-    # Zoom-aware soft cap: wide span → fewer markers for readability
-    span = max(north - south, abs(east - west))
-    if span > 1.2:
-        limit = min(limit, 5)
-    elif span > 0.55:
-        limit = min(limit, 8)
-    elif span > 0.22:
-        limit = min(limit, 12)
+    track = track or []
 
+    # --- Option A hot path: corridor projected cache ---
+    t_cache0 = time.perf_counter()
+    corridor = None
+    if len(track) >= 2:
+        fp = poi_corridor.track_fingerprint(track)
+        corridor = poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
+        if corridor:
+            poi_corridor.put_memory_corridor(corridor)
+    t_cache_ms = (time.perf_counter() - t_cache0) * 1000.0
+
+    viewport = (south, west, north, east)
+    if corridor and corridor.get("pois") is not None:
+        cbox = corridor.get("bbox") or [0, 0, 0, 0]
+        corridor_box = (float(cbox[0]), float(cbox[1]), float(cbox[2]), float(cbox[3]))
+        if poi_corridor.bbox_intersects(viewport, corridor_box):
+            result = poi_corridor.query_viewport(
+                corridor,
+                south=south,
+                west=west,
+                north=north,
+                east=east,
+                group=g,
+                limit=limit,
+                exclude_ids=exclude_ids,
+            )
+            timings = dict(result.get("timings") or {})
+            timings["cacheLookupMs"] = round(t_cache_ms, 3)
+            timings["totalMs"] = round((time.perf_counter() - t0) * 1000, 2)
+            timings["serverMs"] = timings["totalMs"]
+            result["timings"] = timings
+            log.info(
+                "search cache=corridor-hit group=%s candidates=%s returned=%s total_ms=%.1f spatial_ms=%s",
+                g,
+                result.get("candidateCount"),
+                len(result.get("pois") or []),
+                timings["totalMs"],
+                timings.get("spatialFilterMs"),
+            )
+            # Even if zero candidates in this group, still a successful cache hit
+            # (empty area) — do NOT fall through to Overpass for intersecting corridor.
+            return result
+
+    # --- Cold path: viewport outside corridor or no corridor yet ---
+    if not allow_overpass:
+        return {
+            "pois": [],
+            "cache": "miss",
+            "error": "Search corridor not ready.",
+            "truncated": False,
+            "hasMore": False,
+            "batchSize": limit,
+            "candidateCount": 0,
+            "excludedCount": len(exclude_ids or []),
+            "timings": {
+                "totalMs": round((time.perf_counter() - t0) * 1000, 2),
+                "serverMs": round((time.perf_counter() - t0) * 1000, 2),
+                "cacheLookupMs": round(t_cache_ms, 3),
+                "overpassMs": None,
+                "spatialFilterMs": 0,
+            },
+            "stats": {"cache": "miss", "returned": 0},
+        }
+
+    # Prefer building corridor if we have a track and no cache yet (one-time cost).
+    # But Search must respect the budget — if corridor build would take forever,
+    # fall back to a tight viewport Overpass with short timeout.
+    overpass_ms = None
+    error = None
+    elements: List[dict] = []
+    cache_status = "miss"
+
+    # Viewport tile disk cache (legacy) — still useful for outside-corridor fills
     cache_key = hashlib.sha1(
         f"vp3:{south:.3f},{west:.3f},{north:.3f},{east:.3f}:{g}".encode()
     ).hexdigest()[:16]
     path = _cache_path(cache_key)
-    cache_status = "miss"
-    elements: List[dict] = []
-
     if os.path.isfile(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -397,111 +734,164 @@ def fetch_viewport_pois(
         except (OSError, json.JSONDecodeError):
             elements = []
 
-    error = None
     if cache_status == "miss":
+        t_op0 = time.perf_counter()
         try:
-            elements = _fetch_elements(_build_viewport_query(south, west, north, east, g))
+            # Short budget so client 5s hard cap can still settle cleanly.
+            elements = _fetch_elements(
+                _build_viewport_query(south, west, north, east, g),
+                total_timeout_s=max(1.5, overpass_budget_s),
+                connect_timeout_s=min(3.0, overpass_budget_s),
+                max_attempts=1,
+            )
+            overpass_ms = (time.perf_counter() - t_op0) * 1000
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(elements, f)
         except Exception as exc:  # noqa: BLE001
             error = str(exc)
+            overpass_ms = (time.perf_counter() - t_op0) * 1000
             elements = []
 
-    step = max(1, len(track) // 800) if track and len(track) >= 2 else 4
-    pois: List[Dict[str, Any]] = []
-    seen: set[Tuple[str, int]] = set()
-    for el in elements:
-        tags = el.get("tags") or {}
-        if not isinstance(tags, dict):
-            continue
-        cat_grp = _category_from_tags(tags)
-        if not cat_grp:
-            continue
-        category, grp = cat_grp
-
-        # Drop secondary categories from Search (pharmacy / bike / dining)
-        if category in ("Pharmacy", "Bike shop", "Café", "Restaurant", "Fast food", "Bakery"):
-            continue
-
-        hours = tags.get("opening_hours")
-        is24 = _is_24h_hours(hours)
-        has_shop = False
-        out_cat = category
-
-        if category == "Gas station":
-            has_shop = _fuel_has_shop(tags)
-            if not has_shop:
-                continue  # bare pumps out of primary Search
-            out_cat = "24h Shop" if is24 else "Fuel shop"
-            # Fuel QA wants 24h shops; "all" accepts any fuel shop
-            if g == "fuel" and not is24:
-                # Still include strong shop stations; prefer 24h via scoring
-                pass
-
-        if g == "fuel" and category != "Gas station":
-            continue
-        if g == "water" and grp != "water":
-            continue
-        if g == "resupply" and category not in ("Supermarket", "Convenience"):
-            continue
-        if g == "sleep" and grp != "sleep":
-            continue
-        if g in ("dining", "service"):
-            continue
-
-        ll = _element_ll(el)
-        if not ll:
-            continue
-        lat, lon = ll
-        osm_type = el.get("type") or "node"
-        osm_id = int(el.get("id") or 0)
-        key = (osm_type, osm_id)
-        if key in seen:
-            continue
-        seen.add(key)
-
-        along_km = 0.0
-        off_m = 0.0
-        if track and len(track) >= 2:
-            along_km, off_m = _project_onto_track(lat, lon, track, sample_step=step)
-            if grp != "sleep" and off_m > max_off_route_m:
+    t_proj0 = time.perf_counter()
+    if track and len(track) >= 2:
+        pad = poi_corridor.corridor_pad_m()
+        pois, sleep = _elements_to_projected(
+            elements,
+            track,
+            max_off_route_m=max(pad, max_off_route_m),
+            primary_only=True,
+        )
+        projected = pois + sleep
+    else:
+        # No track — keep elements as lightweight POIs without projection
+        projected = []
+        for el in elements[:max_results]:
+            tags = el.get("tags") or {}
+            cat_grp = _category_from_tags(tags)
+            if not cat_grp:
                 continue
-            if grp == "sleep" and off_m > 1500:
+            category, grp = cat_grp
+            ll = _element_ll(el)
+            if not ll:
                 continue
+            lat, lon = ll
+            osm_type = el.get("type") or "node"
+            osm_id = int(el.get("id") or 0)
+            hours = tags.get("opening_hours")
+            is24 = _is_24h_hours(hours)
+            has_shop = _fuel_has_shop(tags) if category == "Gas station" else False
+            out_cat = category
+            if category == "Gas station":
+                if not has_shop:
+                    continue
+                out_cat = "24h Shop" if is24 else "Fuel shop"
+            projected.append(
+                {
+                    "id": f"area-{osm_type}-{osm_id}",
+                    "osmId": osm_id,
+                    "osmType": osm_type,
+                    "name": tags.get("name") or tags.get("brand") or tags.get("operator"),
+                    "category": out_cat,
+                    "group": grp,
+                    "lat": round(lat, 5),
+                    "lon": round(lon, 5),
+                    "distanceAlongKm": 0.0,
+                    "distanceOffRouteM": 0,
+                    "openingHours": hours,
+                    "is24h": is24,
+                    "hasShop": has_shop if category == "Gas station" else None,
+                    "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                }
+            )
+    t_proj_ms = (time.perf_counter() - t_proj0) * 1000
 
-        pois.append(
-            {
-                "id": f"area-{osm_type}-{osm_id}",
-                "osmId": osm_id,
-                "osmType": osm_type,
-                "name": tags.get("name") or tags.get("brand") or tags.get("operator") or None,
-                "brand": tags.get("brand"),
-                "operator": tags.get("operator"),
-                "category": out_cat,
-                "group": grp,
-                "lat": round(lat, 5),
-                "lon": round(lon, 5),
-                "distanceAlongKm": round(along_km, 2),
-                "distanceOffRouteM": round(off_m),
-                "openingHours": hours,
-                "website": tags.get("website") or tags.get("contact:website"),
-                "is24h": is24,
-                "hasShop": has_shop if category == "Gas station" else None,
-                "reviewStatus": "unreviewed",
-                "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+    # Merge into corridor cache when we have a track
+    if track and len(track) >= 2 and projected:
+        fp = poi_corridor.track_fingerprint(track)
+        base = (
+            poi_corridor.get_memory_corridor(fp)
+            or poi_corridor.load_corridor_cache(fp)
+            or {
+                "schema": poi_corridor.CACHE_SCHEMA,
+                "fingerprint": fp,
+                "corridorPadM": poi_corridor.corridor_pad_m(),
+                "bbox": list(poi_corridor.corridor_bbox(track, poi_corridor.corridor_pad_m())),
+                "pois": [],
             }
         )
-        if len(pois) >= max_results:
-            break
+        merged = poi_corridor.merge_pois_into_corridor(base, projected)
+        try:
+            poi_corridor.save_corridor_cache(merged)
+        except OSError:
+            pass
+        poi_corridor.put_memory_corridor(merged)
+        corridor = merged
+    elif corridor is None and track and len(track) >= 2:
+        corridor = {
+            "schema": poi_corridor.CACHE_SCHEMA,
+            "fingerprint": poi_corridor.track_fingerprint(track),
+            "corridorPadM": poi_corridor.corridor_pad_m(),
+            "bbox": list(poi_corridor.corridor_bbox(track, poi_corridor.corridor_pad_m())),
+            "pois": projected,
+        }
 
-    batch, has_more = rank_candidates(pois, exclude_ids=exclude_ids, limit=limit)
-    return {
-        "pois": batch,
-        "cache": cache_status,
-        "error": error,
-        "truncated": len(elements) > max_results,
-        "hasMore": has_more,
-        "batchSize": limit,
-        "candidateCount": len(pois),
-        "excludedCount": len(exclude_ids or []),
+    if corridor and corridor.get("pois") is not None:
+        result = poi_corridor.query_viewport(
+            corridor,
+            south=south,
+            west=west,
+            north=north,
+            east=east,
+            group=g,
+            limit=limit,
+            exclude_ids=exclude_ids,
+        )
+    else:
+        from .route_stops import rank_candidates
+
+        grouped = poi_corridor.filter_group(projected, g)
+        batch, has_more = rank_candidates(grouped, exclude_ids=exclude_ids, limit=limit)
+        result = {
+            "pois": batch,
+            "cache": cache_status,
+            "error": error,
+            "truncated": False,
+            "hasMore": has_more,
+            "batchSize": limit,
+            "candidateCount": len(grouped),
+            "excludedCount": len(exclude_ids or []),
+        }
+
+    total_ms = (time.perf_counter() - t0) * 1000
+    timings = dict(result.get("timings") or {})
+    timings.update(
+        {
+            "totalMs": round(total_ms, 2),
+            "serverMs": round(total_ms, 2),
+            "cacheLookupMs": round(t_cache_ms, 3),
+            "overpassMs": round(overpass_ms, 1) if overpass_ms is not None else None,
+            "projectMs": round(t_proj_ms, 2),
+        }
+    )
+    result["timings"] = timings
+    result["cache"] = "corridor-miss" if cache_status == "miss" else "viewport-hit"
+    if error and not result.get("pois"):
+        result["error"] = error
+    elif error:
+        result["error"] = None  # partial OK
+    result["stats"] = {
+        "cache": result["cache"],
+        "corridorPois": len((corridor or {}).get("pois") or []),
+        "candidates": result.get("candidateCount"),
+        "returned": len(result.get("pois") or []),
     }
+    log.info(
+        "search cache=%s group=%s returned=%s overpass_ms=%s total_ms=%.1f err=%s",
+        result["cache"],
+        g,
+        len(result.get("pois") or []),
+        timings.get("overpassMs"),
+        total_ms,
+        result.get("error"),
+    )
+    return result

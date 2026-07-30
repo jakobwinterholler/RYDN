@@ -307,6 +307,25 @@ export interface ViewportPoisResult {
   batchSize?: number;
   candidateCount?: number;
   excludedCount?: number;
+  corridorPois?: number;
+  timings?: {
+    totalMs?: number;
+    serverMs?: number;
+    requestMs?: number;
+    cacheLookupMs?: number;
+    gridMs?: number;
+    spatialFilterMs?: number;
+    rankMs?: number;
+    overpassMs?: number | null;
+    projectMs?: number | null;
+  };
+  stats?: {
+    corridorPois?: number;
+    inView?: number;
+    candidates?: number;
+    returned?: number;
+    cache?: string;
+  };
 }
 
 export type ViewportSearchOpts = {
@@ -317,7 +336,7 @@ export type ViewportSearchOpts = {
   signal?: AbortSignal;
 };
 
-/** Next scored POI batch for the visible map bbox (Overpass via backend). */
+/** Viewport POI search — corridor cache first (instant), Overpass only as fill. */
 export async function searchRouteViewportPois(
   id: string,
   bbox: { south: number; west: number; north: number; east: number },
@@ -334,9 +353,47 @@ export async function searchRouteViewportPois(
     limit: String(opts.limit ?? 10),
   });
   if (opts.exclude?.length) q.set("exclude", opts.exclude.join(","));
+  const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
   const res = await request(`/api/routes/${id}/pois?${q}`, { signal: opts.signal });
   if (!res.ok) await fail(res, "Could not search this area.");
-  return (await res.json()) as ViewportPoisResult;
+  const body = (await res.json()) as ViewportPoisResult;
+  const networkMs =
+    (typeof performance !== "undefined" ? performance.now() : Date.now()) - t0;
+  const serverMs = body.timings?.serverMs ?? body.timings?.totalMs;
+  if (typeof console !== "undefined" && console.info) {
+    console.info("[rydn.search]", {
+      cache: body.cache ?? body.stats?.cache,
+      networkMs: Math.round(networkMs),
+      serverMs,
+      overpassMs: body.timings?.overpassMs ?? null,
+      spatialFilterMs: body.timings?.spatialFilterMs,
+      pois: body.pois?.length ?? 0,
+      candidates: body.candidateCount ?? body.stats?.candidates,
+      corridorPois: body.corridorPois ?? body.stats?.corridorPois,
+    });
+  }
+  return body;
+}
+
+/** Warm Search corridor cache on route open (background). */
+export async function preloadRoutePois(id: string): Promise<{
+  ok: boolean;
+  poiCount?: number;
+  timings?: { totalMs?: number };
+  cache?: string;
+}> {
+  try {
+    const res = await request(`/api/routes/${id}/pois/preload`, { method: "POST" });
+    if (!res.ok) return { ok: false };
+    return (await res.json()) as {
+      ok: boolean;
+      poiCount?: number;
+      timings?: { totalMs?: number };
+      cache?: string;
+    };
+  } catch {
+    return { ok: false };
+  }
 }
 
 export async function patchRoute(

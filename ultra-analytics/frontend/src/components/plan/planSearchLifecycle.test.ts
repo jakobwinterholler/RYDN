@@ -61,6 +61,6 @@ describe("isAbortError", () => {
   it("detects AbortError", () => {
     expect(isAbortError(new DOMException("Aborted", "AbortError"))).toBe(true);
     expect(isAbortError(new Error("network"))).toBe(false);
-    expect(SEARCH_FAIL_TOAST).toMatch(/Couldn/);
+    expect(SEARCH_FAIL_TOAST).toMatch(/Search failed/);
   });
 });

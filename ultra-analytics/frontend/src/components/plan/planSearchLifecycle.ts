@@ -33,5 +33,8 @@ export function isAbortError(err: unknown): boolean {
   return /abort/i.test(e.message || "");
 }
 
-/** Fail toast copy — only when outcome === failed. */
-export const SEARCH_FAIL_TOAST = "Couldn't refresh. Try again.";
+/** Fail toast copy — only when outcome === failed. Hard 5s cap. */
+export const SEARCH_FAIL_TOAST = "Search failed";
+
+/** Client hard cap — cancel, show fail toast, stop spinner. */
+export const SEARCH_TIMEOUT_MS = 5_000;

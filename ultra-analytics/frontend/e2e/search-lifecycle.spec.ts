@@ -6,6 +6,7 @@ import {
   resolveSearchOutcome,
   isAbortError,
   SEARCH_FAIL_TOAST,
+  SEARCH_TIMEOUT_MS,
 } from "../src/components/plan/planSearchLifecycle";
 import {
   replaceSearchResults,
@@ -44,7 +45,11 @@ test.describe("Search lifecycle — no false timeout", () => {
     expect(
       resolveSearchOutcome({ resultCount: 0, aborted: true, hardError: false }),
     ).toBe("failed");
-    expect(SEARCH_FAIL_TOAST).toBe("Couldn't refresh. Try again.");
+    expect(SEARCH_FAIL_TOAST).toBe("Search failed");
+  });
+
+  test("hard timeout constant is 5s", () => {
+    expect(SEARCH_TIMEOUT_MS).toBe(5000);
   });
 
   test("isAbortError covers wrapped fetch abort", () => {

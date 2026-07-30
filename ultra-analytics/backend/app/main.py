@@ -321,20 +321,25 @@ def get_route_viewport_pois(
     exclude: str = "",
     user: dict = Depends(current_user),
 ) -> JSONResponse:
-    """Viewport POI search — next scored batch for Search / Search-again.
+    """Viewport POI search — corridor cache first (instant), Overpass only as fill.
 
     Query:
-      south,west,north,east — map bbox
-      group — water|resupply|fuel|service|sleep|dining|all
+      south,west,north,east — map bbox (visible viewport only)
+      group — water|resupply|fuel|sleep|all
       limit — batch size (default 15, max 40)
       exclude — comma-separated already-seen / verified stop ids
+
+    Response includes `timings` + `stats` for instrumentation.
     """
+    import time as _time
+
+    t_req = _time.perf_counter()
     detail = routes_store.get_route_detail(user["id"], route_id)
     if not detail:
         raise HTTPException(status_code=404, detail="Route not found.")
     if south >= north or west >= east:
         raise HTTPException(status_code=400, detail="Invalid bounding box.")
-    from .analysis.route_pois import fetch_viewport_pois
+    from .analysis.route_pois import fetch_viewport_pois, ensure_search_corridor
 
     exclude_ids = [x.strip() for x in (exclude or "").split(",") if x.strip()]
     # Also skip permanently verified stops so Search-again never reloads them.
@@ -350,6 +355,13 @@ def get_route_viewport_pois(
     track = route.get("track") or route.get("points") or []
     batch_limit = max(1, min(40, int(limit or 15)))
 
+    # Warm corridor from disk/memory (no Overpass) before filtering.
+    if track and len(track) >= 2:
+        try:
+            ensure_search_corridor(track, force_refresh=False, build_if_missing=False)
+        except Exception:
+            pass
+
     payload = fetch_viewport_pois(
         south,
         west,
@@ -359,8 +371,42 @@ def get_route_viewport_pois(
         track=track,
         exclude_ids=exclude_ids,
         limit=batch_limit,
+        overpass_budget_s=3.5,
     )
+    timings = dict(payload.get("timings") or {})
+    timings["requestMs"] = round((_time.perf_counter() - t_req) * 1000, 2)
+    payload["timings"] = timings
     return JSONResponse(payload)
+
+
+@app.post("/api/routes/{route_id}/pois/preload")
+def preload_route_pois(
+    route_id: str,
+    user: dict = Depends(current_user),
+) -> JSONResponse:
+    """Ensure Search corridor cache is warm (call on route open / import)."""
+    import time as _time
+
+    route = routes_store.get_route(user["id"], route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found.")
+    track = route.get("track") or route.get("points") or []
+    from .analysis.route_pois import ensure_search_corridor
+
+    t0 = _time.perf_counter()
+    corridor = ensure_search_corridor(track, force_refresh=False)
+    ms = (_time.perf_counter() - t0) * 1000
+    return JSONResponse(
+        {
+            "ok": True,
+            "fingerprint": corridor.get("fingerprint"),
+            "poiCount": len(corridor.get("pois") or []),
+            "corridorPadM": corridor.get("corridorPadM"),
+            "bbox": corridor.get("bbox"),
+            "timings": {"totalMs": round(ms, 2)},
+            "cache": "hit" if ms < 500 else "built",
+        }
+    )
 
 
 @app.patch("/api/routes/{route_id}")

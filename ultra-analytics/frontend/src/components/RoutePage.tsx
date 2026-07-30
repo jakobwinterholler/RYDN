@@ -6,6 +6,7 @@ import {
   getRoute,
   getRouteAnalysis,
   patchRoute,
+  preloadRoutePois,
   searchRouteViewportPois,
 } from "../api";
 import type {
@@ -48,6 +49,7 @@ import {
   isAbortError,
   resolveSearchOutcome,
   SEARCH_FAIL_TOAST,
+  SEARCH_TIMEOUT_MS,
 } from "./plan/planSearchLifecycle";
 import {
   promoteToVerified,
@@ -294,8 +296,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const searchGenRef = useRef(0);
   const searchStatusTimerRef = useRef<number | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
-  /** Hard cap so Search never sticks on Searching… */
-  const SEARCH_TIMEOUT_MS = 12_000;
 
   const showToast = (message: string) => {
     setToast(message);
@@ -329,6 +329,15 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         }
         setVerifiedStops(Array.from(byId.values()));
         setSearchResults([]);
+        // Warm Search corridor in background (Option A) — never blocks UI.
+        void preloadRoutePois(routeId).then((pre) => {
+          if (cancelled || !pre.ok) return;
+          console.info("[rydn.search.preload]", {
+            poiCount: pre.poiCount,
+            cache: pre.cache,
+            ms: pre.timings?.totalMs,
+          });
+        });
       })
       .catch((e) => !cancelled && setError((e as Error).message))
       .finally(() => !cancelled && setAnalyzing(false));
@@ -934,18 +943,25 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
     const group = qaToOverpassGroup(activeQa);
     const exclude = Array.from(verifiedIds);
-    const midLat = (bbox.south + bbox.north) / 2;
-    const tiles: PlanMapBBox[] = [
-      { south: bbox.south, west: bbox.west, north: midLat, east: bbox.east },
-      { south: midLat, west: bbox.west, north: bbox.north, east: bbox.east },
-    ];
-    const perTile = Math.ceil(SEARCH_BATCH / tiles.length);
     const collected: RecommendedStop[] = [];
     let hardError = false;
     let thrown = false;
     let searchOk = false;
+    const tClient = typeof performance !== "undefined" ? performance.now() : Date.now();
 
-    const absorb = (res: Awaited<ReturnType<typeof searchRouteViewportPois>>) => {
+    // Abort at hard 5s — spinner must always stop; never stuck Searching.
+    const timeoutId = window.setTimeout(() => {
+      if (gen === searchGenRef.current) ac.abort();
+    }, SEARCH_TIMEOUT_MS);
+
+    try {
+      // Single request — corridor cache makes tiling unnecessary.
+      const res = await searchRouteViewportPois(route.id, bbox, {
+        group,
+        limit: SEARCH_BATCH,
+        exclude,
+        signal: ac.signal,
+      });
       if (gen !== searchGenRef.current) return;
       const mapped = (res.pois || [])
         .map(mapViewportPoi)
@@ -954,49 +970,27 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         if (collected.some((c) => c.id === s.id)) continue;
         collected.push(s);
       }
-      // Partial body with error still counts as usable results.
+      // Progressive: paint ASAP once we have results (before settle).
+      if (collected.length > 0) {
+        setSearchResults(replaceSearchResults(collected.slice(0, SEARCH_BATCH), verifiedIds));
+        setSearchStatus(searchStatusForQa(activeQa, 2));
+      }
       if (mapped.length === 0 && res.error && !isZoomInSearchError(res.error)) {
         hardError = true;
       }
-      if (collected.length > 0) setSearchStatus(searchStatusForQa(activeQa, 2));
-    };
-
-    const fetchTile = async (tile: PlanMapBBox, limit: number, excludeIds: string[]) => {
-      try {
-        const res = await searchRouteViewportPois(route.id, tile, {
-          group,
-          limit,
-          exclude: excludeIds,
-          signal: ac.signal,
-        });
-        absorb(res);
-      } catch (err) {
-        if (gen !== searchGenRef.current) return;
-        if (isAbortError(err) || ac.signal.aborted) return;
-        hardError = true;
-      }
-    };
-
-    // Abort only while still empty — never race past a successful response.
-    const timeoutId = window.setTimeout(() => {
-      if (collected.length === 0 && gen === searchGenRef.current) ac.abort();
-    }, SEARCH_TIMEOUT_MS);
-
-    try {
-      await Promise.all(tiles.map((tile) => fetchTile(tile, perTile, exclude)));
-      if (
-        collected.length < SEARCH_BATCH &&
-        gen === searchGenRef.current &&
-        !ac.signal.aborted
-      ) {
-        await fetchTile(bbox, SEARCH_BATCH - collected.length, [
-          ...exclude,
-          ...collected.map((s) => s.id),
-        ]);
-      }
+      const clientMs =
+        (typeof performance !== "undefined" ? performance.now() : Date.now()) - tClient;
+      console.info("[rydn.search.apply]", {
+        clientMs: Math.round(clientMs),
+        rendered: Math.min(collected.length, SEARCH_BATCH),
+        cache: res.cache,
+        timings: res.timings,
+      });
     } catch (err) {
-      // Per-tile catch should swallow aborts; this is a last resort.
-      if (gen === searchGenRef.current && !isAbortError(err) && !ac.signal.aborted) {
+      if (gen !== searchGenRef.current) return;
+      if (isAbortError(err) || ac.signal.aborted) {
+        // timeout / supersede — settle via outcome below
+      } else {
         thrown = true;
         hardError = true;
       }
