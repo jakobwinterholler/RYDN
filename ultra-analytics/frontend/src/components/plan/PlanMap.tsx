@@ -428,14 +428,15 @@ function ensureLayers(map: MapLibreMap) {
     "interpolate",
     ["linear"],
     ["zoom"],
+    // ~+40% vs prior sizes for mobile tap targets
     7,
-    stateMul(0.55),
+    stateMul(0.77),
     10,
-    stateMul(0.78),
+    stateMul(1.09),
     13,
-    stateMul(1),
+    stateMul(1.4),
     16,
-    stateMul(1.18),
+    stateMul(1.65),
   ];
 
   // Unverified / normal markers — category SymbolLayer (not circles)

@@ -25,17 +25,21 @@ export function bboxSpanTooLarge(
 /**
  * Resolve the single search UI state.
  * Only one of: hidden | ready | searching | zoomIn.
+ *
+ * "Search here" appears only after map move AND a category is selected.
  */
 export function resolvePlanSearchChip(opts: {
   mode: "plan" | "ride";
   searching: boolean;
-  /** User moved the map since the last finished search (success). */
+  /** User moved the map since the last finished search. */
   prompted: boolean;
+  /** Quick Action category selected (Water / Markets / 24h / Sleep). */
+  hasCategory: boolean;
   bbox: PlanSearchBBox | null;
 }): PlanSearchChip {
   if (opts.mode !== "plan") return "hidden";
   if (opts.searching) return "searching";
-  if (!opts.prompted) return "hidden";
+  if (!opts.prompted || !opts.hasCategory) return "hidden";
   if (bboxSpanTooLarge(opts.bbox)) return "zoomIn";
   return "ready";
 }
@@ -43,4 +47,13 @@ export function resolvePlanSearchChip(opts: {
 export function isZoomInSearchError(message: string | null | undefined): boolean {
   if (!message) return false;
   return /zoom in/i.test(message);
+}
+
+/** Cap temporary search results by viewport span — quality over quantity (3–15). */
+export function searchResultLimitForBbox(bbox: PlanSearchBBox): number {
+  const span = Math.max(bbox.north - bbox.south, Math.abs(bbox.east - bbox.west));
+  if (span > 1.2) return 3;
+  if (span > 0.55) return 6;
+  if (span > 0.22) return 10;
+  return 15;
 }

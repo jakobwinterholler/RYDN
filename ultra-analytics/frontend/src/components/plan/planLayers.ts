@@ -28,11 +28,16 @@ export type QuickActionId = "water" | "food" | "h24" | "sleep";
 
 export type PlanMarkerKind = "climb" | "poi" | "sleep" | "remote" | "stage" | "decision" | "area";
 
+/** Permanent verified layer vs temporary search workspace. */
+export type PlanMarkerLayer = "temp" | "verified" | "system";
+
 export interface PlanMarker {
   id: string;
   lat: number;
   lon: number;
   kind: PlanMarkerKind;
+  /** temp = search results (replaced each search); verified = permanent; system = climbs/remote/… */
+  layer?: PlanMarkerLayer;
   group?: string;
   category?: string;
   status?: string;
@@ -197,6 +202,12 @@ export function markerVisible(
   // Service POIs: ~500 m corridor (sleep slightly farther)
   if (!withinCorridor(m)) return false;
 
+  // Temporary search finds: only while a matching Quick Action is on
+  if (m.layer === "temp" || m.kind === "area") {
+    if (!qa) return false;
+    return stopMatchesLayer(m, qa) && (layers.rejected || m.status !== "rejected");
+  }
+
   // Quick Action: exclusive category filter — map answers only that question
   if (qa) {
     return stopMatchesLayer(m, qa) && (layers.rejected || m.status !== "rejected");
@@ -208,7 +219,7 @@ export function markerVisible(
     return layers.sleep;
   }
 
-  const isVerified = m.status === "verified";
+  const isVerified = m.status === "verified" || m.layer === "verified";
   if (isVerified && layers.verified) return true;
 
   // Explicit layer toggles (Layers panel) can still surface unverified services
@@ -300,9 +311,7 @@ export function searchLimitForBbox(bbox: {
 }
 
 /**
- * Caps by Quick Action:
- * Water / Markets / Sleep → 6–10 best
- * 24h → a few more useful shops (still hard-capped)
+ * Caps by viewport span — 3–15 high-quality results.
  */
 export function searchLimitForQa(
   qa: QuickActionId | null,
@@ -310,14 +319,15 @@ export function searchLimitForQa(
 ): number {
   const span = Math.max(bbox.north - bbox.south, Math.abs(bbox.east - bbox.west));
   if (qa === "h24") {
-    if (span > 1.2) return 8;
-    if (span > 0.55) return 12;
-    return 16;
+    if (span > 1.2) return 5;
+    if (span > 0.55) return 10;
+    if (span > 0.22) return 12;
+    return 15;
   }
-  // water · markets · sleep · all
-  if (span > 1.2) return 6;
-  if (span > 0.55) return 8;
-  return 10;
+  if (span > 1.2) return 3;
+  if (span > 0.55) return 6;
+  if (span > 0.22) return 10;
+  return 15;
 }
 
 /** Interpolate a lat/lon along route points by distance fraction (ride progress). */

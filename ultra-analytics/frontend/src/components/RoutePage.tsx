@@ -44,6 +44,12 @@ import {
   isZoomInSearchError,
   resolvePlanSearchChip,
 } from "./plan/planSearchUi";
+import {
+  promoteToVerified,
+  removeFromSearchResults,
+  replaceSearchResults,
+  verifiedIdSet,
+} from "./plan/workspaceLayers";
 
 function mapViewportPoi(p: {
   id: string;
@@ -270,18 +276,30 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [searchPrompted, setSearchPrompted] = useState(false);
   const [searchingArea, setSearchingArea] = useState(false);
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
-  const [areaPois, setAreaPois] = useState<RecommendedStop[]>([]);
+  /** TEMPORARY search workspace — replaced on every new search. */
+  const [searchResults, setSearchResults] = useState<RecommendedStop[]>([]);
+  /** PERMANENT verified layer — survives every search. */
+  const [verifiedStops, setVerifiedStops] = useState<RecommendedStop[]>([]);
+  /** Transient toast (errors) — never a permanent banner for search. */
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const reviewTimers = useRef<number[]>([]);
   const analysisRef = useRef<RouteAnalysis | null>(null);
   const routeRef = useRef<PlannedRouteDetail | null>(null);
-  /** IDs already returned by Search — next Search skips these. */
-  const seenSearchIdsRef = useRef<Set<string>>(new Set());
   const searchGenRef = useRef(0);
   const searchStatusTimerRef = useRef<number | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
-  const autoSearchQaRef = useRef<QuickActionId | null>(null);
   /** Hard cap so Search never sticks on Searching… */
   const SEARCH_TIMEOUT_MS = 12_000;
+
+  const showToast = (message: string) => {
+    setToast(message);
+    if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 3200);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -299,15 +317,13 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         if (a.targetStageKm) setTargetKm(Math.round(a.targetStageKm));
         // Restore permanently saved verified finds (never disappear on re-search).
         const saved = Object.values(r.savedStops || {}) as RecommendedStop[];
-        if (saved.length) {
-          setAreaPois(
-            saved.map((s) => ({
-              ...s,
-              reviewStatus: "verified",
-            })),
-          );
-          for (const s of saved) seenSearchIdsRef.current.add(s.id);
+        const fromRec = (a.recommendedStops || []).filter((s) => s.reviewStatus === "verified");
+        const byId = new Map<string, RecommendedStop>();
+        for (const s of [...fromRec, ...saved]) {
+          byId.set(s.id, { ...s, reviewStatus: "verified" });
         }
+        setVerifiedStops(Array.from(byId.values()));
+        setSearchResults([]);
       })
       .catch((e) => !cancelled && setError((e as Error).message))
       .finally(() => !cancelled && setAnalyzing(false));
@@ -334,6 +350,10 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       }
       searchAbortRef.current?.abort();
       searchAbortRef.current = null;
+      if (toastTimerRef.current != null) {
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -344,6 +364,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     setOverflowOpen(false);
     setSearchPrompted(false);
     if (mode === "ride") {
+      setSearchResults([]);
       setLayersOpen(false);
       setBriefingOpen(false);
     }
@@ -425,12 +446,14 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     if (!currentRoute || !currentAnalysis || reviewMotion) return;
 
     const list = currentAnalysis.recommendedStops || [];
-    let currentIdx = list.findIndex((s) => s.id === stopId);
-    const areaStop = areaPois.find((s) => s.id === stopId);
-    // Area search finds can be verified even before they are in recommendedStops.
-    if (currentIdx < 0 && !areaStop) return;
+    const currentIdx = list.findIndex((s) => s.id === stopId);
+    const tempStop = searchResults.find((s) => s.id === stopId);
+    const alreadyVerified = verifiedStops.find((s) => s.id === stopId);
+    // Temp search finds can be verified before they are in recommendedStops.
+    if (currentIdx < 0 && !tempStop && !alreadyVerified) return;
 
-    const fromList = currentIdx >= 0 ? list[currentIdx] : areaStop!;
+    const fromList =
+      currentIdx >= 0 ? list[currentIdx] : tempStop || alreadyVerified!;
     const rawPrev = fromList?.reviewStatus || "unreviewed";
     const previousStatus: ReviewStatus | "unreviewed" =
       rawPrev === "verified" || rawPrev === "rejected" || rawPrev === "skipped"
@@ -438,6 +461,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         : "unreviewed";
     const previousReviews = { ...(currentRoute.stopReviews || {}) };
     const previousSaved = { ...(currentRoute.savedStops || {}) };
+    const previousVerified = verifiedStops;
+    const previousSearch = searchResults;
     const snapshotAnalysis = currentAnalysis;
     const hasNext = currentIdx >= 0 && currentIdx < list.length - 1;
     const advanceTo = currentIdx >= 0 ? Math.min(currentIdx + 1, Math.max(0, list.length - 1)) : 0;
@@ -447,25 +472,34 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     if (currentIdx >= 0) {
       setAnalysis(applyStopReview(currentAnalysis, stopId, status));
     }
-    setAreaPois((prev) =>
-      prev.map((s) => (s.id === stopId ? { ...s, reviewStatus: status } : s)),
-    );
-    // Promote verified area finds into analysis so they stay on the calm map.
-    if (status === "verified" && areaStop && currentIdx < 0) {
-      setAnalysis(
-        applyStopReview(
-          {
-            ...currentAnalysis,
-            recommendedStops: [
-              ...(currentAnalysis.recommendedStops || []),
-              { ...areaStop, reviewStatus: "verified" },
-            ],
-          },
-          stopId,
-          "verified",
-        ),
+
+    const snap = tempStop || alreadyVerified || fromList;
+    if (status === "verified" && snap) {
+      // Promote out of temp workspace into permanent verified layer.
+      setSearchResults((prev) => removeFromSearchResults(prev, stopId));
+      setVerifiedStops((prev) => promoteToVerified(snap, prev));
+      if (currentIdx < 0 && tempStop) {
+        setAnalysis(
+          applyStopReview(
+            {
+              ...currentAnalysis,
+              recommendedStops: [
+                ...(currentAnalysis.recommendedStops || []),
+                { ...tempStop, reviewStatus: "verified" },
+              ],
+            },
+            stopId,
+            "verified",
+          ),
+        );
+      }
+    } else {
+      setVerifiedStops((prev) => prev.filter((s) => s.id !== stopId));
+      setSearchResults((prev) =>
+        prev.map((s) => (s.id === stopId ? { ...s, reviewStatus: status } : s)),
       );
     }
+
     setRoute({
       ...currentRoute,
       stopReviews: { ...previousReviews, [stopId]: status },
@@ -493,13 +527,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
     reviewTimers.current = [exitTimer, advanceTimer];
 
-    const snap = areaStop || fromList;
     const patchBody: Parameters<typeof patchRoute>[1] = {
       stopReviews: { [stopId]: status },
     };
     if (status === "verified" && snap) {
       patchBody.savedStops = { [stopId]: { ...snap, reviewStatus: "verified" } };
-      seenSearchIdsRef.current.add(stopId);
     } else if (status !== "verified") {
       patchBody.savedStops = { [stopId]: null };
     }
@@ -524,9 +556,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         setReviewMotion(null);
         const latest = analysisRef.current || snapshotAnalysis;
         if (currentIdx >= 0) setAnalysis(applyStopReview(latest, stopId, previousStatus));
-        setAreaPois((prev) =>
-          prev.map((s) => (s.id === stopId ? { ...s, reviewStatus: previousStatus } : s)),
-        );
+        setVerifiedStops(previousVerified);
+        setSearchResults(previousSearch);
         setRoute((prev) => {
           if (!prev) return prev;
           const next = { ...(prev.stopReviews || {}) };
@@ -536,7 +567,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         });
         if (currentIdx >= 0) setVerifyIndex(currentIdx);
         setSelectedId(stopId);
-        setError("Couldn't save verification. Please try again.");
+        showToast("Couldn't save verification. Please try again.");
       });
   };
 
@@ -571,12 +602,59 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const allMarkers: PlanMarker[] = useMemo(() => {
     if (!analysis) return [];
     const out: PlanMarker[] = [];
-    for (const s of recommended) {
-      out.push({
+    const seen = new Set<string>();
+
+    const push = (m: PlanMarker) => {
+      if (seen.has(m.id)) return;
+      seen.add(m.id);
+      out.push(m);
+    };
+
+    // Permanent verified layer (survives every search).
+    for (const s of verifiedStops) {
+      push({
         id: s.id,
         lat: s.lat,
         lon: s.lon,
         kind: s.group === "sleep" ? "sleep" : "poi",
+        layer: "verified",
+        group: s.group,
+        category: s.category,
+        status: "verified",
+        is24h: s.is24h,
+        hasShop: s.hasShop,
+        name: s.name,
+        qualityStars: s.qualityStars,
+        distanceOffRouteM: s.distanceOffRouteM,
+      });
+    }
+
+    // Analysis corridor recommendations (system layer; verified already covered above).
+    for (const s of recommended) {
+      if (s.reviewStatus === "verified") {
+        push({
+          id: s.id,
+          lat: s.lat,
+          lon: s.lon,
+          kind: s.group === "sleep" ? "sleep" : "poi",
+          layer: "verified",
+          group: s.group,
+          category: s.category,
+          status: "verified",
+          is24h: s.is24h,
+          hasShop: s.hasShop,
+          name: s.name,
+          qualityStars: s.qualityStars,
+          distanceOffRouteM: s.distanceOffRouteM,
+        });
+        continue;
+      }
+      push({
+        id: s.id,
+        lat: s.lat,
+        lon: s.lon,
+        kind: s.group === "sleep" ? "sleep" : "poi",
+        layer: "system",
         group: s.group,
         category: s.category,
         status: s.reviewStatus,
@@ -587,13 +665,15 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         distanceOffRouteM: s.distanceOffRouteM,
       });
     }
-    for (const s of areaPois) {
-      if (out.some((m) => m.id === s.id)) continue;
-      out.push({
+
+    // Temporary search workspace — replaced on every new search.
+    for (const s of searchResults) {
+      push({
         id: s.id,
         lat: s.lat,
         lon: s.lon,
         kind: "area",
+        layer: "temp",
         group: s.group,
         category: s.category,
         status: s.reviewStatus || "unreviewed",
@@ -604,28 +684,38 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         distanceOffRouteM: s.distanceOffRouteM,
       });
     }
+
     for (const c of analysis.climbs) {
       if (c.startLat != null && c.startLon != null) {
-        out.push({
+        push({
           id: c.id,
           lat: c.startLat,
           lon: c.startLon,
           kind: "climb",
+          layer: "system",
           name: c.name,
         });
       }
     }
     for (const g of analysis.remoteGaps) {
       if (g.midLat != null && g.midLon != null) {
-        out.push({ id: g.id, lat: g.midLat, lon: g.midLon, kind: "remote", name: g.label });
+        push({
+          id: g.id,
+          lat: g.midLat,
+          lon: g.midLon,
+          kind: "remote",
+          layer: "system",
+          name: g.label,
+        });
       }
     }
     for (const s of (analysis.sleep || []).slice(0, 40)) {
-      out.push({
+      push({
         id: `sleep-${s.osmId}`,
         lat: s.lat,
         lon: s.lon,
         kind: "sleep",
+        layer: "system",
         group: "sleep",
         category: s.category,
         name: s.name,
@@ -635,22 +725,30 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     for (const st of analysis.stages.slice(0, -1)) {
       const sleep = analysis.sleepPlan?.find((p) => p.stageIndex === st.index)?.suggestion;
       if (sleep) {
-        out.push({
+        push({
           id: `stage-${st.index}`,
           lat: sleep.lat,
           lon: sleep.lon,
           kind: "stage",
+          layer: "system",
           name: st.label,
         });
       }
     }
     for (const d of decisions) {
-      if (d.lat != null && d.lon != null && !out.some((m) => m.id === d.id)) {
-        out.push({ id: d.id, lat: d.lat, lon: d.lon, kind: "decision", name: d.title });
+      if (d.lat != null && d.lon != null) {
+        push({
+          id: d.id,
+          lat: d.lat,
+          lon: d.lon,
+          kind: "decision",
+          layer: "system",
+          name: d.title,
+        });
       }
     }
     return out;
-  }, [analysis, recommended, decisions, areaPois]);
+  }, [analysis, recommended, decisions, searchResults, verifiedStops]);
 
   const nearestRef = useMemo(() => {
     if (mode === "ride" && route) {
@@ -698,10 +796,15 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const selectedStop: RecommendedStop | null = useMemo(() => {
     if (!selectedId) return null;
     const fromRec = recommended.find((s) => s.id === selectedId);
-    if (fromRec) return fromRec;
-    const fromArea = areaPois.find((s) => s.id === selectedId);
-    return fromArea || null;
-  }, [selectedId, recommended, areaPois]);
+    if (fromRec) {
+      if (fromRec.reviewStatus === "verified") return fromRec;
+      const fromVerified = verifiedStops.find((s) => s.id === selectedId);
+      return fromVerified || fromRec;
+    }
+    const fromVerified = verifiedStops.find((s) => s.id === selectedId);
+    if (fromVerified) return fromVerified;
+    return searchResults.find((s) => s.id === selectedId) || null;
+  }, [selectedId, recommended, searchResults, verifiedStops]);
 
   const peek: PeekPayload | null = useMemo(() => {
     if (!selectedId || !analysis || selectedStop) return null;
@@ -769,8 +872,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         const m = allMarkers.find((x) => x.id === selectedId);
         if (m && !stopMatchesLayer(m, next)) setSelectedId(null);
       }
-      // Progressive: show cached instantly, then background-search this category
-      if (next) autoSearchQaRef.current = next;
       return next;
     });
   };
@@ -782,7 +883,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   ) => {
     setMapCenter(center);
     setMapBbox(bbox);
-    // Google Maps: chip appears only after the user moves the map.
+    // Chip appears only after the user moves the map (and a category is selected).
     if (userMoved && mode === "plan" && !searchingArea) setSearchPrompted(true);
   };
 
@@ -790,11 +891,12 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     mode,
     searching: searchingArea,
     prompted: searchPrompted,
+    hasCategory: Boolean(qa),
     bbox: mapBbox,
   });
 
   const searchThisArea = async () => {
-    if (!mapBbox || !route || searchingArea) return;
+    if (!mapBbox || !route || searchingArea || !qa) return;
     const bbox = mapBbox;
     // Too zoomed out — never hit the API; exclusive zoomIn chip only.
     if (bboxSpanTooLarge(bbox)) {
@@ -810,8 +912,12 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
     const SEARCH_BATCH = searchLimitForQa(qa, bbox);
     const activeQa = qa;
+    const verifiedIds = verifiedIdSet([
+      ...verifiedStops,
+      ...(analysisRef.current?.recommendedStops || []).filter((s) => s.reviewStatus === "verified"),
+    ]);
+
     setSearchingArea(true);
-    // Clear banner errors that are not search-zoom (zoom is the chip, not a banner).
     setError((prev) => (isZoomInSearchError(prev) ? null : prev));
     let statusStep = 0;
     setSearchStatus(searchStatusForQa(activeQa, 0));
@@ -823,49 +929,36 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     }, 900);
 
     const group = qaToOverpassGroup(activeQa);
-    const excludeBase = Array.from(seenSearchIdsRef.current);
-    for (const s of analysisRef.current?.recommendedStops || []) {
-      if (s.reviewStatus === "verified") excludeBase.push(s.id);
-    }
-
+    const exclude = Array.from(verifiedIds);
     const midLat = (bbox.south + bbox.north) / 2;
     const tiles: PlanMapBBox[] = [
       { south: bbox.south, west: bbox.west, north: midLat, east: bbox.east },
       { south: midLat, west: bbox.west, north: bbox.north, east: bbox.east },
     ];
     const perTile = Math.ceil(SEARCH_BATCH / tiles.length);
-    let added = 0;
+    const collected: RecommendedStop[] = [];
     let searchOk = false;
+    let hadHardError = false;
 
     const absorb = (res: Awaited<ReturnType<typeof searchRouteViewportPois>>) => {
       if (gen !== searchGenRef.current) return;
-      // Zoom-in errors stay on the exclusive chip — never a second banner.
-      if (res.error && !isZoomInSearchError(res.error)) setError(res.error);
+      if (res.error && !isZoomInSearchError(res.error)) {
+        hadHardError = true;
+        return;
+      }
       const mapped = (res.pois || [])
-        .filter((p) => !seenSearchIdsRef.current.has(p.id))
         .map(mapViewportPoi)
         .sort((a, b) => (b.resupplyScore || 0) - (a.resupplyScore || 0));
-      if (!mapped.length) return;
-      const room = Math.max(0, SEARCH_BATCH - added);
-      const batch = mapped.slice(0, room);
-      for (const s of batch) seenSearchIdsRef.current.add(s.id);
-      added += batch.length;
-      setAreaPois((prev) => {
-        const byId = new Map(prev.map((s) => [s.id, s]));
-        for (const s of batch) {
-          const existing = byId.get(s.id);
-          if (existing?.reviewStatus === "verified") continue;
-          byId.set(s.id, s);
-        }
-        return Array.from(byId.values()).slice(-120);
-      });
-      if (added > 0) setSearchStatus(searchStatusForQa(activeQa, 2));
+      for (const s of mapped) {
+        if (collected.some((c) => c.id === s.id)) continue;
+        collected.push(s);
+      }
+      if (collected.length > 0) setSearchStatus(searchStatusForQa(activeQa, 2));
     };
 
     try {
       await Promise.all(
         tiles.map(async (tile) => {
-          const exclude = [...excludeBase, ...Array.from(seenSearchIdsRef.current)];
           const res = await searchRouteViewportPois(route.id, tile, {
             group,
             limit: perTile,
@@ -875,24 +968,28 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           absorb(res);
         }),
       );
-      if (added < SEARCH_BATCH && gen === searchGenRef.current && !ac.signal.aborted) {
+      if (collected.length < SEARCH_BATCH && gen === searchGenRef.current && !ac.signal.aborted) {
         const res = await searchRouteViewportPois(route.id, bbox, {
           group,
-          limit: SEARCH_BATCH - added,
-          exclude: [...excludeBase, ...Array.from(seenSearchIdsRef.current)],
+          limit: SEARCH_BATCH - collected.length,
+          exclude: [...exclude, ...collected.map((s) => s.id)],
           signal: ac.signal,
         });
         absorb(res);
       }
-      searchOk = !ac.signal.aborted;
-    } catch (e) {
-      if (gen !== searchGenRef.current) return;
-      if (ac.signal.aborted) {
-        setError("Search timed out — try again.");
-      } else {
-        const msg = (e as Error).message;
-        if (!isZoomInSearchError(msg)) setError(msg);
+      if (gen === searchGenRef.current && !ac.signal.aborted && !hadHardError) {
+        // Replace temporary workspace entirely; verified stays untouched.
+        setSearchResults(
+          replaceSearchResults(collected.slice(0, SEARCH_BATCH), verifiedIds),
+        );
+        searchOk = true;
+      } else if (hadHardError && gen === searchGenRef.current) {
+        showToast("Couldn't refresh. Try again.");
       }
+    } catch {
+      if (gen !== searchGenRef.current) return;
+      // Keep previous temp results; ephemeral toast only.
+      showToast("Couldn't refresh. Try again.");
       searchOk = false;
     } finally {
       window.clearTimeout(timeoutId);
@@ -903,30 +1000,12 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       if (gen === searchGenRef.current) {
         setSearchingArea(false);
         setSearchStatus(null);
-        // Success → hide until next pan (Google Maps). Error → keep prompted for retry.
+        // Success → hide until next pan. Error → keep prompted for retry.
         setSearchPrompted(!searchOk);
         if (searchAbortRef.current === ac) searchAbortRef.current = null;
       }
     }
   };
-
-  // Progressive: when a Quick Action turns on, search once bbox is ready (and not zoomed out)
-  useEffect(() => {
-    if (!qa || mode !== "plan") {
-      autoSearchQaRef.current = null;
-      return;
-    }
-    if (autoSearchQaRef.current !== qa) return;
-    if (!mapBbox || !route || searchingArea) return;
-    if (bboxSpanTooLarge(mapBbox)) {
-      setSearchPrompted(true);
-      autoSearchQaRef.current = null;
-      return;
-    }
-    autoSearchQaRef.current = null;
-    void searchThisArea();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per QA activation when bbox ready
-  }, [qa, mapBbox, mode, route?.id]);
 
   if (error && !route) {
     return (
@@ -1020,7 +1099,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               data-search-chip="ready"
               onClick={() => void searchThisArea()}
             >
-              Search this area
+              Search here
             </button>
           )}
           {searchChip === "searching" && (
@@ -1123,7 +1202,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                   void searchThisArea();
                 }}
               >
-                Search this area
+                Search here
               </button>
             )}
           </aside>
@@ -1294,7 +1373,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     {reviewing?.status === "verified" && reviewing.phase === "confirming" && (
                       <span className="btn__spinner" aria-hidden />
                     )}
-                    {selectedStop.reviewStatus === "verified" ? "Saved" : "Add Stop"}
+                    {selectedStop.reviewStatus === "verified" ? "Verified" : "Verify"}
                   </button>
                 </div>
               </>
@@ -1644,6 +1723,12 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             )}
           </div>
         </aside>
+      )}
+
+      {toast && (
+        <div className="plan-toast" role="status" aria-live="polite" data-testid="plan-toast">
+          {toast}
+        </div>
       )}
 
       {error && !isZoomInSearchError(error) && (

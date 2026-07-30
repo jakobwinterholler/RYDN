@@ -20,13 +20,50 @@ test.describe("Plan search chip state machine", () => {
     expect(bboxSpanTooLarge(huge)).toBe(true);
 
     const flow: PlanSearchChip[] = [
-      resolvePlanSearchChip({ mode: "plan", searching: false, prompted: false, bbox: tight }),
-      resolvePlanSearchChip({ mode: "plan", searching: false, prompted: true, bbox: tight }),
-      resolvePlanSearchChip({ mode: "plan", searching: true, prompted: true, bbox: tight }),
-      resolvePlanSearchChip({ mode: "plan", searching: false, prompted: false, bbox: tight }),
-      resolvePlanSearchChip({ mode: "plan", searching: false, prompted: true, bbox: huge }),
+      resolvePlanSearchChip({
+        mode: "plan",
+        searching: false,
+        prompted: false,
+        hasCategory: true,
+        bbox: tight,
+      }),
+      resolvePlanSearchChip({
+        mode: "plan",
+        searching: false,
+        prompted: true,
+        hasCategory: true,
+        bbox: tight,
+      }),
+      resolvePlanSearchChip({
+        mode: "plan",
+        searching: true,
+        prompted: true,
+        hasCategory: true,
+        bbox: tight,
+      }),
+      resolvePlanSearchChip({
+        mode: "plan",
+        searching: false,
+        prompted: false,
+        hasCategory: true,
+        bbox: tight,
+      }),
+      resolvePlanSearchChip({
+        mode: "plan",
+        searching: false,
+        prompted: true,
+        hasCategory: true,
+        bbox: huge,
+      }),
+      resolvePlanSearchChip({
+        mode: "plan",
+        searching: false,
+        prompted: true,
+        hasCategory: false,
+        bbox: tight,
+      }),
     ];
-    expect(flow).toEqual(["hidden", "ready", "searching", "hidden", "zoomIn"]);
+    expect(flow).toEqual(["hidden", "ready", "searching", "hidden", "zoomIn", "hidden"]);
   });
 
   test("DOM harness shows exactly one chip node per state", async ({ page }) => {
@@ -42,7 +79,7 @@ test.describe("Plan search chip state machine", () => {
 <body>
   <div class="plan-map-top" data-testid="plan-map-top">
     <div class="plan-search-chip" data-search-chip="zoomIn" hidden>Zoom in to search this area</div>
-    <button class="plan-search-chip" data-search-chip="ready" hidden>Search this area</button>
+    <button class="plan-search-chip" data-search-chip="ready" hidden>Search here</button>
     <div class="plan-search-chip" data-search-chip="searching" hidden>Searching…</div>
     <aside class="plan-nearest" data-testid="nearest" hidden>Nearest card</aside>
   </div>

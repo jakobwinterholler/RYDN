@@ -111,11 +111,15 @@ describe("Search → markerVisible pipeline", () => {
     expect(out.some((m) => m.emphasize)).toBe(true);
   });
 
-  it("caps recommendations at ~6–10 (water/markets) and higher for 24h", () => {
+  it("caps temporary results 3–15 by viewport span", () => {
     const tight = { south: 48.13, west: 11.54, north: 48.14, east: 11.56 };
-    expect(searchLimitForQa("water", tight)).toBeLessThanOrEqual(10);
-    expect(searchLimitForQa("food", tight)).toBeGreaterThanOrEqual(6);
-    expect(searchLimitForQa("h24", tight)).toBeGreaterThanOrEqual(searchLimitForQa("food", tight));
+    const mid = { south: 48.0, west: 11.4, north: 48.4, east: 11.8 };
+    const wide = { south: 47, west: 10, north: 49, east: 13 };
+    expect(searchLimitForQa("water", tight)).toBeLessThanOrEqual(15);
+    expect(searchLimitForQa("water", tight)).toBeGreaterThanOrEqual(10);
+    expect(searchLimitForQa("food", mid)).toBeLessThanOrEqual(10);
+    expect(searchLimitForQa("food", wide)).toBe(3);
+    expect(searchLimitForQa("h24", tight)).toBeGreaterThanOrEqual(searchLimitForQa("food", mid));
     expect(QA_NEAREST_N + QA_EXTRA_CAP).toBeLessThanOrEqual(12);
   });
 

@@ -6345,6 +6345,24 @@ input {
   z-index: 30;
 }
 
+.plan-toast {
+  position: absolute;
+  left: 50%;
+  bottom: max(96px, calc(env(safe-area-inset-bottom, 0px) + 88px));
+  transform: translateX(-50%);
+  z-index: 40;
+  max-width: min(320px, calc(100vw - 32px));
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: rgba(28, 28, 30, 0.92);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+  animation: plan-search-chip-in 0.18s ease;
+}
+
 .plan-workspace--ride .plan-qa {
   bottom: 12px;
 }
