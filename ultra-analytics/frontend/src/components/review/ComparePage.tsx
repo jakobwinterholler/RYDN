@@ -7,7 +7,7 @@ export default function ComparePage() {
   const ideas = [
     { icon: "↔", title: "This ride vs another", body: "Overlay two best-effort curves and time ledgers side by side." },
     { icon: "⛰", title: "This climb vs another", body: "Compare the same climb across efforts, or two climbs head to head." },
-    { icon: "∞", title: "This ultra vs my last ultra", body: "Did the plan-vs-actual improve? Fewer, tighter stops? Less fade?" },
+    { icon: "◎", title: "This ultra vs my last ultra", body: "Did the plan-vs-actual improve? Fewer, tighter stops? Less fade?" },
     { icon: "📈", title: "Training progression", body: "Watch a duration on the power curve climb over weeks." },
   ];
   return (

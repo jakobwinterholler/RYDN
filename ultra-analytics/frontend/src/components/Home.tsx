@@ -24,6 +24,7 @@ import UltraCard from "./UltraCard";
 import FocusLock from "./ui/FocusLock";
 import LibrarySortControl from "./ui/LibrarySortControl";
 import RydnLoader from "./ui/RydnLoader";
+import RydnMark from "./ui/RydnMark";
 import ScoreLine from "./ui/ScoreLine";
 import { cleanUltraTitle } from "./ui/titles";
 import {
@@ -311,6 +312,7 @@ function UltrasSpace({
 
       {empty ? (
         <div className="empty">
+          <RydnMark size={28} className="empty__mark" />
           <h2 className="empty__title">No Ultras yet</h2>
           <p className="empty__body">
             Import a planned route GPX to start planning, or sync completed rides in Library and group them
@@ -489,6 +491,7 @@ function LibrarySpace({
 
       {days.length === 0 ? (
         <div className="empty">
+          <RydnMark size={28} className="empty__mark" />
           <h2 className="empty__title">Library is empty</h2>
           <p className="empty__body">
             Nothing to group yet. Sync Strava or upload a FIT / TCX / GPX file — source days appear here first,

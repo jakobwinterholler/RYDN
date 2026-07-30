@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <path d="M4 21.5C7.8 21.5 8.6 12.2 14.2 12.2c4.6 0 5.4 6.2 9.8 4.2V6.8" stroke="#1a1a18" stroke-width="2.55" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M24 6.8L29.2 10.25 24 13.7Z" fill="#1a1a18"/>
+  <!-- Bold Direction B mark for 16px clarity -->
+  <path
+    fill="#1A1A18"
+    fill-rule="evenodd"
+    d="M5 3.1H17.6c5 0 8.3 2.95 8.3 7.3 0 4-2.85 6.7-7.35 7.15H9.7V27h1.85v1.45H5V27h1.85V4.55H5V3.1zm4.7 2.6v8.5h7.2c2.65 0 4.25-1.5 4.25-3.8 0-2.35-1.6-3.7-4.25-3.7H9.7z"
+  />
+  <path
+    d="M15 17.55c2.15 1.8 3.05 4.45 4.5 6.4 1.5 2.05 4 3.15 7.15 2.3"
+    stroke="#1A1A18"
+    stroke-width="2.1"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="26.8" cy="26.05" r="2.35" fill="#1A1A18"/>
 </svg>

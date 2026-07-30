@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { User } from "../../types";
+import RydnMark from "../ui/RydnMark";
 
 export type ShellSpace = "ultras" | "library" | "you";
 
@@ -18,7 +19,8 @@ export default function AppShell({ user, space, onSpace, children }: Props) {
     <div className="shell">
       <header className="shell__header">
         <div className="shell__brand" aria-label="RYDN">
-          RYDN
+          <RydnMark size={18} className="shell__mark" />
+          <span className="shell__word">RYDN</span>
         </div>
 
         <nav className="shell__nav shell__nav--desktop" aria-label="Primary">

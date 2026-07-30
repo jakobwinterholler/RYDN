@@ -81,14 +81,8 @@ async function main() {
   copyFileSync(join(PUBLIC, "icon-167.png"), join(PUBLIC, "apple-touch-icon-167.png"));
   console.log("wrote apple-touch-icon*.png");
 
-  // Favicon: keep vector; also refresh PNG favicons from master
-  writeFileSync(join(PUBLIC, "favicon.svg"), `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <path d="M4 21.5C7.8 21.5 8.6 12.2 14.2 12.2c4.6 0 5.4 6.2 9.8 4.2V6.8" stroke="#1a1a18" stroke-width="2.55" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M24 6.8L29.2 10.25 24 13.7Z" fill="#1a1a18"/>
-</svg>
-`);
-  console.log("refreshed favicon.svg");
+  // Favicon: keep the hand-tuned 16px vector (Direction B bold R). Do not overwrite from master.
+  console.log("kept favicon.svg (Direction B simplified mark)");
 }
 
 main().catch((e) => {

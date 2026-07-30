@@ -212,11 +212,20 @@ input {
   border-bottom: 1px solid var(--line);
 }
 .shell__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  min-width: 4.5rem;
+}
+.shell__mark {
+  flex-shrink: 0;
+  color: var(--ink);
+}
+.shell__word {
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.16em;
-  color: var(--ink);
-  min-width: 4.5rem;
 }
 .shell__nav--desktop {
   display: flex;
@@ -415,11 +424,18 @@ input {
   padding: 48px 0 24px;
   max-width: 36ch;
 }
+.empty__mark {
+  display: block;
+  color: var(--ink);
+  opacity: 0.28;
+  margin-bottom: 14px;
+}
 .empty__title {
   margin: 0 0 8px;
   font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.02em;
+  color: var(--ink);
 }
 .empty__body {
   margin: 0 0 24px;
@@ -1815,14 +1831,8 @@ input {
   gap: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: var(--text-dim);
+  color: var(--ink);
   margin-bottom: 28px;
-}
-.home__brand .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--accent);
 }
 .home h1 {
   font-size: 44px;
@@ -2203,15 +2213,9 @@ input {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--text-dim);
+  color: var(--ink);
   font-weight: 600;
   font-size: 14px;
-}
-.report__brand .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
 }
 .link-btn {
   background: transparent;
@@ -3256,7 +3260,7 @@ input {
   font-weight: 700;
   letter-spacing: 0.14em;
   font-size: 13px;
-  color: var(--text-dim);
+  color: var(--ink);
 }
 .home2__intro h1 {
   font-family: "Instrument Serif", Georgia, serif;
@@ -3476,7 +3480,7 @@ input {
   margin: 0;
 }
 
-/* Editorial cycling loader — calm, 60fps-friendly CSS + SMIL */
+/* Editorial route-line loader — calm draw to terminal (Direction B) */
 .rydn-loader {
   display: flex;
   flex-direction: column;
@@ -3490,22 +3494,23 @@ input {
   color: var(--ink);
 }
 .rydn-loader__trail {
-  opacity: 0.18;
+  opacity: 0.16;
+}
+.rydn-loader__end {
+  opacity: 0.16;
+}
+.rydn-loader__start {
+  opacity: 0.92;
 }
 .rydn-loader__draw {
   stroke-dasharray: 100;
   stroke-dashoffset: 100;
-  animation: rydnDraw 4.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  opacity: 0.72;
+  animation: rydnDraw 3.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  opacity: 0.85;
 }
-.rydn-loader__bike-inner {
-  animation: rydnRock 4.2s ease-in-out infinite;
-  transform-origin: 0px 2px;
-}
-.rydn-loader__wheel {
-  transform-origin: center;
-  transform-box: fill-box;
-  animation: rydnSpin 0.85s linear infinite;
+.rydn-loader__arrive {
+  opacity: 0;
+  animation: rydnArrive 3.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 .rydn-loader__label {
   margin: 0;
@@ -3516,47 +3521,45 @@ input {
 @keyframes rydnDraw {
   0% {
     stroke-dashoffset: 100;
-    opacity: 0.35;
+    opacity: 0.4;
   }
-  55% {
+  58% {
     stroke-dashoffset: 0;
-    opacity: 0.78;
+    opacity: 0.9;
   }
-  85% {
+  82% {
     stroke-dashoffset: 0;
-    opacity: 0.78;
+    opacity: 0.9;
   }
   100% {
     stroke-dashoffset: 0;
-    opacity: 0.2;
+    opacity: 0.22;
   }
 }
-@keyframes rydnRock {
+@keyframes rydnArrive {
   0%,
+  52% {
+    opacity: 0;
+  }
+  62%,
+  82% {
+    opacity: 0.95;
+  }
   100% {
-    transform: translateY(0) rotate(-4deg);
-  }
-  50% {
-    transform: translateY(-0.6px) rotate(3deg);
-  }
-}
-@keyframes rydnSpin {
-  to {
-    transform: rotate(360deg);
+    opacity: 0.18;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .rydn-loader__draw,
-  .rydn-loader__bike-inner,
-  .rydn-loader__wheel {
+  .rydn-loader__arrive {
     animation: none;
   }
   .rydn-loader__draw {
     stroke-dashoffset: 0;
-    opacity: 0.65;
+    opacity: 0.7;
   }
-  .rydn-loader__bike {
-    display: none;
+  .rydn-loader__arrive {
+    opacity: 0.85;
   }
 }
 .home2__empty {
@@ -5177,7 +5180,7 @@ input {
   font-weight: 700;
   letter-spacing: 0.2em;
   font-size: 14px;
-  color: var(--text-dim);
+  color: var(--ink);
 }
 .welcome__headline {
   font-size: 34px;
@@ -5308,21 +5311,33 @@ input {
   white-space: nowrap;
 }
 .sync__spinner {
-  width: 26px;
-  height: 26px;
-  border: 3px solid var(--line);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  width: 28px;
+  height: 12px;
+  margin: 4px 0 8px;
+  background: no-repeat center / contain;
+  /* Tiny route-line pulse — ink on paper, no generic ring spinner */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 56 16' fill='none'%3E%3Ccircle cx='4' cy='8' r='2.4' fill='%231A1A18'/%3E%3Cpath d='M4 8 H28 C32 8 34 4 38 5 C42 6 44 8 52 8' stroke='%231A1A18' stroke-width='1.6' stroke-linecap='round'/%3E%3Ccircle cx='52' cy='8' r='2.4' fill='%231A1A18' opacity='.25'/%3E%3C/svg%3E");
+  animation: syncRoute 1.4s ease-in-out infinite;
+  opacity: 0.75;
 }
 .sync__spinner--sm {
-  width: 20px;
-  height: 20px;
-  border-width: 2px;
+  width: 22px;
+  height: 10px;
+  margin: 0;
 }
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
+@keyframes syncRoute {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sync__spinner {
+    animation: none;
+    opacity: 0.65;
   }
 }
 .google-btn {
