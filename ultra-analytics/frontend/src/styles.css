@@ -795,6 +795,9 @@ input {
   margin-top: 10px;
   padding: 2px 2px 0;
 }
+.ultra-elev__frame {
+  position: relative;
+}
 .ultra-elev__svg {
   display: block;
   width: 100%;
@@ -812,14 +815,23 @@ input {
   vector-effect: non-scaling-stroke;
   opacity: 0.88;
 }
-.ultra-elev__sleep-halo {
-  fill: var(--paper);
-  stroke: color-mix(in srgb, var(--ink) 28%, transparent);
-  stroke-width: 1;
+/* HTML marks: equal width/height + border-radius so circles stay round under SVG stretch. */
+.ultra-elev__marks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
 }
-.ultra-elev__sleep {
-  fill: var(--ink);
-  opacity: 0.84;
+.ultra-elev__sleep-mark {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 84%, transparent);
+  box-shadow:
+    0 0 0 2px var(--paper),
+    0 0 0 3px color-mix(in srgb, var(--ink) 28%, transparent);
 }
 .ultra-elev__scale {
   display: flex;
@@ -840,31 +852,53 @@ input {
 /*
  * Ultra Overview premium open (~900ms):
  *   map route 0–420 → elev 420–720 → overnight marks 720–900
- * Does not block pointer events; prefers-reduced-motion → instant.
+ * hold = pre-draw pose (painted first); --reveal adds animation after rAF.
+ * Does not block pointer events; prefers-reduced-motion → instant / no hold.
  */
+.route-preview--reveal-hold .route-preview__route,
 .route-preview--reveal .route-preview__route {
   stroke-dasharray: 1;
   stroke-dashoffset: 1;
-  animation: ultraRouteDraw var(--route-draw-dur, 420ms) cubic-bezier(0.4, 0, 0.2, 1)
-    var(--route-draw-delay, 0ms) both;
+}
+.route-preview--reveal-hold .route-preview__endpoint,
+.ultra-elev--reveal-hold .ultra-elev__fill,
+.ultra-elev--reveal-hold .ultra-elev__sleep-mark,
+.ultra-elev--reveal-hold .ultra-elev__scale {
+  opacity: 0;
+}
+.ultra-elev--reveal-hold .ultra-elev__line,
+.ultra-elev--reveal .ultra-elev__line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+.ultra-elev--reveal-hold .ultra-elev__sleep-mark {
+  transform: scale(0.82);
+}
+.route-preview--reveal .route-preview__route {
+  animation-name: ultraRouteDraw;
+  animation-duration: var(--route-draw-dur, 420ms);
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  animation-delay: var(--route-draw-delay, 0ms);
+  animation-fill-mode: both;
 }
 .route-preview--reveal .route-preview__endpoint {
   opacity: 0;
   animation: ultraEndpointIn 160ms ease-out 380ms both;
 }
 .ultra-elev--reveal .ultra-elev__line {
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
-  animation: ultraElevDraw 300ms cubic-bezier(0.4, 0, 0.2, 1) 420ms both;
+  animation-name: ultraElevDraw;
+  animation-duration: 300ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  animation-delay: 420ms;
+  animation-fill-mode: both;
 }
 .ultra-elev--reveal .ultra-elev__fill {
   opacity: 0;
   animation: ultraElevFill 300ms ease-out 420ms both;
 }
-.ultra-elev--reveal .ultra-elev__sleep-g {
+.ultra-elev--reveal .ultra-elev__sleep-mark {
   opacity: 0;
   transform: scale(0.82);
-  transform-box: fill-box;
   transform-origin: center;
   animation: ultraSleepIn 180ms ease-out 720ms both;
 }
@@ -909,27 +943,34 @@ input {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .route-preview--reveal-hold .route-preview__route,
   .route-preview--reveal .route-preview__route,
   .route-preview--reveal .route-preview__endpoint,
+  .ultra-elev--reveal-hold .ultra-elev__line,
   .ultra-elev--reveal .ultra-elev__line,
   .ultra-elev--reveal .ultra-elev__fill,
-  .ultra-elev--reveal .ultra-elev__sleep-g,
+  .ultra-elev--reveal .ultra-elev__sleep-mark,
   .ultra-elev--reveal .ultra-elev__scale {
     animation: none;
   }
-  .route-preview--reveal .route-preview__route {
-    stroke-dashoffset: 0;
-  }
-  .route-preview--reveal .route-preview__endpoint,
-  .ultra-elev--reveal .ultra-elev__fill,
-  .ultra-elev--reveal .ultra-elev__sleep-g,
-  .ultra-elev--reveal .ultra-elev__scale {
-    opacity: 1;
-  }
+  .route-preview--reveal-hold .route-preview__route,
+  .route-preview--reveal .route-preview__route,
+  .ultra-elev--reveal-hold .ultra-elev__line,
   .ultra-elev--reveal .ultra-elev__line {
     stroke-dashoffset: 0;
   }
-  .ultra-elev--reveal .ultra-elev__sleep-g {
+  .route-preview--reveal-hold .route-preview__endpoint,
+  .route-preview--reveal .route-preview__endpoint,
+  .ultra-elev--reveal-hold .ultra-elev__fill,
+  .ultra-elev--reveal-hold .ultra-elev__sleep-mark,
+  .ultra-elev--reveal-hold .ultra-elev__scale,
+  .ultra-elev--reveal .ultra-elev__fill,
+  .ultra-elev--reveal .ultra-elev__sleep-mark,
+  .ultra-elev--reveal .ultra-elev__scale {
+    opacity: 1;
+  }
+  .ultra-elev--reveal-hold .ultra-elev__sleep-mark,
+  .ultra-elev--reveal .ultra-elev__sleep-mark {
     transform: none;
   }
 }

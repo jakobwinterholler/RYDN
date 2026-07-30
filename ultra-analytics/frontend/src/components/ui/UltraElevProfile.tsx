@@ -16,8 +16,9 @@ interface Props {
   /**
    * Ultra Overview opening: draw L→R after the map route, then ease overnight marks in.
    * Timing is CSS-coordinated with RoutePreview reveal (prefers-reduced-motion = instant).
+   * Pass `"hold"` to freeze at the pre-draw pose until `"play"` (after first paint).
    */
-  reveal?: boolean;
+  reveal?: boolean | "hold" | "play";
 }
 
 function extent(values: (number | null)[]): [number, number] {
@@ -93,10 +94,12 @@ export default function UltraElevProfile({
   if (!drawn) return null;
 
   const nightCount = drawn.dots.length;
+  const revealHold = reveal === "hold";
+  const revealPlay = reveal === "play" || reveal === true;
 
   return (
     <div
-      className={`ultra-elev ${reveal ? "ultra-elev--reveal" : ""} ${className}`.trim()}
+      className={`ultra-elev${revealHold ? " ultra-elev--reveal-hold" : ""}${revealPlay ? " ultra-elev--reveal" : ""}${className ? ` ${className}` : ""}`}
       role="img"
       aria-label={
         nightCount > 0
@@ -104,16 +107,27 @@ export default function UltraElevProfile({
           : "Elevation profile"
       }
     >
-      <svg className="ultra-elev__svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-        <path d={drawn.areaD} className="ultra-elev__fill" />
-        <path d={drawn.lineD} className="ultra-elev__line" fill="none" pathLength={1} />
-        {drawn.dots.map((d) => (
-          <g key={`sleep-${d.dayIndex}`} className="ultra-elev__sleep-g">
-            <circle cx={d.x} cy={d.y} r="5" className="ultra-elev__sleep-halo" />
-            <circle cx={d.x} cy={d.y} r="2.75" className="ultra-elev__sleep" />
-          </g>
-        ))}
-      </svg>
+      <div className="ultra-elev__frame">
+        {/*
+          Paths stretch with preserveAspectRatio=none; overnight marks are HTML so
+          they stay perfect circles under that non-uniform scale.
+        */}
+        <svg className="ultra-elev__svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+          <path d={drawn.areaD} className="ultra-elev__fill" />
+          <path d={drawn.lineD} className="ultra-elev__line" fill="none" pathLength={1} />
+        </svg>
+        {nightCount > 0 && (
+          <div className="ultra-elev__marks" aria-hidden>
+            {drawn.dots.map((d) => (
+              <span
+                key={`sleep-${d.dayIndex}`}
+                className="ultra-elev__sleep-mark"
+                style={{ left: `${(d.x / W) * 100}%`, top: `${(d.y / H) * 100}%` }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
       <div className="ultra-elev__scale" aria-hidden>
         <span>0</span>
         {nightCount > 0 && (

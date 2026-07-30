@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
 import { getUltra, patchUltra, deleteUltra } from "../api";
 import type { RideSummary, Ultra, UltraDetail, UltraDay } from "../types";
 import { flagFromCode, parseCountryCodes } from "./ui/countries";
@@ -10,6 +10,9 @@ import RydnLoader from "./ui/RydnLoader";
 import ScoreLine, { fmtElapsed } from "./ui/ScoreLine";
 import UltraElevProfile from "./ui/UltraElevProfile";
 import { cleanDayTitle, cleanUltraTitle } from "./ui/titles";
+
+/** Opening choreography: hold pre-draw → play after map paints (each Ultra mount). */
+type IntroReveal = "hold" | "play" | false;
 
 interface Props {
   ultraId: string;
@@ -55,17 +58,48 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  /** hold → play after map paint so the ~900ms open sequence is visible. */
+  const [introReveal, setIntroReveal] = useState<IntroReveal>(() =>
+    typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? false
+      : "hold",
+  );
+  const introStarted = useRef(false);
+  const introRaf = useRef<number[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
+    setDetail(null);
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setIntroReveal(reduced ? false : "hold");
+    introStarted.current = false;
+    introRaf.current.forEach((id) => cancelAnimationFrame(id));
+    introRaf.current = [];
     getUltra(ultraId)
       .then((d) => !cancelled && setDetail(d))
       .catch((e) => !cancelled && setError((e as Error).message));
     return () => {
       cancelled = true;
+      introRaf.current.forEach((id) => cancelAnimationFrame(id));
+      introRaf.current = [];
     };
   }, [ultraId]);
+
+  const startIntroReveal = useCallback(() => {
+    if (introStarted.current) return;
+    introStarted.current = true;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setIntroReveal(false);
+      return;
+    }
+    // Double rAF: commit hold pose, paint, then start CSS draw so it isn't finished pre-paint.
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => setIntroReveal("play"));
+      introRaf.current.push(raf2);
+    });
+    introRaf.current.push(raf1);
+  }, []);
 
   const saveIds = async (activityIds: string[], opts?: { orderManual?: boolean }) => {
     setBusy(true);
@@ -206,7 +240,8 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
           className="ultra-page__map"
           points={route.points}
           segments={route.segments}
-          reveal
+          reveal={introReveal}
+          onReady={startIntroReveal}
         />
 
         {route.elevation &&
@@ -216,7 +251,7 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
             axisKm={route.elevation.axisKm}
             elevationM={route.elevation.elevationM}
             sleep={route.sleep}
-            reveal
+            reveal={introReveal}
           />
         ) : null}
 

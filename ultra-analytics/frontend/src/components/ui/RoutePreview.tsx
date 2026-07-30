@@ -9,10 +9,13 @@ interface Props {
   segments?: number[][][];
   className?: string;
   /**
-   * Ultra Overview opening: ink the route start→finish once on mount.
+   * Ultra Overview opening: ink the route start→finish.
+   * `"hold"` = pre-draw pose (no anim); `"play"` / `true` = run draw after paint.
    * Respects prefers-reduced-motion via CSS (instant final state).
    */
-  reveal?: boolean;
+  reveal?: boolean | "hold" | "play";
+  /** Fires once the map plate is ready (or unavailable) so parents can start intro. */
+  onReady?: () => void;
   /** Planning markers: climbs, services, remote gaps. */
   markers?: {
     id?: string;
@@ -227,6 +230,7 @@ export default function RoutePreview({
   segments,
   className = "",
   reveal = false,
+  onReady,
   markers,
   selectedId,
   onSelectMarker,
@@ -286,7 +290,15 @@ export default function RoutePreview({
     return { lands, borders, routePaths, start, end, dots };
   }, [allPts, segs, countries, markers, selectedId]);
 
-  if (allPts.length >= 2 && !countries) {
+  const loadingMap = allPts.length >= 2 && !countries;
+  const mapSettled = !loadingMap;
+
+  useEffect(() => {
+    if (!onReady || !mapSettled) return;
+    onReady();
+  }, [mapSettled, onReady, plate]);
+
+  if (loadingMap) {
     return (
       <div className={`route-preview route-preview--empty ${className}`.trim()} aria-busy="true">
         <div className="route-preview__placeholder">
@@ -313,10 +325,12 @@ export default function RoutePreview({
 
   const routeCount = Math.max(plate.routePaths.length, 1);
   const segDur = REVEAL_ROUTE_MS / routeCount;
+  const revealHold = reveal === "hold";
+  const revealPlay = reveal === "play" || reveal === true;
 
   return (
     <div
-      className={`route-preview ${reveal ? "route-preview--reveal" : ""} ${className}`.trim()}
+      className={`route-preview${revealHold ? " route-preview--reveal-hold" : ""}${revealPlay ? " route-preview--reveal" : ""}${className ? ` ${className}` : ""}`}
       aria-label="Route preview"
     >
       <svg viewBox={`0 0 ${W} ${H}`} className="route-preview__svg" role="img">
@@ -348,9 +362,9 @@ export default function RoutePreview({
             vectorEffect="non-scaling-stroke"
             pathLength={1}
             style={
-              reveal
+              revealHold || revealPlay
                 ? ({
-                    ["--route-draw-dur"]: `${segDur}ms`,
+                    ["--route-draw-dur"]: `${Math.max(segDur, 48)}ms`,
                     ["--route-draw-delay"]: `${i * segDur}ms`,
                   } as CSSProperties)
                 : undefined
