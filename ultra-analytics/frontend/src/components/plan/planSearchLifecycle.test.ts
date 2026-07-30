@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isAbortError,
   resolveSearchOutcome,
+  SEARCH_EMPTY_TOAST,
   SEARCH_FAIL_TOAST,
 } from "./planSearchLifecycle";
 
@@ -62,5 +63,6 @@ describe("isAbortError", () => {
     expect(isAbortError(new DOMException("Aborted", "AbortError"))).toBe(true);
     expect(isAbortError(new Error("network"))).toBe(false);
     expect(SEARCH_FAIL_TOAST).toMatch(/Search failed/);
+    expect(SEARCH_EMPTY_TOAST).toMatch(/No stops/);
   });
 });

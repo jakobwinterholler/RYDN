@@ -169,7 +169,11 @@ def build_grid(pois: Sequence[Dict[str, Any]]) -> GridIndex:
 
 
 def filter_group(pois: Sequence[Dict[str, Any]], group: str) -> List[Dict[str, Any]]:
-    """Apply Search QA group filters (water / markets / 24h / sleep)."""
+    """Apply Search QA group filters (water / markets / sleep).
+
+    Markets = snacks / small grocery (supermarket, convenience, bakery).
+    Hours are checked on the stop sheet — no separate 24h QA.
+    """
     g = (group or "all").strip().lower()
     out: List[Dict[str, Any]] = []
     for p in pois:
@@ -179,16 +183,13 @@ def filter_group(pois: Sequence[Dict[str, Any]], group: str) -> List[Dict[str, A
             if grp != "water":
                 continue
         elif g == "resupply":
-            if cat not in ("Supermarket", "Convenience"):
+            # Snacks-friendly markets only — not fuel / 24h shops.
+            if cat not in ("Supermarket", "Convenience", "Bakery"):
                 continue
         elif g == "fuel":
-            # 24h shops with shop — prefer is24h; still allow Fuel shop
+            # Legacy group — kept for API compat; Planning QA no longer exposes it.
             if cat not in ("24h Shop", "Fuel shop"):
                 continue
-            if cat == "Fuel shop" and not p.get("is24h"):
-                # Markets QA is separate; 24h QA wants 24h first — keep Fuel shop
-                # but rank will demote non-24h.
-                pass
         elif g == "sleep":
             if grp != "sleep":
                 continue
@@ -201,10 +202,15 @@ def filter_group(pois: Sequence[Dict[str, Any]], group: str) -> List[Dict[str, A
             "Café",
             "Restaurant",
             "Fast food",
-            "Bakery",
             "Gas station",
+            "24h Shop",
+            "Fuel shop",
         ):
-            continue
+            # Allow fuel group to keep 24h/Fuel shop when explicitly requested.
+            if g == "fuel" and cat in ("24h Shop", "Fuel shop"):
+                pass
+            else:
+                continue
         out.append(p)
     return out
 

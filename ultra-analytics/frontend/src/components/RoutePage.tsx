@@ -48,6 +48,7 @@ import {
 import {
   isAbortError,
   resolveSearchOutcome,
+  SEARCH_EMPTY_TOAST,
   SEARCH_FAIL_TOAST,
   SEARCH_TIMEOUT_MS,
 } from "./plan/planSearchLifecycle";
@@ -230,7 +231,6 @@ function qaToOverpassGroup(qa: QuickActionId | null): string {
   if (!qa) return "all";
   if (qa === "water") return "water";
   if (qa === "food") return "resupply";
-  if (qa === "h24") return "fuel";
   if (qa === "sleep") return "sleep";
   return "all";
 }
@@ -241,11 +241,9 @@ function searchStatusForQa(qa: QuickActionId | null, step: number): string {
       ? "Finding water…"
       : qa === "food"
         ? "Finding markets…"
-        : qa === "h24"
-          ? "Finding 24h shops…"
-          : qa === "sleep"
-            ? "Finding sleep…"
-            : "Finding stops…";
+        : qa === "sleep"
+          ? "Finding sleep…"
+          : "Finding stops…";
   const steps = ["Searching visible area…", finding, "Ranking best stops…"];
   return steps[Math.min(step, steps.length - 1)] || steps[0];
 }
@@ -849,15 +847,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         (s) =>
           s.category === "Supermarket" ||
           s.category === "Convenience" ||
-          (s.group === "resupply" && !(s.category || "").toLowerCase().includes("gas")),
-      ),
-      shop24: ahead(
-        (s) =>
-          !!s.is24h &&
-          (s.hasShop ||
-            (s.category || "").toLowerCase().includes("gas") ||
-            (s.category || "").toLowerCase().includes("fuel") ||
-            (s.category || "").toLowerCase().includes("24h")),
+          s.category === "Bakery" ||
+          (s.group === "resupply" &&
+            !(s.category || "").toLowerCase().includes("gas") &&
+            !(s.category || "").toLowerCase().includes("24h") &&
+            !(s.category || "").toLowerCase().includes("fuel")),
       ),
       sleep: ahead((s) => s.group === "sleep"),
     };
@@ -881,11 +875,28 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const toggleQa = (id: QuickActionId) => {
     setQa((prev) => {
       const next = prev === id ? null : id;
-      // Switching category replaces the question — clear selection if it no longer matches
+      // Switching category replaces the question — clear stale temp workspace.
+      if (next !== prev) {
+        // Supersede any in-flight search so its finally cannot re-paint old results.
+        searchGenRef.current += 1;
+        searchAbortRef.current?.abort();
+        searchAbortRef.current = null;
+        if (searchStatusTimerRef.current != null) {
+          window.clearInterval(searchStatusTimerRef.current);
+          searchStatusTimerRef.current = null;
+        }
+        setSearchResults([]);
+        setSearchingArea(false);
+        setSearchStatus(null);
+        // Re-prompt Search this area so Markets isn't a dead empty map after Water.
+        if (next) setSearchPrompted(true);
+        else setSearchPrompted(false);
+      }
       if (next && selectedId) {
         const m = allMarkers.find((x) => x.id === selectedId);
         if (m && !stopMatchesLayer(m, next)) setSelectedId(null);
       }
+      if (!next) setSelectedId(null);
       return next;
     });
   };
@@ -931,6 +942,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     ]);
 
     setSearchingArea(true);
+    // New search replaces the temp workspace immediately (verified untouched).
+    setSearchResults([]);
     setError((prev) => (isZoomInSearchError(prev) ? null : prev));
     let statusStep = 0;
     setSearchStatus(searchStatusForQa(activeQa, 0));
@@ -1000,7 +1013,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         window.clearInterval(searchStatusTimerRef.current);
         searchStatusTimerRef.current = null;
       }
-      if (gen !== searchGenRef.current) return;
+      // Always clear spinner for this generation; superseded searches leave the new one running.
+      if (gen !== searchGenRef.current) {
+        if (searchAbortRef.current === ac) searchAbortRef.current = null;
+        return;
+      }
 
       const outcome = resolveSearchOutcome({
         resultCount: collected.length,
@@ -1015,6 +1032,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           replaceSearchResults(collected.slice(0, SEARCH_BATCH), verifiedIds),
         );
         searchOk = true;
+        if (outcome === "empty") showToast(SEARCH_EMPTY_TOAST);
       } else {
         // Failed with zero usable POIs — keep previous temp, toast once.
         showToast(SEARCH_FAIL_TOAST);
@@ -1230,7 +1248,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </aside>
         )}
 
-        {/* Quick Actions — Water / Markets / 24h / Sleep. Loading indicator inside active button. */}
+        {/* Quick Actions — Water / Markets / Sleep. Loading indicator inside active button. */}
         <nav className="plan-qa" aria-label="Quick actions">
           {QUICK_ACTIONS.map((a) => {
             const busy = searchingArea && qa === a.id;
@@ -1290,8 +1308,9 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               </button>
             </div>
             <p className="plan-layers__note">
-              Default is calm (verified + remote). Tap Water / Markets / 24h / Sleep for corridor
-              POIs (~500 m). {PLAN_MAP_STYLE_NOTE}
+              Default is calm (verified + remote). Tap Water / Markets / Sleep to search the corridor
+              (~500 m). Markets = snacks & small grocery. Check opening hours on the stop sheet.{" "}
+              {PLAN_MAP_STYLE_NOTE}
             </p>
           </aside>
         )}
@@ -1300,7 +1319,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         {mode === "ride" && (
           <aside className="plan-ride-panel plan-ride-panel--minimal" aria-label="Ride mode">
             <label className="field plan-ride-panel__pos">
-              <span>Km {rideKm.toFixed(0)} · tap Water / Markets / 24h / Sleep</span>
+              <span>Km {rideKm.toFixed(0)} · tap Water / Markets / Sleep</span>
               <input
                 type="range"
                 min={0}

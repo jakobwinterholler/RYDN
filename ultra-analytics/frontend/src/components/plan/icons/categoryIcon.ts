@@ -11,11 +11,11 @@ export function iconForCategory(category?: string | null, group?: string | null)
   if (cat.includes("natural") || cat.includes("spring") || cat.includes("stream")) return "naturalWater";
   if (grp === "water" || cat.includes("water")) return "waterFountain";
 
-  if (cat.includes("24h shop") || (cat.includes("24") && cat.includes("shop"))) return "shop24h";
-  if (cat.includes("convenience")) return "shop24h";
+  if (cat.includes("24h shop") || (cat.includes("24") && cat.includes("shop"))) return "supermarket";
+  if (cat.includes("convenience") || cat.includes("bakery")) return "supermarket";
   if (cat.includes("supermarket") || cat.includes("grocery") || cat.includes("market")) return "supermarket";
   if (cat.includes("fuel shop") || ((cat.includes("gas") || cat.includes("fuel")) && !cat.includes("bike")))
-    return "shop24h";
+    return "supermarket";
   if (cat.includes("bike") || cat.includes("bicycle")) return "bikeShop";
   if (cat.includes("mechanic") || cat.includes("repair")) return "mechanic";
   if (cat.includes("pharmacy") || cat.includes("chemist")) return "pharmacy";
@@ -28,7 +28,6 @@ export function iconForCategory(category?: string | null, group?: string | null)
   if (cat.includes("hospital") || cat.includes("clinic")) return "hospital";
   if (cat.includes("atm") || cat.includes("bank")) return "atm";
   if (cat.includes("toilet") || cat.includes("restroom") || cat.includes("wc")) return "toilet";
-  if (cat.includes("bakery")) return "supermarket";
 
   if (grp === "sleep") return "sleepSpot";
   if (grp === "resupply") return "supermarket";
@@ -46,29 +45,18 @@ export function iconForMarker(m: PlanMarker): PlanIconId {
   if (m.kind === "stage") return "stage";
   // Sleep QA always uses the bed glyph — category subtypes stay in the sheet.
   if (m.kind === "sleep" || m.group === "sleep") return "sleepSpot";
-  // 24h / fuel shops → moon (not a shopping bag)
-  const cat = (m.category || "").toLowerCase();
-  if (
-    cat.includes("24h") ||
-    cat.includes("fuel shop") ||
-    (m.is24h && (cat.includes("gas") || cat.includes("fuel") || cat.includes("convenience")))
-  ) {
-    return "shop24h";
-  }
   if (m.status === "rejected") return iconForCategory(m.category, m.group);
   return iconForCategory(m.category, m.group);
 }
 
 export function iconForQuickAction(
-  id: "water" | "food" | "h24" | "sleep",
+  id: "water" | "food" | "sleep",
 ): PlanIconId {
   switch (id) {
     case "water":
       return "waterFountain";
     case "food":
       return "supermarket";
-    case "h24":
-      return "shop24h";
     case "sleep":
       return "sleepSpot";
   }

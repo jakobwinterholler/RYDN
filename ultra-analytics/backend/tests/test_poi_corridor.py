@@ -58,16 +58,22 @@ class TestSpatialFilter(unittest.TestCase):
             _poi(4, 42, 1, cat="Pharmacy", group="service"),
             _poi(5, 42, 1, cat="Gas station", group="resupply"),
             _poi(6, 42, 1, cat="Hotel", group="sleep"),
+            _poi(7, 42, 1, cat="Convenience", group="resupply"),
+            _poi(8, 42, 1, cat="Bakery", group="resupply"),
         ]
         self.assertEqual(len(filter_group(pois, "water")), 1)
-        self.assertEqual(len(filter_group(pois, "resupply")), 1)
+        # Markets = supermarket + convenience + bakery (snacks), not 24h
+        markets = filter_group(pois, "resupply")
+        self.assertEqual({p["category"] for p in markets}, {"Supermarket", "Convenience", "Bakery"})
         self.assertEqual(len(filter_group(pois, "fuel")), 1)
         self.assertEqual(len(filter_group(pois, "sleep")), 1)
-        # all drops pharmacy + bare gas
+        # all drops pharmacy + bare gas + 24h (hours checked manually)
         all_g = filter_group(pois, "all")
         cats = {p["category"] for p in all_g}
         self.assertNotIn("Pharmacy", cats)
         self.assertNotIn("Gas station", cats)
+        self.assertNotIn("24h Shop", cats)
+        self.assertIn("Bakery", cats)
 
     def test_query_viewport_cache_hit_fast(self):
         pois = [_poi(i, 42.0 + i * 0.001, 1.0 + i * 0.001) for i in range(200)]

@@ -4,9 +4,10 @@
  * - Default calm map: route + verified + major warnings (remote) + selected.
  * - Quick Actions: show ONLY that category; emphasize nearest 5; cap the rest.
  *
- * Primary Quick Actions (planning speed):
- * Water · Markets · 24h (fuel shops) · Sleep
+ * Primary Quick Actions (ultra / bikepacking verify workflow):
+ * Water · Markets (snacks / small grocery) · Sleep
  * Verified is a badge on category icons — not a toolbar button.
+ * Hours are checked manually on the stop sheet (no separate 24h QA).
  */
 
 export type PlanLayerId =
@@ -24,7 +25,7 @@ export type PlanLayerId =
   | "stages";
 
 /** Primary Quick Actions — tap only, no hidden gestures. */
-export type QuickActionId = "water" | "food" | "h24" | "sleep";
+export type QuickActionId = "water" | "food" | "sleep";
 
 export type PlanMarkerKind = "climb" | "poi" | "sleep" | "remote" | "stage" | "decision" | "area";
 
@@ -96,7 +97,6 @@ export const QUICK_ACTIONS: {
 }[] = [
   { id: "water", label: "Water", layer: "water", emoji: "💧" },
   { id: "food", label: "Markets", layer: "food", emoji: "🛒" },
-  { id: "h24", label: "24h", layer: "h24", emoji: "🌙" },
   { id: "sleep", label: "Sleep", layer: "sleep", emoji: "🛏" },
 ];
 
@@ -104,7 +104,6 @@ export const QUICK_ACTIONS: {
 export const LAYER_TOGGLES: { id: PlanLayerId; label: string }[] = [
   { id: "water", label: "Water" },
   { id: "food", label: "Markets" },
-  { id: "h24", label: "24h shops" },
   { id: "sleep", label: "Sleep" },
   { id: "rejected", label: "Rejected" },
   { id: "climbs", label: "Climbs" },
@@ -129,14 +128,18 @@ export function stopMatchesLayer(m: PlanMarker, layer: PlanLayerId): boolean {
     case "water":
       return group === "water" || cat.includes("water") || cat.includes("drinking");
     case "food":
+      // Markets = snacks / small grocery — not fuel shops (hours checked on sheet).
       return (
         (group === "resupply" ||
-          ["supermarket", "convenience", "bakery", "market"].some((x) => cat.includes(x))) &&
-        !isFuelShop(m)
+          ["supermarket", "convenience", "bakery", "grocery", "market"].some((x) =>
+            cat.includes(x),
+          )) &&
+        !isFuelShop(m) &&
+        !cat.includes("24h shop")
       );
     case "fuel":
     case "h24":
-      // 24h fuel stations with shops — not bare pumps
+      // Legacy layer ids — not exposed as Quick Actions anymore.
       if (isFuelShop(m)) return layer === "fuel" ? true : !!m.is24h || cat.includes("24h");
       if (cat.includes("convenience") && m.is24h) return true;
       return false;
@@ -318,21 +321,17 @@ export function searchLimitForBbox(bbox: {
 
 /**
  * Caps by viewport span — 3–15 high-quality results.
+ * Water + Markets (hero path) get slightly fuller batches for verify workflow.
  */
 export function searchLimitForQa(
   qa: QuickActionId | null,
   bbox: { south: number; west: number; north: number; east: number },
 ): number {
   const span = Math.max(bbox.north - bbox.south, Math.abs(bbox.east - bbox.west));
-  if (qa === "h24") {
-    if (span > 1.2) return 5;
-    if (span > 0.55) return 10;
-    if (span > 0.22) return 12;
-    return 15;
-  }
-  if (span > 1.2) return 3;
-  if (span > 0.55) return 6;
-  if (span > 0.22) return 10;
+  const hero = qa === "water" || qa === "food";
+  if (span > 1.2) return hero ? 5 : 3;
+  if (span > 0.55) return hero ? 8 : 6;
+  if (span > 0.22) return hero ? 12 : 10;
   return 15;
 }
 

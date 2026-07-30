@@ -4,6 +4,7 @@ import {
   LAYER_TOGGLES,
   QA_EXTRA_CAP,
   QA_NEAREST_N,
+  QUICK_ACTIONS,
   applyQuickActionEmphasis,
   markerVisible,
   searchLimitForQa,
@@ -22,6 +23,19 @@ function areaMarket(id = "area-node-1"): PlanMarker {
     status: "unreviewed",
     name: "REWE",
     distanceOffRouteM: 120,
+  };
+}
+
+function areaConvenience(id = "area-node-c"): PlanMarker {
+  return {
+    id,
+    lat: 48.14,
+    lon: 11.55,
+    kind: "area",
+    group: "resupply",
+    category: "Convenience",
+    status: "unreviewed",
+    distanceOffRouteM: 90,
   };
 }
 
@@ -67,22 +81,28 @@ function areaSleep(id = "area-node-s"): PlanMarker {
 }
 
 describe("Search → markerVisible pipeline", () => {
+  it("exposes only Water / Markets / Sleep as Quick Actions", () => {
+    expect(QUICK_ACTIONS.map((a) => a.id)).toEqual(["water", "food", "sleep"]);
+    expect(QUICK_ACTIONS.some((a) => a.id === ("h24" as never))).toBe(false);
+    expect(LAYER_TOGGLES.some((t) => t.id === "h24")).toBe(false);
+  });
+
   it("hides unverified area finds with no Quick Action (calm default)", () => {
-    // ROOT CAUSE candidate: Search without QA stores areaPois but map filters them out
     expect(markerVisible(areaMarket(), DEFAULT_LAYERS, null)).toBe(false);
     expect(markerVisible(areaWater(), DEFAULT_LAYERS, null)).toBe(false);
     expect(markerVisible(area24h(), DEFAULT_LAYERS, null)).toBe(false);
     expect(markerVisible(areaSleep(), DEFAULT_LAYERS, null)).toBe(false);
   });
 
-  it("shows Markets finds when Markets QA is on", () => {
+  it("shows Markets finds when Markets QA is on (supermarket + convenience)", () => {
     expect(stopMatchesLayer(areaMarket(), "food")).toBe(true);
+    expect(stopMatchesLayer(areaConvenience(), "food")).toBe(true);
     expect(markerVisible(areaMarket(), DEFAULT_LAYERS, "food")).toBe(true);
+    expect(markerVisible(areaConvenience(), DEFAULT_LAYERS, "food")).toBe(true);
   });
 
-  it("shows Water / 24h / Sleep finds under matching QA", () => {
+  it("shows Water / Sleep finds under matching QA", () => {
     expect(markerVisible(areaWater(), DEFAULT_LAYERS, "water")).toBe(true);
-    expect(markerVisible(area24h(), DEFAULT_LAYERS, "h24")).toBe(true);
     expect(markerVisible(areaSleep(), DEFAULT_LAYERS, "sleep")).toBe(true);
   });
 
@@ -97,7 +117,6 @@ describe("Search → markerVisible pipeline", () => {
 
   it("does not treat 24h Shop as Markets", () => {
     expect(stopMatchesLayer(area24h(), "food")).toBe(false);
-    expect(stopMatchesLayer(area24h(), "h24")).toBe(true);
   });
 
   it("emphasizes nearest under QA without dropping the find", () => {
@@ -111,15 +130,15 @@ describe("Search → markerVisible pipeline", () => {
     expect(out.some((m) => m.emphasize)).toBe(true);
   });
 
-  it("caps temporary results 3–15 by viewport span", () => {
+  it("caps temporary results 3–15 by viewport span; Water/Markets get fuller hero batches", () => {
     const tight = { south: 48.13, west: 11.54, north: 48.14, east: 11.56 };
     const mid = { south: 48.0, west: 11.4, north: 48.4, east: 11.8 };
     const wide = { south: 47, west: 10, north: 49, east: 13 };
     expect(searchLimitForQa("water", tight)).toBeLessThanOrEqual(15);
     expect(searchLimitForQa("water", tight)).toBeGreaterThanOrEqual(10);
-    expect(searchLimitForQa("food", mid)).toBeLessThanOrEqual(10);
-    expect(searchLimitForQa("food", wide)).toBe(3);
-    expect(searchLimitForQa("h24", tight)).toBeGreaterThanOrEqual(searchLimitForQa("food", mid));
+    expect(searchLimitForQa("food", mid)).toBeGreaterThanOrEqual(searchLimitForQa("sleep", mid));
+    expect(searchLimitForQa("food", wide)).toBe(5);
+    expect(searchLimitForQa("sleep", wide)).toBe(3);
     expect(QA_NEAREST_N + QA_EXTRA_CAP).toBeLessThanOrEqual(12);
   });
 
