@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-/** Canonical metric order: distance → elevation → elapsed (RYDN_DESIGN §0.1 / §11). */
+/** Canonical metric order: distance → elevation → [NP] → elapsed (RYDN_DESIGN §0.1 / §11). */
 export interface ScoreLineProps {
   distanceKm: number;
   elevationGainM: number;
@@ -8,6 +8,12 @@ export interface ScoreLineProps {
   className?: string;
   /** Planned routes have no elapsed time — hide the third metric. */
   hideDuration?: boolean;
+  /**
+   * When true, insert NP between elevation and elapsed.
+   * Missing values render as "—" (Ultra Overview certificate).
+   */
+  showNp?: boolean;
+  npW?: number | null;
 }
 
 function fmtKm(n: number): string {
@@ -15,6 +21,11 @@ function fmtKm(n: number): string {
 }
 
 function fmtElev(n: number): string {
+  return Math.round(n).toLocaleString("en-US");
+}
+
+function fmtNp(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n) || n <= 0) return "—";
   return Math.round(n).toLocaleString("en-US");
 }
 
@@ -35,7 +46,7 @@ export function fmtElapsed(seconds: number): string {
 
 /**
  * Score line — the only way primary metrics may appear together.
- * Order is locked: distance · elevation · elapsed.
+ * Order is locked: distance · elevation · [NP] · elapsed.
  */
 export default function ScoreLine({
   distanceKm,
@@ -43,14 +54,19 @@ export default function ScoreLine({
   durationS,
   className = "",
   hideDuration = false,
+  showNp = false,
+  npW = null,
 }: ScoreLineProps) {
+  const label = showNp
+    ? hideDuration
+      ? "Distance, elevation, and NP"
+      : "Distance, elevation, NP, and elapsed time"
+    : hideDuration
+      ? "Distance and elevation"
+      : "Distance, elevation, and elapsed time";
+
   return (
-    <div
-      className={`score-line ${className}`.trim()}
-      aria-label={
-        hideDuration ? "Distance and elevation" : "Distance, elevation, and elapsed time"
-      }
-    >
+    <div className={`score-line ${className}`.trim()} aria-label={label}>
       <span className="score-line__item">
         <span className="score-line__v">{fmtKm(distanceKm)}</span>
         <span className="score-line__u">km</span>
@@ -62,6 +78,17 @@ export default function ScoreLine({
         <span className="score-line__v">{fmtElev(elevationGainM)}</span>
         <span className="score-line__u">m</span>
       </span>
+      {showNp && (
+        <>
+          <span className="score-line__sep" aria-hidden="true">
+            ·
+          </span>
+          <span className="score-line__item">
+            <span className="score-line__v">{fmtNp(npW)}</span>
+            <span className="score-line__u">NP</span>
+          </span>
+        </>
+      )}
       {!hideDuration && (
         <>
           <span className="score-line__sep" aria-hidden="true">

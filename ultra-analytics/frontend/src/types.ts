@@ -177,6 +177,8 @@ export interface Ultra {
   rideElapsedTimeS?: number;
   /** Sum of member moving times when known. */
   movingTimeS?: number;
+  /** Normalized Power (W) when available from Ultra/ride analysis. */
+  npW?: number | null;
   /** Number of calendar riding days (same-day recordings count as one). */
   dayCount?: number;
   date?: string | null;
@@ -204,10 +206,24 @@ export interface UltraDay extends RideSummary {
   }[];
 }
 
+/** Overnight stop on the Ultra elev profile (end of a riding day). */
+export interface UltraSleepMarker {
+  dayIndex: number;
+  distanceKm: number;
+  elevationM?: number | null;
+}
+
 export interface UltraDetail {
   ultra: Ultra;
   days: UltraDay[];
-  route: { points: number[][]; segments?: number[][][] };
+  route: {
+    points: number[][];
+    segments?: number[][][];
+    /** Lightweight elev series for Overview certificate (may be empty). */
+    elevation?: { axisKm: number[]; elevationM: (number | null)[] };
+    /** Day-end sleep markers for the elev profile. */
+    sleep?: UltraSleepMarker[];
+  };
   /** Library rides available to add (not claimed by other Ultras). */
   library: RideSummary[];
 }

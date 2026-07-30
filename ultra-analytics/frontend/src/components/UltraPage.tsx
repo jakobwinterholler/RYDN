@@ -8,6 +8,7 @@ import Icon from "./ui/Icon";
 import RoutePreview from "./ui/RoutePreview";
 import RydnLoader from "./ui/RydnLoader";
 import ScoreLine, { fmtElapsed } from "./ui/ScoreLine";
+import UltraElevProfile from "./ui/UltraElevProfile";
 import { cleanDayTitle, cleanUltraTitle } from "./ui/titles";
 
 interface Props {
@@ -200,38 +201,56 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
         {rangeLabel && <p className="ultra-page__range">{rangeLabel}</p>}
       </div>
 
-      <RoutePreview points={route.points} segments={route.segments} />
-
-      <div className="ultra-page__score">
-        <ScoreLine
-          distanceKm={ultra.distanceKm}
-          elevationGainM={ultra.elevationGainM}
-          durationS={ultra.durationS}
+      <div className="ultra-page__certificate">
+        <RoutePreview
+          className="ultra-page__map"
+          points={route.points}
+          segments={route.segments}
         />
-        {(ultra.rideElapsedTimeS != null || ultra.movingTimeS != null) && (
-          <p className="ultra-page__time-breakdown" aria-label="Ride elapsed and moving time">
-            {ultra.rideElapsedTimeS != null && ultra.rideElapsedTimeS > 0 && (
-              <span>Ride elapsed {fmtElapsed(ultra.rideElapsedTimeS)}</span>
-            )}
-            {ultra.rideElapsedTimeS != null &&
-              ultra.rideElapsedTimeS > 0 &&
-              ultra.movingTimeS != null &&
-              ultra.movingTimeS > 0 && (
-                <span className="ultra-page__time-sep" aria-hidden>
-                  ·
-                </span>
-              )}
-            {ultra.movingTimeS != null && ultra.movingTimeS > 0 && (
-              <span>Moving {fmtElapsed(ultra.movingTimeS)}</span>
-            )}
-          </p>
-        )}
-      </div>
 
-      <button type="button" className="ultra-analytics-link" onClick={onOpenAnalytics}>
-        <span>See Ultra Analytics</span>
-        <Icon name="chevronRight" size={18} />
-      </button>
+        {route.elevation &&
+        route.elevation.axisKm.length >= 2 &&
+        route.elevation.elevationM.length >= 2 ? (
+          <UltraElevProfile
+            axisKm={route.elevation.axisKm}
+            elevationM={route.elevation.elevationM}
+            sleep={route.sleep}
+          />
+        ) : null}
+
+        <div className="ultra-page__score">
+          <ScoreLine
+            distanceKm={ultra.distanceKm}
+            elevationGainM={ultra.elevationGainM}
+            durationS={ultra.durationS}
+            showNp
+            npW={ultra.npW}
+          />
+          {(ultra.rideElapsedTimeS != null || ultra.movingTimeS != null) && (
+            <p className="ultra-page__time-breakdown" aria-label="Ride elapsed and moving time">
+              {ultra.rideElapsedTimeS != null && ultra.rideElapsedTimeS > 0 && (
+                <span>Ride elapsed {fmtElapsed(ultra.rideElapsedTimeS)}</span>
+              )}
+              {ultra.rideElapsedTimeS != null &&
+                ultra.rideElapsedTimeS > 0 &&
+                ultra.movingTimeS != null &&
+                ultra.movingTimeS > 0 && (
+                  <span className="ultra-page__time-sep" aria-hidden>
+                    ·
+                  </span>
+                )}
+              {ultra.movingTimeS != null && ultra.movingTimeS > 0 && (
+                <span>Moving {fmtElapsed(ultra.movingTimeS)}</span>
+              )}
+            </p>
+          )}
+        </div>
+
+        <button type="button" className="ultra-analytics-link" onClick={onOpenAnalytics}>
+          <span>See Ultra Analytics</span>
+          <Icon name="chevronRight" size={18} />
+        </button>
+      </div>
 
       <section className="ultra-page__days">
         <div className="ultra-page__days-head">

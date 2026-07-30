@@ -688,6 +688,133 @@ def ultra_from_activities(uid: str, name: str, activities: List[dict], **meta: A
     return _save(uid, ultra)
 
 
+def _elev_at_km(km: List[float], elev: List[Optional[float]], target: float) -> Optional[float]:
+    """Nearest finite elevation on a stitched profile at ``target`` km."""
+    if not km or not elev:
+        return None
+    best_i = 0
+    best_d = abs(km[0] - target)
+    for i, x in enumerate(km):
+        d = abs(x - target)
+        if d < best_d:
+            best_d = d
+            best_i = i
+    v = elev[best_i] if best_i < len(elev) else None
+    return round(float(v)) if v is not None else None
+
+
+def _decimate_elev_profile(
+    km: List[float], elev: List[Optional[float]], target: int = 220
+) -> tuple:
+    n = len(km)
+    if n <= target or target <= 0:
+        return km, elev
+    step = n / target
+    out_km: List[float] = []
+    out_elev: List[Optional[float]] = []
+    i = 0.0
+    while i < n:
+        idx = int(i)
+        out_km.append(km[idx])
+        out_elev.append(elev[idx])
+        i += step
+    if out_km and (out_km[-1] != km[-1] or out_elev[-1] != elev[-1]):
+        out_km.append(km[-1])
+        out_elev.append(elev[-1])
+    return out_km, out_elev
+
+
+def _ultra_finisher_story(
+    uid: str, ultra_id: str, chrono_ids: List[str], days: List[dict]
+) -> dict:
+    """Lightweight elev profile + overnight markers + NP for Ultra Overview.
+
+    Built from cached ride reports / analysis — never triggers a full re-stitch.
+    """
+    from . import store as ride_store
+
+    axis_km: List[float] = []
+    elev_series: List[Optional[float]] = []
+    offset = 0.0
+    ride_np: List[float] = []
+    reports_seen = 0
+
+    for aid in chrono_ids:
+        report = ride_store.get_ride(uid, aid)
+        if not report:
+            continue
+        reports_seen += 1
+        ov = report.get("overview") or {}
+        np_raw = ov.get("npW")
+        if isinstance(np_raw, (int, float)) and np_raw > 0:
+            ride_np.append(float(np_raw))
+
+        perf = report.get("performance") or {}
+        axis = perf.get("axisKm") or []
+        elev_ch = perf.get("elevation") or {}
+        series = elev_ch.get("series") if isinstance(elev_ch, dict) else None
+        if not axis or not isinstance(series, list) or len(axis) < 2:
+            dist = float(ov.get("distanceKm") or 0)
+            if dist > 0:
+                offset += dist
+            continue
+
+        local_end = 0.0
+        for i, x in enumerate(axis):
+            try:
+                kx = float(x)
+            except (TypeError, ValueError):
+                continue
+            local_end = max(local_end, kx)
+            e = series[i] if i < len(series) else None
+            try:
+                ev: Optional[float] = float(e) if e is not None else None
+            except (TypeError, ValueError):
+                ev = None
+            axis_km.append(round(offset + kx, 2))
+            elev_series.append(round(ev, 1) if ev is not None else None)
+        dist = float(ov.get("distanceKm") or 0)
+        offset += local_end if local_end > 0 else dist
+
+    axis_km, elev_series = _decimate_elev_profile(axis_km, elev_series)
+
+    # Overnight sleep: end of each riding day except the finish.
+    sleep: List[dict] = []
+    cum = 0.0
+    for i, day in enumerate(days):
+        cum += float(day.get("distanceKm") or 0)
+        if i >= len(days) - 1:
+            break
+        if cum <= 0:
+            continue
+        sleep.append(
+            {
+                "dayIndex": int(day.get("dayIndex") or (i + 1)),
+                "distanceKm": round(cum, 1),
+                "elevationM": _elev_at_km(axis_km, elev_series, cum),
+            }
+        )
+
+    np_w: Optional[float] = None
+    cached = load_ultra_analysis_cache(uid, ultra_id)
+    if cached:
+        cov = cached.get("overview") or {}
+        raw = cov.get("npW")
+        if isinstance(raw, (int, float)) and raw > 0:
+            np_w = round(float(raw))
+    # Fallback only when every analysed member ride has NP (no silent partial mean).
+    if np_w is None and reports_seen > 0 and len(ride_np) == reports_seen:
+        np_w = round(sum(ride_np) / len(ride_np))
+
+    has_elev = any(v is not None for v in elev_series)
+    return {
+        "axisKm": axis_km if has_elev else [],
+        "elevationM": elev_series if has_elev else [],
+        "sleep": sleep,
+        "npW": np_w,
+    }
+
+
 def ultra_detail(uid: str, ultra_id: str, rides: List[dict]) -> Optional[dict]:
     """Ultra + ordered days + editorial route. Collection the rider owns."""
     from . import store as ride_store
@@ -748,6 +875,12 @@ def ultra_detail(uid: str, ultra_id: str, rides: List[dict]) -> Optional[dict]:
 
     from .util.geo import decimate_points
 
+    story = _ultra_finisher_story(uid, ultra_id, chrono_ids, days)
+    if story.get("npW") is not None:
+        ultra = {**ultra, "npW": story["npW"]}
+    else:
+        ultra = {**ultra, "npW": None}
+
     claimed = claimed_activity_ids(uid, except_ultra_id=ultra_id)
     return {
         "ultra": ultra,
@@ -755,6 +888,11 @@ def ultra_detail(uid: str, ultra_id: str, rides: List[dict]) -> Optional[dict]:
         "route": {
             "points": decimate_points(flat, 600) if flat else [],
             "segments": route_segments,
+            "elevation": {
+                "axisKm": story["axisKm"],
+                "elevationM": story["elevationM"],
+            },
+            "sleep": story["sleep"],
         },
         "library": [
             enrich_summary(r)
