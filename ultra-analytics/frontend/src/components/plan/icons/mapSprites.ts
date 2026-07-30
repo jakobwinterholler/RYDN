@@ -8,6 +8,15 @@ const PAPER = "#f7f6f3";
 const INK = "#1a1a18";
 const CHECK = "#1f7a4c";
 
+/** System color-emoji stack — real 💧🛒🛏️, not path-drawn Material glyphs. */
+const EMOJI_FONT =
+  '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+
+/** Bed with VS16 so platforms render the emoji presentation (🛏️). */
+const EMOJI_BED = "\u{1F6CF}\u{FE0F}";
+const EMOJI_WATER = "\u{1F4A7}";
+const EMOJI_CART = "\u{1F6D2}";
+
 export type SpriteTone = "ink" | "sage" | "reject" | "muted" | "water" | "fuel" | "sleep";
 
 /** Solid category fills — never paper-grey discs (those read as placeholders). */
@@ -28,6 +37,43 @@ function toneForIcon(id: PlanIconId): SpriteTone {
   if (id === "verified" || id === "climb" || id === "supermarket" || id === "resupply") return "sage";
   if (id === "rejected" || id === "remote" || id === "emergency") return "reject";
   return "ink";
+}
+
+/** Real emoji for Planning primary categories — null falls back to path glyphs. */
+function emojiForIcon(id: PlanIconId): string | null {
+  switch (id) {
+    case "waterFountain":
+    case "naturalWater":
+      return EMOJI_WATER;
+    case "supermarket":
+    case "shop24h":
+    case "resupply":
+    case "gasStation":
+      return EMOJI_CART;
+    case "sleepSpot":
+    case "hotel":
+    case "camping":
+    case "shelter":
+      return EMOJI_BED;
+    default:
+      return null;
+  }
+}
+
+function drawEmoji(
+  ctx: CanvasRenderingContext2D,
+  emoji: string,
+  cx: number,
+  cy: number,
+  fontPx: number,
+) {
+  ctx.save();
+  ctx.font = `${fontPx}px ${EMOJI_FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  // Color emoji fonts ignore fillStyle; slight +y centers Apple emoji in the disc.
+  ctx.fillText(emoji, cx, cy + fontPx * 0.04);
+  ctx.restore();
 }
 
 function drawGlyph(
@@ -191,11 +237,17 @@ function renderSprite(iconId: PlanIconId, kind: MarkerSpriteKind): ImageData {
   ctx.strokeStyle = PAPER;
   ctx.stroke();
 
-  // White glyph — bold silhouette (scaled up so drop/cart/bed dominate the disc)
-  const glyphScale = selected ? 1.05 : emphasized ? 0.98 : 0.94;
-  // Keep stroke thin — fill carries recognition; heavy stroke merges cart wheels into a bag
-  const glyphWeight = selected ? 1.55 : 1.4;
-  drawGlyph(ctx, iconId, cx, cy, glyphScale, PAPER, glyphWeight);
+  // Real emoji (💧🛒🛏️) centered on the disc — large enough for mobile glanceability
+  const emoji = emojiForIcon(iconId);
+  if (emoji) {
+    const emojiPx = selected ? Math.round(r * 1.35) : emphasized ? Math.round(r * 1.3) : Math.round(r * 1.28);
+    drawEmoji(ctx, emoji, cx, cy, emojiPx);
+  } else {
+    // Secondary icons still use path glyphs
+    const glyphScale = selected ? 1.05 : emphasized ? 0.98 : 0.94;
+    const glyphWeight = selected ? 1.55 : 1.4;
+    drawGlyph(ctx, iconId, cx, cy, glyphScale, PAPER, glyphWeight);
+  }
 
   // Verified: small ✓ corner badge on category icon — never a separate icon
   if (hasBadge) {

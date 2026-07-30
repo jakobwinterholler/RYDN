@@ -5894,10 +5894,11 @@ input {
 .plan-qa__icon {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   line-height: 1;
-  font-size: 22px;
+  font-size: 26px;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
   color: inherit;
 }
 

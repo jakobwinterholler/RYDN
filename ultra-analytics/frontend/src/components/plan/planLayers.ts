@@ -102,9 +102,10 @@ export const QUICK_ACTIONS: {
   layer: PlanLayerId;
   emoji: string;
 }[] = [
-  { id: "water", label: "Water", layer: "water", emoji: "💧" },
-  { id: "food", label: "Shops", layer: "food", emoji: "🛒" },
-  { id: "sleep", label: "Sleep", layer: "sleep", emoji: "🛏️" },
+  // Real emoji characters (bed includes VS16 → 🛏️)
+  { id: "water", label: "Water", layer: "water", emoji: "\u{1F4A7}" },
+  { id: "food", label: "Shops", layer: "food", emoji: "\u{1F6D2}" },
+  { id: "sleep", label: "Sleep", layer: "sleep", emoji: "\u{1F6CF}\u{FE0F}" },
 ];
 
 /** Layers panel — verified is a badge on icons, not a toolbar category. */
