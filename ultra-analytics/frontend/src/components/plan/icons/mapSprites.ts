@@ -63,7 +63,8 @@ function drawGlyph(
   const doFill = fillIds.includes(iconId);
   for (const d of paths) {
     const p = new Path2D(d);
-    if (doFill) ctx.fill(p);
+    // evenodd keeps Material cart basket / wheel cutouts readable
+    if (doFill) ctx.fill(p, "evenodd");
     ctx.stroke(p);
   }
   ctx.restore();
@@ -190,9 +191,10 @@ function renderSprite(iconId: PlanIconId, kind: MarkerSpriteKind): ImageData {
   ctx.strokeStyle = PAPER;
   ctx.stroke();
 
-  // White glyph — bold silhouette
-  const glyphScale = selected ? 0.92 : emphasized ? 0.86 : 0.8;
-  const glyphWeight = selected ? 2.6 : 2.4;
+  // White glyph — bold silhouette (scaled up so drop/cart/bed dominate the disc)
+  const glyphScale = selected ? 1.05 : emphasized ? 0.98 : 0.94;
+  // Keep stroke thin — fill carries recognition; heavy stroke merges cart wheels into a bag
+  const glyphWeight = selected ? 1.55 : 1.4;
   drawGlyph(ctx, iconId, cx, cy, glyphScale, PAPER, glyphWeight);
 
   // Verified: small ✓ corner badge on category icon — never a separate icon

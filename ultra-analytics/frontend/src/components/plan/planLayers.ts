@@ -104,7 +104,7 @@ export const QUICK_ACTIONS: {
 }[] = [
   { id: "water", label: "Water", layer: "water", emoji: "💧" },
   { id: "food", label: "Shops", layer: "food", emoji: "🛒" },
-  { id: "sleep", label: "Sleep", layer: "sleep", emoji: "🛏" },
+  { id: "sleep", label: "Sleep", layer: "sleep", emoji: "🛏️" },
 ];
 
 /** Layers panel — verified is a badge on icons, not a toolbar category. */

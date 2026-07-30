@@ -21,7 +21,8 @@ export function iconForCategory(category?: string | null, group?: string | null)
   if (cat.includes("pharmacy") || cat.includes("chemist")) return "pharmacy";
   if (cat.includes("café") || cat.includes("cafe") || cat.includes("coffee")) return "cafe";
   if (cat.includes("restaurant") || cat.includes("fast food")) return "restaurant";
-  if (cat.includes("hotel") || cat.includes("hostel") || cat.includes("motel")) return "hotel";
+  if (cat.includes("hotel") || cat.includes("hostel") || cat.includes("motel") || cat.includes("guest house") || cat.includes("guesthouse"))
+    return "sleepSpot";
   if (cat.includes("camp") || cat.includes("camping")) return "camping";
   if (cat.includes("shelter") || cat.includes("hut") || cat.includes("refuge")) return "shelter";
   if (cat.includes("train") || cat.includes("station") || cat.includes("rail")) return "trainStation";

@@ -4,19 +4,18 @@ import type { PlanIconId } from "./types";
 
 /** Stroke paths (viewBox 0 0 24 24). Thick round caps — reads at a glance. */
 export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
-  /** drop.fill — Water (filled teardrop, SF proportions) */
+  /** Material water_drop — plump filled teardrop ≈ 💧 */
   waterFountain: [
-    "M12 2C12 2 4.8 10.5 4.8 15.35a7.2 7.2 0 0014.4 0C19.2 10.5 12 2 12 2z",
+    "M12 2.1C7.4 6.15 5 9.55 5 12.55 5 16.9 8.35 20 12 20s7-3.1 7-7.45c0-3-2.4-6.4-7-10.45z",
   ],
   naturalWater: [
     "M4.5 14.5c1.8-1.2 3.2-1.2 5 0s3.2 1.2 5 0 3.2-1.2 5 0",
     "M4.5 18c1.8-1.2 3.2-1.2 5 0s3.2 1.2 5 0 3.2-1.2 5 0",
     "M12 4.5v6",
   ],
-  /** basket.fill — Shops (arch handle + filled basket; more glanceable than cart at marker size) */
+  /** Material shopping_cart — handle + basket + wheels ≈ 🛒 */
   supermarket: [
-    "M7.4 10V7.35c0-2.45 2-4.15 4.6-4.15s4.6 1.7 4.6 4.15V10h-2.2V7.35c0-1.15-.95-1.95-2.4-1.95s-2.4.8-2.4 1.95V10z",
-    "M4.6 10h14.8l-1.45 9.6H6.05z",
+    "M1.5 3.2v2.1h1.85l3.35 7.05-1.25 2.25c-.2.35-.3.75-.3 1.15 0 1.25 1.05 2.25 2.35 2.25H19.5v-2.1H8.05c-.2 0-.35-.15-.35-.35l.05-.2.8-1.45h6.85c.85 0 1.6-.45 2-1.15l3.3-5.95c.1-.2.15-.4.15-.6 0-.6-.5-1.1-1.1-1.1H5.55l-.85-1.85H1.5zm14.8 15.1c-1.15 0-2.05.9-2.05 2.05S15.15 22.4 16.3 22.4s2.05-.9 2.05-2.05-.9-2.05-2.05-2.05zM7.2 18.3c-1.15 0-2.05.9-2.05 2.05S6.05 22.4 7.2 22.4s2.05-.9 2.05-2.05S8.35 18.3 7.2 18.3z",
   ],
   /** Crescent moon — 24h */
   shop24h: [
@@ -92,14 +91,12 @@ export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
     "M12 3.5a8.5 8.5 0 100 17 8.5 8.5 0 000-17z",
     "M8.5 8.5l7 7M15.5 8.5l-7 7",
   ],
-  /** bed.double.fill — Sleep (headboard + twin pillows + mattress + legs) */
+  /**
+   * Material hotel — headboard wall + mattress + pillow bump ≈ 🛏️
+   * (single compound path; unmistakable at marker size)
+   */
   sleepSpot: [
-    "M3 5.4h2.35v14.4H3z",
-    "M5.75 6.4h4.7a1.7 1.7 0 011.7 1.7V12H5.75z",
-    "M15 6.4h4.7a1.7 1.7 0 011.7 1.7V12H15z",
-    "M5.35 12H21.3v6.3H5.35z",
-    "M6.8 18.3h2v2.3H6.8z",
-    "M18.3 18.3h2v2.3H18.3z",
+    "M7 12.2c1.7 0 3.1-1.4 3.1-3.1S8.7 6 7 6s-3.1 1.4-3.1 3.1 1.4 3.1 3.1 3.1zM19.5 7.2h-8.2v6.5H3.2V5.5H1.5V20h2.1v-2.6h17.2V20h2.1v-8.3c0-2.2-1.8-4.5-3.4-4.5z",
   ],
   resupply: [
     "M5 8.5h14l-1.2 10.2a1.5 1.5 0 01-1.5 1.3H7.7a1.5 1.5 0 01-1.5-1.3L5 8.5z",
