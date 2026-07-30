@@ -110,8 +110,20 @@ describe("Search → markerVisible pipeline", () => {
     expect(markerVisible(areaMarket(), DEFAULT_LAYERS, "water")).toBe(false);
   });
 
-  it("hides Markets find beyond 500m corridor", () => {
-    const far = { ...areaMarket(), distanceOffRouteM: 800 };
+  it("shows Search finds within search corridor even beyond 500m (viewport-scoped)", () => {
+    const far = { ...areaMarket(), distanceOffRouteM: 800, layer: "temp" as const };
+    expect(markerVisible(far, DEFAULT_LAYERS, "food")).toBe(true);
+    const tooFar = { ...areaMarket(), distanceOffRouteM: 3500, layer: "temp" as const };
+    expect(markerVisible(tooFar, DEFAULT_LAYERS, "food")).toBe(false);
+  });
+
+  it("still hides system Markets beyond 500m corridor", () => {
+    const far = {
+      ...areaMarket(),
+      kind: "poi" as const,
+      layer: "system" as const,
+      distanceOffRouteM: 800,
+    };
     expect(markerVisible(far, DEFAULT_LAYERS, "food")).toBe(false);
   });
 

@@ -486,8 +486,9 @@ def _ensure_search_corridor_from_projected(
         # Map original gas → already renamed in projector
         if cat not in primary_out and grp not in ("water", "sleep", "resupply"):
             continue
-        if cat in ("Pharmacy", "Bike shop", "Café", "Restaurant", "Fast food", "Bakery"):
+        if cat in ("Pharmacy", "Bike shop", "Café", "Restaurant", "Fast food"):
             continue
+        # Bakery is Markets-eligible (snacks) — keep in Search corridor.
         off = float(p.get("distanceOffRouteM") or 9999)
         if grp == "sleep":
             if off > max(1500.0, pad):
@@ -688,9 +689,12 @@ def fetch_viewport_pois(
                 timings["totalMs"],
                 timings.get("spatialFilterMs"),
             )
-            # Even if zero candidates in this group, still a successful cache hit
-            # (empty area) — do NOT fall through to Overpass for intersecting corridor.
-            return result
+            # Warm corridor answered (including true empty group in viewport).
+            # Only fall through when the corridor itself is empty/broken.
+            if (result.get("candidateCount") or 0) > 0 or len(corridor.get("pois") or []) > 0:
+                return result
+            # Empty corridor blob — fall through to quick Overpass fill below.
+            log.info("search cache=corridor-empty group=%s — trying viewport Overpass fill", g)
 
     # --- Cold path: viewport outside corridor or no corridor yet ---
     if not allow_overpass:

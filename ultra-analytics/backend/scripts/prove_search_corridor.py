@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove Search corridor timings on a real route.
+"""Prove Search corridor timings + non-zero Water/Markets on a real route.
 
 Usage (from ultra-analytics/backend):
   .venv/bin/python scripts/prove_search_corridor.py
@@ -16,7 +16,6 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.analysis import poi_corridor
 from app.analysis.route_pois import (
     ensure_search_corridor,
     fetch_route_pois,
@@ -28,6 +27,18 @@ ROUTE = os.environ.get(
     "PROOF_ROUTE",
     "data/users/g_110961740720638107491/routes/3b516561b8cc.json",
 )
+
+# Manresa / Catalonia — known zoomed town on the Bikepacking ultra.
+MANRESA_BBOX = (41.70, 1.78, 41.75, 1.86)  # S, W, N, E
+
+# Frontend search corridor for temp finds (must stay in sync with planLayers.ts).
+SEARCH_CORRIDOR_MAX_M = 3000
+
+
+def _visible_after_ui(pois: list, group: str) -> list:
+    """Simulate frontend markerVisible corridor for temp Search finds."""
+    max_m = 1500 if group == "sleep" else SEARCH_CORRIDOR_MAX_M
+    return [p for p in pois if float(p.get("distanceOffRouteM") or 0) <= max_m]
 
 
 def main() -> int:
@@ -42,7 +53,6 @@ def main() -> int:
 
     # --- Build / load corridor ---
     t0 = time.perf_counter()
-    # Prefer projected analysis path (uses raw Overpass disk cache if needed)
     bundle = fetch_route_pois(track, force_refresh=False)
     build_ms = (time.perf_counter() - t0) * 1000
     corridor = ensure_search_corridor(track, force_refresh=False, build_if_missing=False)
@@ -100,14 +110,69 @@ def main() -> int:
     warm_ms = (time.perf_counter() - t2) * 1000
     print(f"  warm repeat resupply ms={warm_ms:.1f}  pois={len(res2.get('pois') or [])}")
 
+    # --- Manresa town acceptance (Water + Markets must return 1–15 visible) ---
+    ms_s, ms_w, ms_n, ms_e = MANRESA_BBOX
+    print(f"\nManresa bbox {MANRESA_BBOX}")
+    for group, label in (("water", "Water"), ("resupply", "Markets")):
+        t3 = time.perf_counter()
+        res = fetch_viewport_pois(
+            ms_s,
+            ms_w,
+            ms_n,
+            ms_e,
+            group=group,
+            track=track,
+            limit=12,
+            allow_overpass=False,
+        )
+        ms = (time.perf_counter() - t3) * 1000
+        pois = res.get("pois") or []
+        visible = _visible_after_ui(pois, group)
+        print(
+            f"  {label:8s}  ms={ms:7.1f}  cache={res.get('cache')}  "
+            f"api={len(pois)}  ui_visible={len(visible)}  "
+            f"candidates={res.get('candidateCount')}  "
+            f"offs={[round(p.get('distanceOffRouteM') or 0) for p in pois[:8]]}"
+        )
+        if res.get("cache") != "corridor-hit":
+            print(f"FAIL: Manresa {label} expected corridor-hit")
+            return 1
+        if ms >= 2000:
+            print(f"FAIL: Manresa {label} {ms:.0f}ms >= 2000ms")
+            return 1
+        if not (1 <= len(visible) <= 15):
+            print(
+                f"FAIL: Manresa {label} ui_visible={len(visible)} "
+                f"(need 1–15 after search-corridor filter)"
+            )
+            return 1
+
+    # --- Rural sparse water must still surface when API has hits >500m ---
+    # km ~562 on Bikepacking: water offs are all >500m under old UI filter.
+    target_km = 562.0
+    best = min(track, key=lambda r: abs((r[3] if len(r) > 3 else 0) - target_km))
+    half = 0.04
+    s, w = float(best[0]) - half, float(best[1]) - half
+    n, e = float(best[0]) + half, float(best[1]) + half
+    res562 = fetch_viewport_pois(s, w, n, e, group="water", track=track, limit=12, allow_overpass=False)
+    pois562 = res562.get("pois") or []
+    vis562 = _visible_after_ui(pois562, "water")
+    old500 = [p for p in pois562 if float(p.get("distanceOffRouteM") or 0) <= 500]
+    print(
+        f"\nkm562 water: api={len(pois562)} old500_ui={len(old500)} "
+        f"search_ui={len(vis562)} offs={[round(p.get('distanceOffRouteM') or 0) for p in pois562]}"
+    )
+    if pois562 and not vis562:
+        print("FAIL: km562 water API hits hidden by search corridor filter")
+        return 1
+    if pois562 and not old500 and vis562:
+        print("  (regression guard) old 500m UI would have shown 0; search corridor shows >0 — PASS")
+
     print("\n=== ACCEPTANCE ===")
     print(f"  Cached area search < 2s: PASS (max {max(times):.1f}ms, warm {warm_ms:.1f}ms)")
+    print("  Manresa Water/Markets 1–15 visible: PASS")
     print("  Corridor spatial filter: PASS")
     print(f"  Fingerprint: {corridor.get('fingerprint')}  pad_m={corridor.get('corridorPadM')}")
-    print(
-        "BOTTLENECK (pre-fix baseline): cold Overpass ~44s; "
-        "corridor spatial filter ~1ms; analysis re-project was ~22s before projected cache."
-    )
     return 0
 
 

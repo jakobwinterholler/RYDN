@@ -322,6 +322,9 @@ def rank_candidates(
     scored.sort(
         key=lambda s: (
             0 if s.get("priority") else 1,
+            # Prefer nearer-to-route first within ~200 m bands, then quality.
+            # Stops blank maps when far-but-high-score POIs crowd out on-route ones.
+            int((s.get("distanceOffRouteM") or 999) // 200),
             -(s.get("resupplyScore") or 0),
             -(s.get("qualityScore") or 0),
             s.get("distanceOffRouteM") or 999,

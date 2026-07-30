@@ -59,8 +59,15 @@ export const QA_NEAREST_N = 6;
 /** Soft cap for non-emphasized extras while a Quick Action is on (≈10 total). */
 export const QA_EXTRA_CAP = 4;
 
-/** Show service POIs within this corridor of the route (sleep may be farther). */
+/** Show system/verified service POIs within this corridor of the route (sleep may be farther). */
 export const CORRIDOR_MAX_M = 500;
+
+/**
+ * Search-this-area is viewport-scoped (backend corridor ~3 km).
+ * Do NOT apply CORRIDOR_MAX_M to temp finds — towns slightly off the bike line
+ * are exactly what "Search this area" should surface.
+ */
+export const SEARCH_CORRIDOR_MAX_M = 3000;
 
 /**
  * Calm default — answer nothing until asked.
@@ -170,6 +177,14 @@ export function stopMatchesLayer(m: PlanMarker, layer: PlanLayerId): boolean {
  */
 function withinCorridor(m: PlanMarker): boolean {
   if (m.distanceOffRouteM == null) return true;
+  // Temp Search-this-area finds: viewport already filtered; allow full search corridor.
+  if (m.layer === "temp" || m.kind === "area") {
+    const maxM =
+      m.kind === "sleep" || m.group === "sleep"
+        ? Math.max(SEARCH_CORRIDOR_MAX_M, 1500)
+        : SEARCH_CORRIDOR_MAX_M;
+    return m.distanceOffRouteM <= maxM;
+  }
   if (m.kind === "sleep" || m.group === "sleep") return m.distanceOffRouteM <= 1500;
   return m.distanceOffRouteM <= CORRIDOR_MAX_M;
 }
@@ -202,14 +217,16 @@ export function markerVisible(
     return layers.stages;
   }
 
-  // Service POIs: ~500 m corridor (sleep slightly farther)
-  if (!withinCorridor(m)) return false;
-
-  // Temporary search finds: only while a matching Quick Action is on
+  // Temporary search finds: only while a matching Quick Action is on.
+  // Viewport-scoped — do not hide with the tight 500 m system corridor.
   if (m.layer === "temp" || m.kind === "area") {
     if (!qa) return false;
+    if (!withinCorridor(m)) return false;
     return stopMatchesLayer(m, qa) && (layers.rejected || m.status !== "rejected");
   }
+
+  // System / verified service POIs: ~500 m corridor (sleep slightly farther)
+  if (!withinCorridor(m)) return false;
 
   // Quick Action: exclusive category filter — map answers only that question
   if (qa) {
