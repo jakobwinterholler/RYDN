@@ -289,6 +289,7 @@ export interface ViewportPoisResult {
     distanceOffRouteM: number;
     openingHours?: string | null;
     website?: string | null;
+    phone?: string | null;
     is24h?: boolean;
     hasShop?: boolean;
     hotelStars?: number | null;

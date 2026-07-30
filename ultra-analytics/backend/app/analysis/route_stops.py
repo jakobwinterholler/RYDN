@@ -480,6 +480,8 @@ def select_recommended_stops(
                     else None
                 ),
                 "website": s.get("website"),
+                "phone": s.get("phone"),
+                "hotelStars": s.get("hotelStars"),
             }
         )
         prev_km = km

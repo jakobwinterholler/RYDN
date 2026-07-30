@@ -6132,6 +6132,10 @@ input {
   display: none;
 }
 
+.plan-workspace--ride .plan-workspace__stage {
+  background: var(--paper);
+}
+
 .ride-panel {
   position: absolute;
   left: 0;
@@ -6147,6 +6151,18 @@ input {
   background: color-mix(in srgb, var(--paper-elevated) 96%, transparent);
   backdrop-filter: blur(12px);
   box-shadow: 0 -8px 28px rgba(26, 26, 24, 0.08);
+}
+
+/* Ride: no map — panel owns the full stage. */
+.plan-workspace--ride .ride-panel {
+  inset: 0;
+  height: 100%;
+  max-height: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  background: var(--paper-elevated);
 }
 
 .ride-panel__sticky {
@@ -6394,6 +6410,16 @@ input {
     border: 1px solid var(--line-strong);
     border-radius: 16px;
     box-shadow: 0 12px 40px rgba(26, 26, 24, 0.1);
+  }
+
+  .plan-workspace--ride .ride-panel {
+    inset: 0;
+    width: auto;
+    height: 100%;
+    max-height: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
   }
 }
 

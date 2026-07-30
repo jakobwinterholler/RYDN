@@ -73,6 +73,7 @@ function mapViewportPoi(p: {
   distanceOffRouteM: number;
   openingHours?: string | null;
   website?: string | null;
+  phone?: string | null;
   is24h?: boolean;
   hasShop?: boolean;
   hotelStars?: number | null;
@@ -97,6 +98,7 @@ function mapViewportPoi(p: {
     distanceOffRouteM: p.distanceOffRouteM,
     openingHours: p.openingHours,
     website: p.website,
+    phone: p.phone,
     is24h: p.is24h,
     hasShop: p.hasShop,
     hotelStars: p.hotelStars ?? null,
@@ -117,6 +119,18 @@ function fmtHotelStars(stars: number | null | undefined): string | null {
   const n = Math.round(stars);
   if (n < 1 || n > 5) return null;
   return `${"★".repeat(n)}${"☆".repeat(5 - n)}`;
+}
+
+function telHref(phone: string): string {
+  const cleaned = phone.trim().replace(/[^\d+]/g, "");
+  return cleaned ? `tel:${cleaned}` : `tel:${phone.trim()}`;
+}
+
+function externalHref(url: string): string {
+  const t = url.trim();
+  if (!t) return t;
+  if (/^https?:\/\//i.test(t)) return t;
+  return `https://${t}`;
 }
 
 function mapsLinks(lat: number, lon: number, name?: string | null) {
@@ -843,6 +857,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           distanceOffRouteM: sleep.distanceOffRouteM,
           openingHours: sleep.openingHours,
           website: sleep.website,
+          phone: sleep.phone,
           hotelStars: sleep.hotelStars,
           googleMapsUrl: (sleep as { googleMapsUrl?: string | null }).googleMapsUrl,
         });
@@ -1134,18 +1149,20 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       </header>
 
       <div className="plan-workspace__stage">
-        {/* Map paints immediately — analysis overlays in; never block with a modal */}
-        <PlanMap
-          points={route.points}
-          markers={analysis ? visibleMarkers : []}
-          selectedId={selectedId}
-          fitKey={route.id}
-          focusIds={focusIds}
-          searching={searchingArea}
-          onSelectMarker={onSelectMarker}
-          onViewChange={onViewChange}
-        />
-        {analyzing && !analysis && (
+        {/* Map is Plan-only — Ride is full-bleed verified timeline. */}
+        {mode === "plan" && (
+          <PlanMap
+            points={route.points}
+            markers={analysis ? visibleMarkers : []}
+            selectedId={selectedId}
+            fitKey={route.id}
+            focusIds={focusIds}
+            searching={searchingArea}
+            onSelectMarker={onSelectMarker}
+            onViewChange={onViewChange}
+          />
+        )}
+        {mode === "plan" && analyzing && !analysis && (
           <div className="plan-workspace__analyzing" role="status" aria-live="polite">
             Analysing course…
           </div>
@@ -1339,14 +1356,28 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     selectedStop.distanceOffRouteM != null
                       ? `${selectedStop.distanceOffRouteM} m off route`
                       : "On route",
-                    selectedStop.group === "sleep"
-                      ? fmtHotelStars(selectedStop.hotelStars)
-                      : null,
+                    fmtHotelStars(selectedStop.hotelStars),
                     selectedStop.openingHours || null,
                   ]
                     .filter(Boolean)
                     .join(" · ")}
                 </p>
+                {(selectedStop.phone || selectedStop.website) && (
+                  <p className="plan-sheet__links">
+                    {selectedStop.phone ? (
+                      <a href={telHref(selectedStop.phone)}>{selectedStop.phone}</a>
+                    ) : null}
+                    {selectedStop.website ? (
+                      <a
+                        href={externalHref(selectedStop.website)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Website
+                      </a>
+                    ) : null}
+                  </p>
+                )}
                 <div className="plan-sheet__cta">
                   <button
                     type="button"

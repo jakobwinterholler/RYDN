@@ -128,6 +128,30 @@ def _parse_hotel_stars(tags: Dict[str, Any]) -> Optional[int]:
     return max(1, min(5, int(round(n))))
 
 
+def _parse_phone(tags: Dict[str, Any]) -> Optional[str]:
+    """Best-effort OSM phone from common contact tags."""
+    for key in ("phone", "contact:phone", "mobile", "contact:mobile"):
+        raw = tags.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text[:80]
+    return None
+
+
+def _parse_website(tags: Dict[str, Any]) -> Optional[str]:
+    """First usable OSM website/url tag."""
+    for key in ("website", "contact:website", "url"):
+        raw = tags.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text[:300]
+    return None
+
+
 _CACHE_DIR = None  # resolved lazily
 
 
@@ -306,6 +330,9 @@ def _elements_to_projected(
             else:
                 out_cat = "Gas station"
 
+        phone = _parse_phone(tags)
+        website = _parse_website(tags)
+        hotel_stars = _parse_hotel_stars(tags)
         item = {
             "id": f"area-{osm_type}-{osm_id}",
             "osmId": osm_id,
@@ -320,16 +347,17 @@ def _elements_to_projected(
             "distanceAlongKm": round(along_km, 2),
             "distanceOffRouteM": round(off_m),
             "openingHours": hours,
-            "website": tags.get("website") or tags.get("contact:website"),
+            "website": website,
             "is24h": is24,
             "hasShop": has_shop if category == "Gas station" else None,
             "reviewStatus": "unreviewed",
             "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
         }
+        if phone:
+            item["phone"] = phone
+        if hotel_stars is not None:
+            item["hotelStars"] = hotel_stars
         if group == "sleep":
-            hotel_stars = _parse_hotel_stars(tags)
-            if hotel_stars is not None:
-                item["hotelStars"] = hotel_stars
             sleep.append(item)
         else:
             pois.append(item)
@@ -929,24 +957,31 @@ def fetch_viewport_pois(
                 if not has_shop:
                     continue
                 out_cat = "24h Shop" if is24 else "Fuel shop"
-            projected.append(
-                {
-                    "id": f"area-{osm_type}-{osm_id}",
-                    "osmId": osm_id,
-                    "osmType": osm_type,
-                    "name": tags.get("name") or tags.get("brand") or tags.get("operator"),
-                    "category": out_cat,
-                    "group": grp,
-                    "lat": round(lat, 5),
-                    "lon": round(lon, 5),
-                    "distanceAlongKm": 0.0,
-                    "distanceOffRouteM": 0,
-                    "openingHours": hours,
-                    "is24h": is24,
-                    "hasShop": has_shop if category == "Gas station" else None,
-                    "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
-                }
-            )
+            phone = _parse_phone(tags)
+            website = _parse_website(tags)
+            hotel_stars = _parse_hotel_stars(tags)
+            item = {
+                "id": f"area-{osm_type}-{osm_id}",
+                "osmId": osm_id,
+                "osmType": osm_type,
+                "name": tags.get("name") or tags.get("brand") or tags.get("operator"),
+                "category": out_cat,
+                "group": grp,
+                "lat": round(lat, 5),
+                "lon": round(lon, 5),
+                "distanceAlongKm": 0.0,
+                "distanceOffRouteM": 0,
+                "openingHours": hours,
+                "website": website,
+                "is24h": is24,
+                "hasShop": has_shop if category == "Gas station" else None,
+                "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+            }
+            if phone:
+                item["phone"] = phone
+            if hotel_stars is not None:
+                item["hotelStars"] = hotel_stars
+            projected.append(item)
     t_proj_ms = (time.perf_counter() - t_proj0) * 1000
 
     # Merge into corridor cache when we have a track

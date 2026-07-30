@@ -295,6 +295,8 @@ export interface RoutePoi {
   distanceOffRouteM: number;
   openingHours?: string | null;
   website?: string | null;
+  /** OSM phone / contact:phone when tagged. */
+  phone?: string | null;
   /** OSM hotel classification stars (1–5), when tagged. */
   hotelStars?: number | null;
 }

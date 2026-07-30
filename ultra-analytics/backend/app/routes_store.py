@@ -329,6 +329,8 @@ def update_route(uid: str, route_id: str, patch: Dict[str, Any]) -> Optional[dic
                 "distanceOffRouteM": int(snap.get("distanceOffRouteM") or 0),
                 "openingHours": snap.get("openingHours"),
                 "website": snap.get("website"),
+                "phone": snap.get("phone"),
+                "hotelStars": snap.get("hotelStars"),
                 "is24h": bool(snap.get("is24h")),
                 "hasShop": snap.get("hasShop"),
                 "qualityStars": int(snap.get("qualityStars") or 4),
