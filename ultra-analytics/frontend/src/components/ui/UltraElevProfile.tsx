@@ -4,15 +4,20 @@ import { useMemo } from "react";
 import type { UltraSleepMarker } from "../../types";
 
 const W = 640;
-const H = 88;
+const H = 96;
 const PAD_X = 10;
-const PAD_Y = 12;
+const PAD_Y = 13;
 
 interface Props {
   axisKm: number[];
   elevationM: (number | null)[];
   sleep?: UltraSleepMarker[];
   className?: string;
+  /**
+   * Ultra Overview opening: draw L→R after the map route, then ease overnight marks in.
+   * Timing is CSS-coordinated with RoutePreview reveal (prefers-reduced-motion = instant).
+   */
+  reveal?: boolean;
 }
 
 function extent(values: (number | null)[]): [number, number] {
@@ -33,6 +38,7 @@ export default function UltraElevProfile({
   elevationM,
   sleep = [],
   className = "",
+  reveal = false,
 }: Props) {
   const drawn = useMemo(() => {
     const pts: { km: number; elev: number }[] = [];
@@ -90,7 +96,7 @@ export default function UltraElevProfile({
 
   return (
     <div
-      className={`ultra-elev ${className}`.trim()}
+      className={`ultra-elev ${reveal ? "ultra-elev--reveal" : ""} ${className}`.trim()}
       role="img"
       aria-label={
         nightCount > 0
@@ -100,11 +106,11 @@ export default function UltraElevProfile({
     >
       <svg className="ultra-elev__svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
         <path d={drawn.areaD} className="ultra-elev__fill" />
-        <path d={drawn.lineD} className="ultra-elev__line" fill="none" />
+        <path d={drawn.lineD} className="ultra-elev__line" fill="none" pathLength={1} />
         {drawn.dots.map((d) => (
-          <g key={`sleep-${d.dayIndex}`}>
-            <circle cx={d.x} cy={d.y} r="4.2" className="ultra-elev__sleep-halo" />
-            <circle cx={d.x} cy={d.y} r="2.4" className="ultra-elev__sleep" />
+          <g key={`sleep-${d.dayIndex}`} className="ultra-elev__sleep-g">
+            <circle cx={d.x} cy={d.y} r="5" className="ultra-elev__sleep-halo" />
+            <circle cx={d.x} cy={d.y} r="2.75" className="ultra-elev__sleep" />
           </g>
         ))}
       </svg>

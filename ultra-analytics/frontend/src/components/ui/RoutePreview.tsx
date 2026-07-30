@@ -1,6 +1,6 @@
 /** Editorial atlas route plate — paper land, quieter sea, thin ink route. */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import Icon from "./Icon";
 
 interface Props {
@@ -8,6 +8,11 @@ interface Props {
   /** Chronological day polylines — drawn as separate strokes (no teleport lines). */
   segments?: number[][][];
   className?: string;
+  /**
+   * Ultra Overview opening: ink the route start→finish once on mount.
+   * Respects prefers-reduced-motion via CSS (instant final state).
+   */
+  reveal?: boolean;
   /** Planning markers: climbs, services, remote gaps. */
   markers?: {
     id?: string;
@@ -19,6 +24,9 @@ interface Props {
   selectedId?: string | null;
   onSelectMarker?: (id: string) => void;
 }
+
+/** Total route stroke time (ms); segments share it sequentially. */
+const REVEAL_ROUTE_MS = 420;
 
 type CountriesFC = {
   features: { properties: { id: string }; geometry: { type: string; coordinates: unknown } }[];
@@ -218,6 +226,7 @@ export default function RoutePreview({
   points,
   segments,
   className = "",
+  reveal = false,
   markers,
   selectedId,
   onSelectMarker,
@@ -302,8 +311,14 @@ export default function RoutePreview({
     );
   }
 
+  const routeCount = Math.max(plate.routePaths.length, 1);
+  const segDur = REVEAL_ROUTE_MS / routeCount;
+
   return (
-    <div className={`route-preview ${className}`.trim()} aria-label="Route preview">
+    <div
+      className={`route-preview ${reveal ? "route-preview--reveal" : ""} ${className}`.trim()}
+      aria-label="Route preview"
+    >
       <svg viewBox={`0 0 ${W} ${H}`} className="route-preview__svg" role="img">
         <rect width={W} height={H} fill={SEA} />
         {plate.lands.map((d, i) => (
@@ -324,12 +339,22 @@ export default function RoutePreview({
           <path
             key={`r${i}`}
             d={d}
+            className="route-preview__route"
             fill="none"
             stroke={ROUTE}
             strokeWidth="2.15"
             strokeLinejoin="round"
             strokeLinecap="round"
             vectorEffect="non-scaling-stroke"
+            pathLength={1}
+            style={
+              reveal
+                ? ({
+                    ["--route-draw-dur"]: `${segDur}ms`,
+                    ["--route-draw-delay"]: `${i * segDur}ms`,
+                  } as CSSProperties)
+                : undefined
+            }
           />
         ))}
         {plate.dots.map((d, i) => {
@@ -360,8 +385,15 @@ export default function RoutePreview({
             />
           );
         })}
-        <circle cx={plate.start[0]} cy={plate.start[1]} r="3.6" fill={ROUTE} />
         <circle
+          className="route-preview__endpoint"
+          cx={plate.start[0]}
+          cy={plate.start[1]}
+          r="3.6"
+          fill={ROUTE}
+        />
+        <circle
+          className="route-preview__endpoint"
           cx={plate.end[0]}
           cy={plate.end[1]}
           r="3.6"

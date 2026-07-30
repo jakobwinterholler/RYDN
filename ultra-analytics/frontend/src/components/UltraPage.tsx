@@ -206,6 +206,7 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
           className="ultra-page__map"
           points={route.points}
           segments={route.segments}
+          reveal
         />
 
         {route.elevation &&
@@ -215,6 +216,7 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
             axisKm={route.elevation.axisKm}
             elevationM={route.elevation.elevationM}
             sleep={route.sleep}
+            reveal
           />
         ) : null}
 
