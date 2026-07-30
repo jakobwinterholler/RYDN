@@ -57,6 +57,8 @@ import {
   replaceSearchResults,
   verifiedIdSet,
 } from "./plan/workspaceLayers";
+import RidePanel from "./plan/RidePanel";
+import { mergeVerifiedStops } from "./plan/rideStops";
 
 function mapViewportPoi(p: {
   id: string;
@@ -115,15 +117,6 @@ function mapsLinks(lat: number, lon: number, name?: string | null) {
     place: `https://www.google.com/maps/search/?api=1&query=${q}`,
     streetView: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lon}`,
   };
-}
-
-function fmtEtaFromKm(km: number, speedKmh = 22): string {
-  if (!Number.isFinite(km) || km < 0) return "—";
-  const hours = km / speedKmh;
-  if (hours < 1) return `~${Math.max(1, Math.round(hours * 60))} min`;
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
-  return m > 0 ? `~${h}h ${m}m` : `~${h}h`;
 }
 
 interface Props {
@@ -836,27 +829,10 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     return nearestOf(allMarkers, nearestRef.lat, nearestRef.lon, (m) => stopMatchesLayer(m, qa));
   }, [allMarkers, nearestRef, qa]);
 
-  const rideGlance = useMemo(() => {
-    const verified = recommended.filter((s) => s.reviewStatus === "verified");
-    const ahead = (pred: (s: RecommendedStop) => boolean) => {
-      const list = verified.filter((s) => pred(s) && s.distanceAlongKm >= rideKm - 0.5);
-      return list.sort((a, b) => a.distanceAlongKm - b.distanceAlongKm)[0] || null;
-    };
-    return {
-      water: ahead((s) => s.group === "water"),
-      markets: ahead(
-        (s) =>
-          s.category === "Supermarket" ||
-          s.category === "Convenience" ||
-          s.category === "Bakery" ||
-          (s.group === "resupply" &&
-            !(s.category || "").toLowerCase().includes("gas") &&
-            !(s.category || "").toLowerCase().includes("24h") &&
-            !(s.category || "").toLowerCase().includes("fuel")),
-      ),
-      sleep: ahead((s) => s.group === "sleep"),
-    };
-  }, [recommended, rideKm]);
+  const rideVerified = useMemo(
+    () => mergeVerifiedStops(recommended, verifiedStops),
+    [recommended, verifiedStops],
+  );
 
   const onSelectMarker = (id: string) => {
     if (!id) {
@@ -1136,64 +1112,65 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </div>
         )}
 
-        {/* Top chrome: exclusive search chip + nearest card (never overlapping states). */}
-        <div className="plan-map-top" data-testid="plan-map-top">
-          {searchChip === "zoomIn" && (
-            <div
-              className="plan-search-chip plan-search-chip--hint"
-              data-search-chip="zoomIn"
-              role="status"
-            >
-              Zoom in to search this area
-            </div>
-          )}
-          {searchChip === "ready" && (
-            <button
-              type="button"
-              className="plan-search-chip plan-search-chip--action"
-              data-search-chip="ready"
-              onClick={() => void searchThisArea()}
-            >
-              Search this area
-            </button>
-          )}
-          {searchChip === "searching" && (
-            <div
-              className="plan-search-chip plan-search-chip--busy"
-              data-search-chip="searching"
-              role="status"
-              aria-live="polite"
-              aria-busy="true"
-            >
-              <span className="plan-qa__spinner" aria-hidden />
-              Searching…
-            </div>
-          )}
-
-          {nearest && qa && analysis && (
-            <aside className="plan-nearest" aria-label="Nearest for quick action">
-              <p className="plan-nearest__label">
-                Nearest {QUICK_ACTIONS.find((a) => a.id === qa)?.label || ""} ·{" "}
-                {mode === "ride" ? "route progress" : "map center"}
-              </p>
+        {/* Top chrome: exclusive search chip + nearest card (Plan only). */}
+        {mode === "plan" && (
+          <div className="plan-map-top" data-testid="plan-map-top">
+            {searchChip === "zoomIn" && (
+              <div
+                className="plan-search-chip plan-search-chip--hint"
+                data-search-chip="zoomIn"
+                role="status"
+              >
+                Zoom in to search this area
+              </div>
+            )}
+            {searchChip === "ready" && (
               <button
                 type="button"
-                className="plan-nearest__row"
-                onClick={() => {
-                  setSelectedId(nearest.marker.id);
-                  setFocusIds([nearest.marker.id]);
-                }}
+                className="plan-search-chip plan-search-chip--action"
+                data-search-chip="ready"
+                onClick={() => void searchThisArea()}
               >
-                <span>{nearest.marker.name || nearest.marker.category || "Stop"}</span>
-                <span>
-                  {nearest.km < 1
-                    ? `${Math.round(nearest.km * 1000)} m`
-                    : `${nearest.km.toFixed(1)} km`}
-                </span>
+                Search this area
               </button>
-            </aside>
-          )}
-        </div>
+            )}
+            {searchChip === "searching" && (
+              <div
+                className="plan-search-chip plan-search-chip--busy"
+                data-search-chip="searching"
+                role="status"
+                aria-live="polite"
+                aria-busy="true"
+              >
+                <span className="plan-qa__spinner" aria-hidden />
+                Searching…
+              </div>
+            )}
+
+            {nearest && qa && analysis && (
+              <aside className="plan-nearest" aria-label="Nearest for quick action">
+                <p className="plan-nearest__label">
+                  Nearest {QUICK_ACTIONS.find((a) => a.id === qa)?.label || ""} · map center
+                </p>
+                <button
+                  type="button"
+                  className="plan-nearest__row"
+                  onClick={() => {
+                    setSelectedId(nearest.marker.id);
+                    setFocusIds([nearest.marker.id]);
+                  }}
+                >
+                  <span>{nearest.marker.name || nearest.marker.category || "Stop"}</span>
+                  <span>
+                    {nearest.km < 1
+                      ? `${Math.round(nearest.km * 1000)} m`
+                      : `${nearest.km.toFixed(1)} km`}
+                  </span>
+                </button>
+              </aside>
+            )}
+          </div>
+        )}
 
         {/* Floating right stack — More sits under zoom controls */}
         {mode === "plan" && (
@@ -1248,58 +1225,48 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </aside>
         )}
 
-        {/* Quick Actions — Water / Shops / Sleep. Loading indicator inside active button. */}
-        <nav className="plan-qa" aria-label="Quick actions">
-          {QUICK_ACTIONS.map((a) => {
-            const busy = searchingArea && qa === a.id;
-            return (
-              <button
-                key={a.id}
-                type="button"
-                className={`plan-qa__btn${qa === a.id ? " is-on" : ""}${busy ? " is-loading" : ""}`}
-                onClick={() => toggleQa(a.id)}
-                aria-pressed={qa === a.id}
-                aria-busy={busy || undefined}
-                title={busy ? searchStatus || a.label : a.label}
-              >
-                <span className="plan-qa__icon" aria-hidden>
-                  {busy ? <span className="plan-qa__spinner" /> : a.emoji}
-                </span>
-                <span>{a.label}</span>
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* Ride Mode — position only; essentials via Quick Actions */}
-        {mode === "ride" && (
-          <aside className="plan-ride-panel plan-ride-panel--minimal" aria-label="Ride mode">
-            <label className="field plan-ride-panel__pos">
-              <span>Km {rideKm.toFixed(0)} · tap Water / Shops / Sleep</span>
-              <input
-                type="range"
-                min={0}
-                max={Math.max(1, route.distanceKm)}
-                step={1}
-                value={rideKm}
-                onChange={(e) => setRideKm(Number(e.target.value))}
-              />
-            </label>
-            {!qa && rideGlance.water && (
-              <button
-                type="button"
-                className="plan-ride-panel__next"
-                onClick={() => setSelectedId(rideGlance.water!.id)}
-              >
-                Next water · {(rideGlance.water.distanceAlongKm - rideKm).toFixed(0)} km ·{" "}
-                {fmtEtaFromKm(rideGlance.water.distanceAlongKm - rideKm)}
-              </button>
-            )}
-          </aside>
+        {/* Quick Actions — Plan only (Ride uses verified timeline). */}
+        {mode === "plan" && (
+          <nav className="plan-qa" aria-label="Quick actions">
+            {QUICK_ACTIONS.map((a) => {
+              const busy = searchingArea && qa === a.id;
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  className={`plan-qa__btn${qa === a.id ? " is-on" : ""}${busy ? " is-loading" : ""}`}
+                  onClick={() => toggleQa(a.id)}
+                  aria-pressed={qa === a.id}
+                  aria-busy={busy || undefined}
+                  title={busy ? searchStatus || a.label : a.label}
+                >
+                  <span className="plan-qa__icon" aria-hidden>
+                    {busy ? <span className="plan-qa__spinner" /> : a.emoji}
+                  </span>
+                  <span>{a.label}</span>
+                </button>
+              );
+            })}
+          </nav>
         )}
 
-        {/* Compact stop sheet */}
-        {(selectedStop || peek) && (
+        {mode === "ride" && (
+          <RidePanel
+            verified={rideVerified}
+            profile={analysis?.profile}
+            rideKm={rideKm}
+            routeDistanceKm={route.distanceKm}
+            selectedId={selectedId}
+            onRideKmChange={setRideKm}
+            onSelectStop={(id) => {
+              setSelectedId(id);
+              setFocusIds([id]);
+            }}
+          />
+        )}
+
+        {/* Compact stop sheet — Plan only (Ride cards carry the timeline). */}
+        {mode === "plan" && (selectedStop || peek) && (
           <div
             className={`plan-sheet plan-sheet--compact${selectedStop?.reviewStatus === "verified" ? " plan-sheet--verified" : ""}`}
             role="dialog"
