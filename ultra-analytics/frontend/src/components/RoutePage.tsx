@@ -22,11 +22,10 @@ import { fmtDuration } from "./ui/format";
 import Icon from "./ui/Icon";
 import RydnLoader from "./ui/RydnLoader";
 import ScoreLine from "./ui/ScoreLine";
-import PlanMap, { type PlanMapBBox, PLAN_MAP_STYLE_NOTE } from "./plan/PlanMap";
+import PlanMap, { type PlanMapBBox } from "./plan/PlanMap";
 import { RydnPlanIcon, iconForCategory } from "./plan/icons";
 import {
   DEFAULT_LAYERS,
-  LAYER_TOGGLES,
   QA_NEAREST_N,
   QUICK_ACTIONS,
   RIDE_LAYERS,
@@ -273,7 +272,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [reviewMotion, setReviewMotion] = useState<ReviewMotion | null>(null);
   const [briefingOpen, setBriefingOpen] = useState(false);
   const [briefingTab, setBriefingTab] = useState<BriefingTab>("critical");
-  const [layersOpen, setLayersOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number } | null>(null);
   const [mapBbox, setMapBbox] = useState<PlanMapBBox | null>(null);
@@ -381,7 +379,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     setSearchPrompted(false);
     if (mode === "ride") {
       setSearchResults([]);
-      setLayersOpen(false);
       setBriefingOpen(false);
     }
   }, [mode]);
@@ -1198,30 +1195,15 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           )}
         </div>
 
-        {/* Floating right stack — Layers sits with zoom controls */}
+        {/* Floating right stack — More sits under zoom controls */}
         {mode === "plan" && (
           <div className="plan-map-fab" aria-label="Map tools">
-            <button
-              type="button"
-              className={`plan-map-fab__btn${layersOpen ? " is-on" : ""}`}
-              aria-label="Layers"
-              aria-pressed={layersOpen}
-              onClick={() => {
-                setLayersOpen((o) => !o);
-                setOverflowOpen(false);
-              }}
-            >
-              Layers
-            </button>
             <button
               type="button"
               className={`plan-map-fab__btn${overflowOpen ? " is-on" : ""}`}
               aria-label="More"
               aria-pressed={overflowOpen}
-              onClick={() => {
-                setOverflowOpen((o) => !o);
-                setLayersOpen(false);
-              }}
+              onClick={() => setOverflowOpen((o) => !o)}
             >
               ···
             </button>
@@ -1288,50 +1270,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             );
           })}
         </nav>
-
-        {/* Layer toggles — floating panel from right FAB */}
-        {layersOpen && mode === "plan" && (
-          <aside className="plan-layers" aria-label="Map layers">
-            <p className="plan-layers__title">Layers</p>
-            <div className="plan-layers__grid">
-              {LAYER_TOGGLES.map((L) => (
-                <label key={L.id} className="plan-layers__item">
-                  <input
-                    type="checkbox"
-                    checked={layers[L.id]}
-                    onChange={() => setLayers((prev) => ({ ...prev, [L.id]: !prev[L.id] }))}
-                  />
-                  {L.label}
-                </label>
-              ))}
-            </div>
-            <div className="plan-layers__actions">
-              <button
-                type="button"
-                className="plan-layers__link"
-                onClick={() => {
-                  setBriefingOpen(true);
-                  setLayersOpen(false);
-                }}
-              >
-                Briefing
-              </button>
-              <button
-                type="button"
-                className="plan-layers__link"
-                disabled={analyzing}
-                onClick={() => void loadAnalysis({ refresh: true })}
-              >
-                {analyzing ? "Refreshing…" : "Refresh"}
-              </button>
-            </div>
-            <p className="plan-layers__note">
-              Default is calm (verified + remote). Tap Water / Shops / Sleep to search the corridor
-              (~500 m). Shops = snacks & small grocery. Check opening hours on the stop sheet.{" "}
-              {PLAN_MAP_STYLE_NOTE}
-            </p>
-          </aside>
-        )}
 
         {/* Ride Mode — position only; essentials via Quick Actions */}
         {mode === "ride" && (

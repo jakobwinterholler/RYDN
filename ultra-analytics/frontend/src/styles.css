@@ -5426,7 +5426,7 @@ input {
 
 .plan-workspace__top-actions .chip,
 .plan-workspace__top-actions .btn {
-  /* Override metric `.chip { flex-direction: column }` so Plan/Ride/Layers text centers. */
+  /* Override metric `.chip { flex-direction: column }` so Plan/Ride text centers. */
   display: inline-flex !important;
   flex-direction: row !important;
   align-items: center !important;
@@ -5502,7 +5502,7 @@ input {
   right: 8px;
 }
 
-/* Leave room for Layers + More FABs stacked under zoom */
+/* Leave room for More FAB stacked under zoom */
 .plan-map .maplibregl-ctrl-top-right .maplibregl-ctrl {
   margin: 0 0 8px 0;
 }
@@ -5531,7 +5531,7 @@ input {
   outline: none;
 }
 
-/* Floating Layers / More — sits under MapLibre zoom on the right */
+/* Floating More — sits under MapLibre zoom on the right */
 .plan-map-fab {
   position: absolute;
   top: 92px;
@@ -5904,83 +5904,6 @@ input {
 
 .plan-qa__icon .rydn-plan-icon {
   display: block;
-}
-
-.plan-layers {
-  position: absolute;
-  top: 92px;
-  right: 52px;
-  z-index: 13;
-  width: min(220px, calc(100% - 72px));
-  max-height: min(52vh, 360px);
-  overflow: auto;
-  padding: 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  background: var(--paper-elevated);
-}
-
-.plan-layers__title {
-  margin: 0 0 8px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink-secondary);
-}
-
-.plan-layers__grid {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.plan-layers__item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.plan-layers__item input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
-}
-
-.plan-layers__actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-}
-
-.plan-layers__link {
-  flex: 1;
-  min-height: 32px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.plan-layers__link:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.plan-layers__note {
-  margin: 10px 0 0;
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--ink-tertiary);
 }
 
 .plan-ride-panel {

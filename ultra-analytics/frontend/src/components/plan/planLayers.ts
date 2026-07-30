@@ -108,7 +108,7 @@ export const QUICK_ACTIONS: {
   { id: "sleep", label: "Sleep", layer: "sleep", emoji: "\u{1F6CF}\u{FE0F}" },
 ];
 
-/** Layers panel — verified is a badge on icons, not a toolbar category. */
+/** Layer id labels (tests / docs). Verified is a badge on icons, not a QA category. */
 export const LAYER_TOGGLES: { id: PlanLayerId; label: string }[] = [
   { id: "water", label: "Water" },
   { id: "food", label: "Shops" },
@@ -243,7 +243,7 @@ export function markerVisible(
   const isVerified = m.status === "verified" || m.layer === "verified";
   if (isVerified && layers.verified) return true;
 
-  // Explicit layer toggles (Layers panel) can still surface unverified services
+  // Explicit layer flags (DEFAULT_LAYERS / RIDE_LAYERS) can still surface unverified services
   const serviceLayers: PlanLayerId[] = ["water", "food", "fuel", "h24", "sleep"];
   return serviceLayers.some((id) => layers[id] && stopMatchesLayer(m, id));
 }
