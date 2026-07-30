@@ -1,4 +1,4 @@
-/** Canvas sprite factory for MapLibre symbol layers — RYDN icon family. */
+/** Canvas sprite factory for MapLibre symbol layers — RYDN glanceable collectibles. */
 
 import type { Map as MapLibreMap } from "maplibre-gl";
 import { PLAN_ICON_PATHS } from "./glyphs";
@@ -48,6 +48,7 @@ function drawGlyph(
   ctx.lineWidth = weight;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
+  // 2-value art: filled silhouette + thick outline for sunlight
   const fillIds: PlanIconId[] = [
     "waterFountain",
     "pharmacy",
@@ -59,7 +60,6 @@ function drawGlyph(
     "camping",
     "climb",
   ];
-  // Moon + bed read clearer as stroke+fill at small map sizes
   const doFill = fillIds.includes(iconId);
   for (const d of paths) {
     const p = new Path2D(d);
@@ -70,25 +70,26 @@ function drawGlyph(
 }
 
 function drawVerifiedBadge(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number) {
-  const bx = cx + r * 0.72;
-  const by = cy + r * 0.72;
+  const bx = cx + r * 0.68;
+  const by = cy + r * 0.68;
+  const br = Math.max(8, r * 0.28);
   ctx.save();
   ctx.globalAlpha = 1;
   ctx.beginPath();
-  ctx.arc(bx, by, 6.2, 0, Math.PI * 2);
+  ctx.arc(bx, by, br, 0, Math.PI * 2);
   ctx.fillStyle = CHECK;
   ctx.fill();
-  ctx.lineWidth = 1.6;
+  ctx.lineWidth = 2.2;
   ctx.strokeStyle = PAPER;
   ctx.stroke();
   ctx.strokeStyle = PAPER;
-  ctx.lineWidth = 1.8;
+  ctx.lineWidth = Math.max(2.2, br * 0.28);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.beginPath();
-  ctx.moveTo(bx - 2.8, by + 0.15);
-  ctx.lineTo(bx - 0.5, by + 2.4);
-  ctx.lineTo(bx + 3.2, by - 2.2);
+  ctx.moveTo(bx - br * 0.45, by + 0.1);
+  ctx.lineTo(bx - br * 0.08, by + br * 0.38);
+  ctx.lineTo(bx + br * 0.48, by - br * 0.35);
   ctx.stroke();
   ctx.restore();
 }
@@ -109,26 +110,23 @@ function spriteKey(iconId: PlanIconId, kind: MarkerSpriteKind): string {
   return `rydn-${iconId}-${kind}`;
 }
 
+/**
+ * Large glanceable collectibles.
+ * Rendered at 2× (pixelRatio: 2) → logical ~48–56px before MapLibre icon-size.
+ */
 function renderSprite(iconId: PlanIconId, kind: MarkerSpriteKind): ImageData {
-  const big =
-    kind === "selected" ||
-    kind === "selectedVerified" ||
-    kind === "emphasized" ||
-    kind === "emphasizedVerified";
-  // Render at 2× for crisp retina; MapLibre pixelRatio: 2 → logical 32/28px
-  const size = big ? 64 : 56;
+  const selected = kind === "selected" || kind === "selectedVerified";
+  const emphasized =
+    kind === "emphasized" || kind === "emphasizedVerified";
+  // Significantly larger than prior 56/64 canvases
+  const size = selected ? 112 : emphasized ? 104 : 96;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
   const cx = size / 2;
   const cy = size / 2;
-  const r =
-    kind === "selected" || kind === "selectedVerified"
-      ? size * 0.36
-      : kind === "emphasized" || kind === "emphasizedVerified"
-        ? size * 0.34
-        : size * 0.32;
+  const r = selected ? size * 0.34 : emphasized ? size * 0.32 : size * 0.3;
 
   const tone = toneForIcon(iconId);
   const fill = TONE_FILL[tone];
@@ -138,18 +136,42 @@ function renderSprite(iconId: PlanIconId, kind: MarkerSpriteKind): ImageData {
     kind === "verified" ||
     kind === "selectedVerified" ||
     kind === "emphasizedVerified";
-  const selected = kind === "selected" || kind === "selectedVerified";
 
   ctx.clearRect(0, 0, size, size);
   ctx.globalAlpha = opacity;
 
-  // Soft shadow so icons lift off the basemap
+  // Soft shadow — lift off basemap
   ctx.beginPath();
-  ctx.arc(cx, cy + 1.2, r + 0.5, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(26, 26, 24, 0.18)";
+  ctx.arc(cx, cy + 2, r + 1, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(26, 26, 24, 0.22)";
   ctx.fill();
 
-  // Solid category disc — never paper-grey (that looked like empty placeholders)
+  // Recommended: subtle category ring (not bounce/flash)
+  if (emphasized && !selected) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 5.5, 0, Math.PI * 2);
+    ctx.strokeStyle = fill;
+    ctx.lineWidth = 3.2;
+    ctx.globalAlpha = opacity * 0.85;
+    ctx.stroke();
+    ctx.globalAlpha = opacity;
+  }
+
+  // Selected: larger disc + highlight ring
+  if (selected) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 6.5, 0, Math.PI * 2);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 3.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 6.5, 0, Math.PI * 2);
+    ctx.strokeStyle = PAPER;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+
+  // Solid category disc
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   if (kind === "rejected") {
@@ -163,15 +185,17 @@ function renderSprite(iconId: PlanIconId, kind: MarkerSpriteKind): ImageData {
   }
   ctx.fill();
 
-  ctx.lineWidth = selected || kind.startsWith("emphasized") ? 2.4 : 1.8;
+  // Thick paper outline — sunlight / 2-value
+  ctx.lineWidth = selected || emphasized ? 3.4 : 3;
   ctx.strokeStyle = PAPER;
   ctx.stroke();
 
-  // White glyph on colored disc
-  const glyphColor = PAPER;
-  drawGlyph(ctx, iconId, cx, cy, big ? 0.72 : 0.64, glyphColor, big ? 2.1 : 1.9);
+  // White glyph — bold silhouette
+  const glyphScale = selected ? 0.92 : emphasized ? 0.86 : 0.8;
+  const glyphWeight = selected ? 2.6 : 2.4;
+  drawGlyph(ctx, iconId, cx, cy, glyphScale, PAPER, glyphWeight);
 
-  // Verified: small green check on the category icon — not a separate map layer
+  // Verified: small ✓ corner badge on category icon — never a separate icon
   if (hasBadge) {
     drawVerifiedBadge(ctx, cx, cy, r);
   }
@@ -179,9 +203,9 @@ function renderSprite(iconId: PlanIconId, kind: MarkerSpriteKind): ImageData {
   if (kind === "loading") {
     ctx.globalAlpha = 0.9;
     ctx.beginPath();
-    ctx.arc(cx, cy, r + 3.5, -Math.PI / 2, 0.55);
+    ctx.arc(cx, cy, r + 5, -Math.PI / 2, 0.55);
     ctx.strokeStyle = PAPER;
-    ctx.lineWidth = 2.4;
+    ctx.lineWidth = 3;
     ctx.stroke();
   }
 
@@ -209,7 +233,7 @@ export function clusterSpriteId(tone: ClusterTone, count: number): string {
 
 /** Category-tinted cluster pill with count — never empty grey discs. */
 export function clusterSprite(tone: ClusterTone = "sage", countLabel = "2"): ImageData {
-  const size = 72;
+  const size = 88;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
@@ -217,7 +241,7 @@ export function clusterSprite(tone: ClusterTone = "sage", countLabel = "2"): Ima
   const cx = size / 2;
   const cy = size / 2;
   const big = countLabel === "10+" || countLabel === "25+";
-  const r = big ? 20 : 17;
+  const r = big ? 24 : 21;
   const fill =
     tone === "mixed"
       ? "#3a4a42"
@@ -230,21 +254,20 @@ export function clusterSprite(tone: ClusterTone = "sage", countLabel = "2"): Ima
             : TONE_FILL.sage;
 
   ctx.beginPath();
-  ctx.arc(cx, cy + 1.2, r + 1, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(26, 26, 24, 0.18)";
+  ctx.arc(cx, cy + 1.5, r + 1.2, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(26, 26, 24, 0.2)";
   ctx.fill();
 
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fillStyle = fill;
   ctx.fill();
-  ctx.lineWidth = 2.2;
+  ctx.lineWidth = 3;
   ctx.strokeStyle = PAPER;
   ctx.stroke();
 
-  // Count badge pill (intentional, not an empty disc)
   const label = countLabel;
-  ctx.font = `bold ${big ? 15 : 16}px system-ui, -apple-system, sans-serif`;
+  ctx.font = `bold ${big ? 17 : 18}px system-ui, -apple-system, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = PAPER;

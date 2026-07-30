@@ -1,12 +1,12 @@
-/** Minimal SF-style 24×24 path data for RYDN plan icons. */
+/** Bold 24×24 silhouettes for sunlight-readable map markers. */
 
 import type { PlanIconId } from "./types";
 
-/** Stroke paths (viewBox 0 0 24 24). Drawn with round caps/joins. */
+/** Stroke paths (viewBox 0 0 24 24). Thick round caps — reads at a glance. */
 export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
+  /** Droplet — Water */
   waterFountain: [
-    "M12 3.5c0 0-5 5.8-5 9.2a5 5 0 0010 0c0-3.4-5-9.2-5-9.2z",
-    "M9.5 20.5h5M12 17.5v3",
+    "M12 2.8c0 0-6.8 7.6-6.8 12.2a6.8 6.8 0 0013.6 0C18.8 10.4 12 2.8 12 2.8z",
   ],
   naturalWater: [
     "M4.5 14.5c1.8-1.2 3.2-1.2 5 0s3.2 1.2 5 0 3.2-1.2 5 0",
@@ -15,13 +15,13 @@ export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
   ],
   /** Shopping basket — Markets */
   supermarket: [
-    "M6 9.5h12l-1 9.5H7L6 9.5z",
-    "M9 9.5V8a3 3 0 016 0v1.5",
-    "M8.5 13h7M8.5 16h7",
+    "M5.2 9h13.6l-1.15 10.2H6.35L5.2 9z",
+    "M8.5 9V7.2a3.5 3.5 0 017 0V9",
+    "M8 13.2h8M8 16.2h8",
   ],
-  /** Crescent moon — 24h shops (reads instantly at map scale) */
+  /** Crescent moon — 24h */
   shop24h: [
-    "M14.2 4.8a7.2 7.2 0 104.8 12.2 6.2 6.2 0 01-4.8-12.2z",
+    "M14.5 3.8a8 8 0 105.5 13.8A7 7 0 0114.5 3.8z",
   ],
   gasStation: [
     "M5.5 20.5V6.5a1 1 0 011-1h7a1 1 0 011 1v14",
@@ -95,10 +95,10 @@ export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
   ],
   /** Bed — Sleep */
   sleepSpot: [
-    "M3.5 18h17",
-    "M4.5 18V10.5a1.5 1.5 0 011.5-1.5H11v9",
-    "M11 12.5h6.5a2 2 0 012 2V18",
-    "M4.5 8.5V6.5",
+    "M3 19h18",
+    "M4 19V9.5A2 2 0 016 7.5h5.5V19",
+    "M11.5 11.5H18a2.5 2.5 0 012.5 2.5V19",
+    "M4 7V5",
   ],
   resupply: [
     "M5 8.5h14l-1.2 10.2a1.5 1.5 0 01-1.5 1.3H7.7a1.5 1.5 0 01-1.5-1.3L5 8.5z",

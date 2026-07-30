@@ -26,7 +26,7 @@ export function bboxSpanTooLarge(
  * Resolve the single search UI state.
  * Only one of: hidden | ready | searching | zoomIn.
  *
- * "Search here" appears only after map move AND a category is selected.
+ * "Search this area" appears only after map move AND a category is selected.
  */
 export function resolvePlanSearchChip(opts: {
   mode: "plan" | "ride";

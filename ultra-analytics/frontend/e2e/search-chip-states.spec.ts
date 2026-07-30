@@ -79,7 +79,7 @@ test.describe("Plan search chip state machine", () => {
 <body>
   <div class="plan-map-top" data-testid="plan-map-top">
     <div class="plan-search-chip" data-search-chip="zoomIn" hidden>Zoom in to search this area</div>
-    <button class="plan-search-chip" data-search-chip="ready" hidden>Search here</button>
+    <button class="plan-search-chip" data-search-chip="ready" hidden>Search this area</button>
     <div class="plan-search-chip" data-search-chip="searching" hidden>Searching…</div>
     <aside class="plan-nearest" data-testid="nearest" hidden>Nearest card</aside>
   </div>

@@ -45,6 +45,11 @@ import {
   resolvePlanSearchChip,
 } from "./plan/planSearchUi";
 import {
+  isAbortError,
+  resolveSearchOutcome,
+  SEARCH_FAIL_TOAST,
+} from "./plan/planSearchLifecycle";
+import {
   promoteToVerified,
   removeFromSearchResults,
   replaceSearchResults,
@@ -908,7 +913,6 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     searchAbortRef.current?.abort();
     const ac = new AbortController();
     searchAbortRef.current = ac;
-    const timeoutId = window.setTimeout(() => ac.abort(), SEARCH_TIMEOUT_MS);
 
     const SEARCH_BATCH = searchLimitForQa(qa, bbox);
     const activeQa = qa;
@@ -937,15 +941,12 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     ];
     const perTile = Math.ceil(SEARCH_BATCH / tiles.length);
     const collected: RecommendedStop[] = [];
+    let hardError = false;
+    let thrown = false;
     let searchOk = false;
-    let hadHardError = false;
 
     const absorb = (res: Awaited<ReturnType<typeof searchRouteViewportPois>>) => {
       if (gen !== searchGenRef.current) return;
-      if (res.error && !isZoomInSearchError(res.error)) {
-        hadHardError = true;
-        return;
-      }
       const mapped = (res.pois || [])
         .map(mapViewportPoi)
         .sort((a, b) => (b.resupplyScore || 0) - (a.resupplyScore || 0));
@@ -953,57 +954,84 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         if (collected.some((c) => c.id === s.id)) continue;
         collected.push(s);
       }
+      // Partial body with error still counts as usable results.
+      if (mapped.length === 0 && res.error && !isZoomInSearchError(res.error)) {
+        hardError = true;
+      }
       if (collected.length > 0) setSearchStatus(searchStatusForQa(activeQa, 2));
     };
 
-    try {
-      await Promise.all(
-        tiles.map(async (tile) => {
-          const res = await searchRouteViewportPois(route.id, tile, {
-            group,
-            limit: perTile,
-            exclude,
-            signal: ac.signal,
-          });
-          absorb(res);
-        }),
-      );
-      if (collected.length < SEARCH_BATCH && gen === searchGenRef.current && !ac.signal.aborted) {
-        const res = await searchRouteViewportPois(route.id, bbox, {
+    const fetchTile = async (tile: PlanMapBBox, limit: number, excludeIds: string[]) => {
+      try {
+        const res = await searchRouteViewportPois(route.id, tile, {
           group,
-          limit: SEARCH_BATCH - collected.length,
-          exclude: [...exclude, ...collected.map((s) => s.id)],
+          limit,
+          exclude: excludeIds,
           signal: ac.signal,
         });
         absorb(res);
+      } catch (err) {
+        if (gen !== searchGenRef.current) return;
+        if (isAbortError(err) || ac.signal.aborted) return;
+        hardError = true;
       }
-      if (gen === searchGenRef.current && !ac.signal.aborted && !hadHardError) {
-        // Replace temporary workspace entirely; verified stays untouched.
-        setSearchResults(
-          replaceSearchResults(collected.slice(0, SEARCH_BATCH), verifiedIds),
-        );
-        searchOk = true;
-      } else if (hadHardError && gen === searchGenRef.current) {
-        showToast("Couldn't refresh. Try again.");
+    };
+
+    // Abort only while still empty — never race past a successful response.
+    const timeoutId = window.setTimeout(() => {
+      if (collected.length === 0 && gen === searchGenRef.current) ac.abort();
+    }, SEARCH_TIMEOUT_MS);
+
+    try {
+      await Promise.all(tiles.map((tile) => fetchTile(tile, perTile, exclude)));
+      if (
+        collected.length < SEARCH_BATCH &&
+        gen === searchGenRef.current &&
+        !ac.signal.aborted
+      ) {
+        await fetchTile(bbox, SEARCH_BATCH - collected.length, [
+          ...exclude,
+          ...collected.map((s) => s.id),
+        ]);
       }
-    } catch {
-      if (gen !== searchGenRef.current) return;
-      // Keep previous temp results; ephemeral toast only.
-      showToast("Couldn't refresh. Try again.");
-      searchOk = false;
+    } catch (err) {
+      // Per-tile catch should swallow aborts; this is a last resort.
+      if (gen === searchGenRef.current && !isAbortError(err) && !ac.signal.aborted) {
+        thrown = true;
+        hardError = true;
+      }
     } finally {
       window.clearTimeout(timeoutId);
       if (searchStatusTimerRef.current != null) {
         window.clearInterval(searchStatusTimerRef.current);
         searchStatusTimerRef.current = null;
       }
-      if (gen === searchGenRef.current) {
-        setSearchingArea(false);
-        setSearchStatus(null);
-        // Success → hide until next pan. Error → keep prompted for retry.
-        setSearchPrompted(!searchOk);
-        if (searchAbortRef.current === ac) searchAbortRef.current = null;
+      if (gen !== searchGenRef.current) return;
+
+      const outcome = resolveSearchOutcome({
+        resultCount: collected.length,
+        aborted: ac.signal.aborted,
+        hardError,
+        thrown,
+      });
+
+      if (outcome === "results" || outcome === "empty") {
+        // Replace temporary workspace; verified untouched.
+        setSearchResults(
+          replaceSearchResults(collected.slice(0, SEARCH_BATCH), verifiedIds),
+        );
+        searchOk = true;
+      } else {
+        // Failed with zero usable POIs — keep previous temp, toast once.
+        showToast(SEARCH_FAIL_TOAST);
+        searchOk = false;
       }
+
+      setSearchingArea(false);
+      setSearchStatus(null);
+      // Success/empty → hide until next pan. Fail → keep prompted for retry.
+      setSearchPrompted(!searchOk);
+      if (searchAbortRef.current === ac) searchAbortRef.current = null;
     }
   };
 
@@ -1099,7 +1127,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               data-search-chip="ready"
               onClick={() => void searchThisArea()}
             >
-              Search here
+              Search this area
             </button>
           )}
           {searchChip === "searching" && (
@@ -1202,7 +1230,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                   void searchThisArea();
                 }}
               >
-                Search here
+                Search this area
               </button>
             )}
           </aside>

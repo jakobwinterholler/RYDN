@@ -43,7 +43,7 @@ test.describe("Temp vs verified workspace lifecycle", () => {
     expect(kept.map((s) => s.id)).toEqual(["n1", "n2"]);
   });
 
-  test("Search here requires pan + category; exclusive chip", () => {
+  test("Search this area requires pan + category; exclusive chip", () => {
     const tight = { south: 48.1, west: 11.5, north: 48.2, east: 11.6 };
     expect(
       resolvePlanSearchChip({
@@ -69,7 +69,7 @@ test.describe("Temp vs verified workspace lifecycle", () => {
     await page.setContent(`<!DOCTYPE html>
 <html><body>
   <div class="plan-map-top">
-    <button data-search-chip="ready">Search here</button>
+    <button data-search-chip="ready">Search this area</button>
   </div>
   <div class="plan-toast" data-testid="plan-toast">Couldn't refresh. Try again.</div>
   <script>

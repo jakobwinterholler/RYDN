@@ -428,15 +428,15 @@ function ensureLayers(map: MapLibreMap) {
     "interpolate",
     ["linear"],
     ["zoom"],
-    // ~+40% vs prior sizes for mobile tap targets
+    // Large glanceable collectibles (sprites already ~48–56px logical @ pixelRatio 2)
     7,
-    stateMul(0.77),
+    stateMul(0.95),
     10,
-    stateMul(1.09),
+    stateMul(1.25),
     13,
-    stateMul(1.4),
+    stateMul(1.55),
     16,
-    stateMul(1.65),
+    stateMul(1.85),
   ];
 
   // Unverified / normal markers — category SymbolLayer (not circles)

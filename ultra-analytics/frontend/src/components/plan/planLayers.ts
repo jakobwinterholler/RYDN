@@ -293,11 +293,17 @@ export function applyQuickActionEmphasis(
   const selected = selectedId ? markers.find((m) => m.id === selectedId) : null;
   if (selected && !kept.some((m) => m.id === selected.id)) kept.push(selected);
 
-  return kept.map((m) => ({
-    ...m,
-    emphasize: nearestIds.has(m.id) || m.id === selectedId,
-    dimmed: !nearestIds.has(m.id) && m.id !== selectedId,
-  }));
+  return kept.map((m) => {
+    const isSelected = m.id === selectedId;
+    // Selection: selected grows via sprite; dim other temp finds so focus is clear.
+    const isTemp = m.layer === "temp" || m.kind === "area";
+    const dimOthers = Boolean(selectedId) && !isSelected && isTemp;
+    return {
+      ...m,
+      emphasize: nearestIds.has(m.id) || isSelected,
+      dimmed: dimOthers || (!nearestIds.has(m.id) && !isSelected),
+    };
+  });
 }
 
 /** Best recommendations for the visible bbox — quality over quantity. */
