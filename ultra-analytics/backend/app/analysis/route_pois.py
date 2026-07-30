@@ -110,6 +110,24 @@ def _is_24h_hours(hours: Optional[str]) -> bool:
     return "24/7" in h or h in ("24hours", "24h") or "mo-su24" in h
 
 
+def _parse_hotel_stars(tags: Dict[str, Any]) -> Optional[int]:
+    """OSM hotel classification stars (1–5), if tagged. Not guest review ratings."""
+    raw = tags.get("stars") or tags.get("stars:hotel") or tags.get("hotel:stars")
+    if raw is None:
+        return None
+    try:
+        # Accept "3", "3.0", "3*" — ignore free-text / ranges.
+        text = str(raw).strip().replace("*", "").replace("★", "")
+        if not text or "/" in text or "-" in text:
+            return None
+        n = float(text)
+    except (TypeError, ValueError):
+        return None
+    if not (1.0 <= n <= 5.0):
+        return None
+    return max(1, min(5, int(round(n))))
+
+
 _CACHE_DIR = None  # resolved lazily
 
 
@@ -309,6 +327,9 @@ def _elements_to_projected(
             "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
         }
         if group == "sleep":
+            hotel_stars = _parse_hotel_stars(tags)
+            if hotel_stars is not None:
+                item["hotelStars"] = hotel_stars
             sleep.append(item)
         else:
             pois.append(item)

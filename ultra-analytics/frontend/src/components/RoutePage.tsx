@@ -75,6 +75,7 @@ function mapViewportPoi(p: {
   website?: string | null;
   is24h?: boolean;
   hasShop?: boolean;
+  hotelStars?: number | null;
   googleMapsUrl?: string | null;
   qualityStars?: number;
   qualityLabel?: string;
@@ -98,6 +99,7 @@ function mapViewportPoi(p: {
     website: p.website,
     is24h: p.is24h,
     hasShop: p.hasShop,
+    hotelStars: p.hotelStars ?? null,
     qualityStars: p.qualityStars ?? 3,
     qualityLabel: p.qualityLabel || "Area find",
     qualityScore: p.qualityScore,
@@ -107,6 +109,14 @@ function mapViewportPoi(p: {
     reviewStatus: "unreviewed",
     googleMapsUrl: p.googleMapsUrl,
   };
+}
+
+/** Subtle OSM hotel star line for Plan sheet meta — omit when unknown. */
+function fmtHotelStars(stars: number | null | undefined): string | null {
+  if (stars == null || !Number.isFinite(stars)) return null;
+  const n = Math.round(stars);
+  if (n < 1 || n > 5) return null;
+  return `${"★".repeat(n)}${"☆".repeat(5 - n)}`;
 }
 
 function mapsLinks(lat: number, lon: number, name?: string | null) {
@@ -809,8 +819,37 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     }
     const fromVerified = verifiedStops.find((s) => s.id === selectedId);
     if (fromVerified) return fromVerified;
-    return searchResults.find((s) => s.id === selectedId) || null;
-  }, [selectedId, recommended, searchResults, verifiedStops]);
+    const fromSearch = searchResults.find((s) => s.id === selectedId);
+    if (fromSearch) return fromSearch;
+    // Analysis sleep markers use sleep-{osmId}; open the same compact sheet.
+    if (analysis?.sleep?.length) {
+      const sleep = analysis.sleep.find(
+        (s) =>
+          selectedId === `sleep-${s.osmId}` ||
+          selectedId === `area-${s.osmType}-${s.osmId}` ||
+          selectedId === (s as { id?: string }).id,
+      );
+      if (sleep) {
+        return mapViewportPoi({
+          id: selectedId,
+          osmId: sleep.osmId,
+          osmType: sleep.osmType,
+          name: sleep.name,
+          category: sleep.category,
+          group: sleep.group || "sleep",
+          lat: sleep.lat,
+          lon: sleep.lon,
+          distanceAlongKm: sleep.distanceAlongKm,
+          distanceOffRouteM: sleep.distanceOffRouteM,
+          openingHours: sleep.openingHours,
+          website: sleep.website,
+          hotelStars: sleep.hotelStars,
+          googleMapsUrl: (sleep as { googleMapsUrl?: string | null }).googleMapsUrl,
+        });
+      }
+    }
+    return null;
+  }, [selectedId, recommended, searchResults, verifiedStops, analysis]);
 
   const peek: PeekPayload | null = useMemo(() => {
     if (!selectedId || !analysis || selectedStop) return null;
@@ -1296,10 +1335,17 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                 </p>
                 <h2 className="plan-sheet__title">{selectedStop.name || selectedStop.category}</h2>
                 <p className="plan-sheet__rating">
-                  {selectedStop.distanceOffRouteM != null
-                    ? `${selectedStop.distanceOffRouteM} m off route`
-                    : "On route"}
-                  {selectedStop.openingHours ? ` · ${selectedStop.openingHours}` : ""}
+                  {[
+                    selectedStop.distanceOffRouteM != null
+                      ? `${selectedStop.distanceOffRouteM} m off route`
+                      : "On route",
+                    selectedStop.group === "sleep"
+                      ? fmtHotelStars(selectedStop.hotelStars)
+                      : null,
+                    selectedStop.openingHours || null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </p>
                 <div className="plan-sheet__cta">
                   <button

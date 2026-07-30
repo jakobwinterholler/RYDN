@@ -43,7 +43,10 @@ export type RideGlance = {
   shop: RideGlanceStop | null;
 };
 
-/** Next verified water / shop at or ahead of `fromKm` (includes current stop). */
+/** Skip co-located / floating-point “current” stops when finding the next one. */
+const NEXT_AHEAD_EPS_KM = 0.02;
+
+/** Next verified water / shop strictly ahead of `fromKm` (never the current stop). */
 export function nextRideGlance(
   verified: RecommendedStop[],
   fromKm: number,
@@ -51,7 +54,7 @@ export function nextRideGlance(
 ): RideGlance {
   const ahead = (pred: (s: RecommendedStop) => boolean): RideGlanceStop | null => {
     const list = verified
-      .filter((s) => pred(s) && s.distanceAlongKm >= fromKm - 0.05)
+      .filter((s) => pred(s) && s.distanceAlongKm > fromKm + NEXT_AHEAD_EPS_KM)
       .sort((a, b) => a.distanceAlongKm - b.distanceAlongKm);
     const stop = list[0];
     if (!stop) return null;

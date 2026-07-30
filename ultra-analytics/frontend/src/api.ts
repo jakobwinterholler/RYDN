@@ -291,6 +291,7 @@ export interface ViewportPoisResult {
     website?: string | null;
     is24h?: boolean;
     hasShop?: boolean;
+    hotelStars?: number | null;
     reviewStatus?: string;
     googleMapsUrl?: string | null;
     qualityStars?: number;

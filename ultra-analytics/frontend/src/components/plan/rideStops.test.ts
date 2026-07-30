@@ -66,6 +66,30 @@ describe("nextRideGlance", () => {
     expect(g.shop?.stop.id).toBe("s1");
     expect(g.shop?.elevGainM).toBe(100);
   });
+
+  it("skips the current stop so next shop/water is never 0 km", () => {
+    const verified = [
+      stop({ id: "s1", distanceAlongKm: 20, category: "Supermarket" }),
+      stop({ id: "s2", distanceAlongKm: 40, category: "Supermarket" }),
+      stop({ id: "w1", distanceAlongKm: 20, group: "water", category: "Fountain" }),
+      stop({ id: "w2", distanceAlongKm: 40, group: "water", category: "Fountain" }),
+    ];
+    const g = nextRideGlance(verified, 20, profile);
+    expect(g.shop?.stop.id).toBe("s2");
+    expect(g.shop?.distanceKm).toBe(20);
+    expect(g.water?.stop.id).toBe("w2");
+    expect(g.water?.distanceKm).toBe(20);
+  });
+
+  it("returns null when nothing is ahead", () => {
+    const verified = [
+      stop({ id: "s1", distanceAlongKm: 20, category: "Supermarket" }),
+      stop({ id: "w1", distanceAlongKm: 20, group: "water", category: "Fountain" }),
+    ];
+    const g = nextRideGlance(verified, 20, profile);
+    expect(g.shop).toBeNull();
+    expect(g.water).toBeNull();
+  });
 });
 
 describe("verifiedLegs", () => {
