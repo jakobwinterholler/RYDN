@@ -5,7 +5,7 @@
  * - Quick Actions: show ONLY that category; emphasize nearest 5; cap the rest.
  *
  * Primary Quick Actions (ultra / bikepacking verify workflow):
- * Water · Markets (snacks / small grocery) · Sleep
+ * Water · Shops (snacks / small grocery) · Sleep
  * Verified is a badge on category icons — not a toolbar button.
  * Hours are checked manually on the stop sheet (no separate 24h QA).
  */
@@ -103,14 +103,14 @@ export const QUICK_ACTIONS: {
   emoji: string;
 }[] = [
   { id: "water", label: "Water", layer: "water", emoji: "💧" },
-  { id: "food", label: "Markets", layer: "food", emoji: "🛒" },
+  { id: "food", label: "Shops", layer: "food", emoji: "🛒" },
   { id: "sleep", label: "Sleep", layer: "sleep", emoji: "🛏" },
 ];
 
 /** Layers panel — verified is a badge on icons, not a toolbar category. */
 export const LAYER_TOGGLES: { id: PlanLayerId; label: string }[] = [
   { id: "water", label: "Water" },
-  { id: "food", label: "Markets" },
+  { id: "food", label: "Shops" },
   { id: "sleep", label: "Sleep" },
   { id: "rejected", label: "Rejected" },
   { id: "climbs", label: "Climbs" },
@@ -135,7 +135,7 @@ export function stopMatchesLayer(m: PlanMarker, layer: PlanLayerId): boolean {
     case "water":
       return group === "water" || cat.includes("water") || cat.includes("drinking");
     case "food":
-      // Markets = snacks / small grocery — not fuel shops (hours checked on sheet).
+      // Shops = snacks / small grocery — not fuel shops (hours checked on sheet).
       return (
         (group === "resupply" ||
           ["supermarket", "convenience", "bakery", "grocery", "market"].some((x) =>
@@ -338,7 +338,7 @@ export function searchLimitForBbox(bbox: {
 
 /**
  * Caps by viewport span — 3–15 high-quality results.
- * Water + Markets (hero path) get slightly fuller batches for verify workflow.
+ * Water + Shops (hero path) get slightly fuller batches for verify workflow.
  */
 export function searchLimitForQa(
   qa: QuickActionId | null,

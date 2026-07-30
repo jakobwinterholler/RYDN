@@ -28,7 +28,15 @@ export default function RydnPlanIcon({
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill={filled && (id === "waterFountain" || id === "verified") ? "currentColor" : "none"}
+      fill={
+        filled &&
+        (id === "waterFountain" ||
+          id === "verified" ||
+          id === "supermarket" ||
+          id === "sleepSpot")
+          ? "currentColor"
+          : "none"
+      }
       stroke="currentColor"
       strokeWidth={stroke}
       strokeLinecap="round"

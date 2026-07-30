@@ -74,7 +74,7 @@ function toneForMarker(m: PlanMarker): ClusterTone {
   if (m.kind === "sleep" || group === "sleep") return "sleep";
   if (group === "water" || cat.includes("water") || cat.includes("drinking") || cat.includes("fountain"))
     return "water";
-  // Markets / snacks first — convenience is grocery, not a 24h fuel tone.
+  // Shops / snacks first — convenience is grocery, not a 24h fuel tone.
   if (
     group === "resupply" ||
     cat.includes("supermarket") ||

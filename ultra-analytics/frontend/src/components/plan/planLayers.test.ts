@@ -81,10 +81,12 @@ function areaSleep(id = "area-node-s"): PlanMarker {
 }
 
 describe("Search → markerVisible pipeline", () => {
-  it("exposes only Water / Markets / Sleep as Quick Actions", () => {
+  it("exposes only Water / Shops / Sleep as Quick Actions", () => {
     expect(QUICK_ACTIONS.map((a) => a.id)).toEqual(["water", "food", "sleep"]);
+    expect(QUICK_ACTIONS.map((a) => a.label)).toEqual(["Water", "Shops", "Sleep"]);
     expect(QUICK_ACTIONS.some((a) => a.id === ("h24" as never))).toBe(false);
     expect(LAYER_TOGGLES.some((t) => t.id === "h24")).toBe(false);
+    expect(LAYER_TOGGLES.find((t) => t.id === "food")?.label).toBe("Shops");
   });
 
   it("hides unverified area finds with no Quick Action (calm default)", () => {
@@ -94,7 +96,7 @@ describe("Search → markerVisible pipeline", () => {
     expect(markerVisible(areaSleep(), DEFAULT_LAYERS, null)).toBe(false);
   });
 
-  it("shows Markets finds when Markets QA is on (supermarket + convenience)", () => {
+  it("shows Shops finds when Shops QA is on (supermarket + convenience)", () => {
     expect(stopMatchesLayer(areaMarket(), "food")).toBe(true);
     expect(stopMatchesLayer(areaConvenience(), "food")).toBe(true);
     expect(markerVisible(areaMarket(), DEFAULT_LAYERS, "food")).toBe(true);
@@ -106,7 +108,7 @@ describe("Search → markerVisible pipeline", () => {
     expect(markerVisible(areaSleep(), DEFAULT_LAYERS, "sleep")).toBe(true);
   });
 
-  it("hides Markets find under Water QA (exclusive)", () => {
+  it("hides Shops find under Water QA (exclusive)", () => {
     expect(markerVisible(areaMarket(), DEFAULT_LAYERS, "water")).toBe(false);
   });
 
@@ -117,7 +119,7 @@ describe("Search → markerVisible pipeline", () => {
     expect(markerVisible(tooFar, DEFAULT_LAYERS, "food")).toBe(false);
   });
 
-  it("still hides system Markets beyond 500m corridor", () => {
+  it("still hides system Shops beyond 500m corridor", () => {
     const far = {
       ...areaMarket(),
       kind: "poi" as const,
@@ -127,7 +129,7 @@ describe("Search → markerVisible pipeline", () => {
     expect(markerVisible(far, DEFAULT_LAYERS, "food")).toBe(false);
   });
 
-  it("does not treat 24h Shop as Markets", () => {
+  it("does not treat 24h Shop as Shops QA", () => {
     expect(stopMatchesLayer(area24h(), "food")).toBe(false);
   });
 
@@ -142,7 +144,7 @@ describe("Search → markerVisible pipeline", () => {
     expect(out.some((m) => m.emphasize)).toBe(true);
   });
 
-  it("caps temporary results 3–15 by viewport span; Water/Markets get fuller hero batches", () => {
+  it("caps temporary results 3–15 by viewport span; Water/Shops get fuller hero batches", () => {
     const tight = { south: 48.13, west: 11.54, north: 48.14, east: 11.56 };
     const mid = { south: 48.0, west: 11.4, north: 48.4, east: 11.8 };
     const wide = { south: 47, west: 10, north: 49, east: 13 };

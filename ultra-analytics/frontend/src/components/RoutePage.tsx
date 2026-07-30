@@ -240,7 +240,7 @@ function searchStatusForQa(qa: QuickActionId | null, step: number): string {
     qa === "water"
       ? "Finding water…"
       : qa === "food"
-        ? "Finding markets…"
+        ? "Finding shops…"
         : qa === "sleep"
           ? "Finding sleep…"
           : "Finding stops…";
@@ -892,7 +892,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         setSearchResults([]);
         setSearchingArea(false);
         setSearchStatus(null);
-        // Re-prompt Search this area so Markets isn't a dead empty map after Water.
+        // Re-prompt Search this area so Shops isn't a dead empty map after Water.
         if (next) setSearchPrompted(true);
         else setSearchPrompted(false);
       }
@@ -1266,7 +1266,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           </aside>
         )}
 
-        {/* Quick Actions — Water / Markets / Sleep. Loading indicator inside active button. */}
+        {/* Quick Actions — Water / Shops / Sleep. Loading indicator inside active button. */}
         <nav className="plan-qa" aria-label="Quick actions">
           {QUICK_ACTIONS.map((a) => {
             const busy = searchingArea && qa === a.id;
@@ -1326,8 +1326,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               </button>
             </div>
             <p className="plan-layers__note">
-              Default is calm (verified + remote). Tap Water / Markets / Sleep to search the corridor
-              (~500 m). Markets = snacks & small grocery. Check opening hours on the stop sheet.{" "}
+              Default is calm (verified + remote). Tap Water / Shops / Sleep to search the corridor
+              (~500 m). Shops = snacks & small grocery. Check opening hours on the stop sheet.{" "}
               {PLAN_MAP_STYLE_NOTE}
             </p>
           </aside>
@@ -1337,7 +1337,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         {mode === "ride" && (
           <aside className="plan-ride-panel plan-ride-panel--minimal" aria-label="Ride mode">
             <label className="field plan-ride-panel__pos">
-              <span>Km {rideKm.toFixed(0)} · tap Water / Markets / Sleep</span>
+              <span>Km {rideKm.toFixed(0)} · tap Water / Shops / Sleep</span>
               <input
                 type="range"
                 min={0}

@@ -33,7 +33,7 @@ export function resolvePlanSearchChip(opts: {
   searching: boolean;
   /** User moved the map since the last finished search. */
   prompted: boolean;
-  /** Quick Action category selected (Water / Markets / Sleep). */
+  /** Quick Action category selected (Water / Shops / Sleep). */
   hasCategory: boolean;
   bbox: PlanSearchBBox | null;
 }): PlanSearchChip {

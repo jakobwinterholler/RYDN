@@ -4,20 +4,21 @@ import type { PlanIconId } from "./types";
 
 /** Stroke paths (viewBox 0 0 24 24). Thick round caps — reads at a glance. */
 export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
-  /** Droplet — Water */
+  /** drop.fill — Water */
   waterFountain: [
-    "M12 2.8c0 0-6.8 7.6-6.8 12.2a6.8 6.8 0 0013.6 0C18.8 10.4 12 2.8 12 2.8z",
+    "M12 2.2C12 2.2 4.5 10.4 4.5 15.3a7.5 7.5 0 0015 0C19.5 10.4 12 2.2 12 2.2z",
   ],
   naturalWater: [
     "M4.5 14.5c1.8-1.2 3.2-1.2 5 0s3.2 1.2 5 0 3.2-1.2 5 0",
     "M4.5 18c1.8-1.2 3.2-1.2 5 0s3.2 1.2 5 0 3.2-1.2 5 0",
     "M12 4.5v6",
   ],
-  /** Shopping basket — Markets */
+  /** cart.fill — Shops */
   supermarket: [
-    "M5.2 9h13.6l-1.15 10.2H6.35L5.2 9z",
-    "M8.5 9V7.2a3.5 3.5 0 017 0V9",
-    "M8 13.2h8M8 16.2h8",
+    "M3.6 5.4h2.35l.95 3.5",
+    "M6.4 8.9h13.2l-1.45 7.7H8L6.4 8.9z",
+    "M9.2 19.55a1.55 1.55 0 100-3.1 1.55 1.55 0 000 3.1z",
+    "M16.35 19.55a1.55 1.55 0 100-3.1 1.55 1.55 0 000 3.1z",
   ],
   /** Crescent moon — 24h */
   shop24h: [
@@ -93,12 +94,12 @@ export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
     "M12 3.5a8.5 8.5 0 100 17 8.5 8.5 0 000-17z",
     "M8.5 8.5l7 7M15.5 8.5l-7 7",
   ],
-  /** Bed — Sleep */
+  /** bed.double.fill — Sleep */
   sleepSpot: [
-    "M3 19h18",
-    "M4 19V9.5A2 2 0 016 7.5h5.5V19",
-    "M11.5 11.5H18a2.5 2.5 0 012.5 2.5V19",
-    "M4 7V5",
+    "M3.5 12h17v6.6h-17z",
+    "M4.2 7h6.3A1.5 1.5 0 0112 8.5V12H4.2V7z",
+    "M12.5 7h6.3A1.5 1.5 0 0120.3 8.5V12H12.5V7z",
+    "M5 18.6v2.1M19 18.6v2.1",
   ],
   resupply: [
     "M5 8.5h14l-1.2 10.2a1.5 1.5 0 01-1.5 1.3H7.7a1.5 1.5 0 01-1.5-1.3L5 8.5z",
