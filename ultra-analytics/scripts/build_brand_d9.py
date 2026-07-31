@@ -4,6 +4,7 @@ RYDN brand vectors — Figma logo exports recreated as production Béziers.
 
 Creative source (dark-on-black presentation PNGs):
   - R standalone brandmark (open-bowl italic R, horizontal right-side notch)
+  - Square social mark (same R + thick incomplete circle / C at bottom-left)
   - RYDN. wordmark (circular period)
   - RYDN.BIKE lockup (BIKE at ~0.66 cap height, baseline-aligned)
 
@@ -27,8 +28,20 @@ INK = "#111111"
 INK_SOFT = "#1A1A18"
 PAPER = "#F7F6F3"
 WHITE = "#FFFFFF"
+# Stealth social square: charcoal mark on pure black (FinalFinalFinal export).
+STEALTH_MARK = "#212121"
+STEALTH_BG = "#000000"
 SLANT = -10.0
 STEM = 20.0
+
+# Bottom-left C / incomplete circle for standalone square social mark.
+# Fitted from FinalFinalFinal PNG (true circle in path space; gap toward stem).
+SOCIAL_C_CX = -11.46
+SOCIAL_C_CY = 98.20
+SOCIAL_C_RO = 28.47
+SOCIAL_C_RI = 15.96
+SOCIAL_C_A0 = 24.0  # deg; 0=east, + = clockwise (SVG y-down)
+SOCIAL_C_A1 = 224.0
 
 
 def skew(x: float, y: float, angle: float = SLANT) -> tuple[float, float]:
@@ -407,6 +420,70 @@ def brandmark_svg(fill: str = "currentColor") -> str:
     )
 
 
+def social_c_path(
+    cx: float = SOCIAL_C_CX,
+    cy: float = SOCIAL_C_CY,
+    ro: float = SOCIAL_C_RO,
+    ri: float = SOCIAL_C_RI,
+    a0: float = SOCIAL_C_A0,
+    a1: float = SOCIAL_C_A1,
+) -> str:
+    """Thick incomplete circle (lowercase-c) tucked at bottom-left of the R."""
+
+    def pt(r: float, ang: float) -> tuple[float, float]:
+        rad = math.radians(ang)
+        return cx + r * math.cos(rad), cy + r * math.sin(rad)
+
+    span = (a1 - a0) % 360.0
+    large = 1 if span > 180 else 0
+    o0, o1 = pt(ro, a0), pt(ro, a1)
+    i0, i1 = pt(ri, a0), pt(ri, a1)
+    return (
+        f"M{fmt(o0[0])} {fmt(o0[1])}"
+        f"A{fmt(ro)} {fmt(ro)} 0 {large} 1 {fmt(o1[0])} {fmt(o1[1])}"
+        f"L{fmt(i1[0])} {fmt(i1[1])}"
+        f"A{fmt(ri)} {fmt(ri)} 0 {large} 0 {fmt(i0[0])} {fmt(i0[1])}"
+        f"Z"
+    )
+
+
+def _social_bounds() -> tuple[float, float, float, float]:
+    """Axis-aligned bounds of R + social C in letter_R path space."""
+    min_x, min_y, max_x, max_y = _R_BOUNDS[0], _R_BOUNDS[1], _R_BOUNDS[2], _R_BOUNDS[3]
+    cx, cy, ro = SOCIAL_C_CX, SOCIAL_C_CY, SOCIAL_C_RO
+    a0, a1 = int(SOCIAL_C_A0), int(SOCIAL_C_A1)
+    for ang in range(a0, a1 + 1, 2):
+        rad = math.radians(ang)
+        x = cx + ro * math.cos(rad)
+        y = cy + ro * math.sin(rad)
+        min_x, max_x = min(min_x, x), max(max_x, x)
+        min_y, max_y = min(min_y, y), max(max_y, y)
+    return min_x, min_y, max_x, max_y
+
+
+def social_square_svg(bg: str, fg: str, canvas: float = 1024.0, fill_ratio: float = 0.78) -> str:
+    """Standalone Instagram/social square: notched italic R + bottom-left C on square."""
+    r_d, _ = letter_R(0)
+    c_d = social_c_path()
+    bounds = _social_bounds()
+    _, tx, ty, scale = _mark_place(
+        canvas,
+        fill_ratio,
+        path_d=r_d,
+        bounds=bounds,
+        bias=(0.0, 0.0),
+    )
+    c = int(canvas) if canvas == int(canvas) else canvas
+    body = (
+        f'  <rect width="{c}" height="{c}" fill="{bg}"/>\n'
+        f'  <g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">\n'
+        f'    <path fill="{fg}" fill-rule="evenodd" d="{r_d}"/>\n'
+        f'    <path fill="{fg}" d="{c_d}"/>\n'
+        f"  </g>"
+    )
+    return svg_doc(body, f"0 0 {c} {c}", str(c), str(c))
+
+
 def icon_master(bg: str, fg: str) -> str:
     d, tx, ty, scale = _mark_place(1024.0, 0.58)
     return svg_doc(
@@ -548,6 +625,10 @@ def main() -> None:
     write(BRAND / "icon-dark.svg", icon_master(INK, WHITE))
     write(BRAND / "icon-light.svg", icon_master(PAPER, INK))
     write(BRAND / "icon-transparent.svg", icon_transparent(INK))
+    # Standalone square social mark (R + bottom-left C) — Instagram / avatar.
+    write(BRAND / "social-avatar.svg", social_square_svg(STEALTH_BG, STEALTH_MARK))
+    write(BRAND / "icon-social.svg", social_square_svg(STEALTH_BG, STEALTH_MARK))
+    write(BRAND / "social-avatar-light.svg", social_square_svg(PAPER, INK))
     mono_d, mono_tx, mono_ty, mono_s = _mark_place(1024.0, 0.58)
     write(
         BRAND / "icon-mono.svg",
@@ -643,7 +724,9 @@ render(homeSrc(180), 180, BRAND+'/apple-touch-icon.png');
 render(homeSrc(192), 192, BRAND+'/icon-192.png');
 render(FULL, 512, BRAND+'/icon-512.png');
 render(PUBLIC+'/icon-maskable.svg', 512, BRAND+'/maskable-icon.png');
-render(BRAND+'/icon-dark.svg', 512, BRAND+'/social-avatar.png');
+render(BRAND+'/social-avatar.svg', 1024, BRAND+'/social-avatar.png');
+render(BRAND+'/social-avatar.svg', 512, BRAND+'/social-avatar-512.png');
+render(BRAND+'/social-avatar-light.svg', 512, BRAND+'/_preview-social-light.png');
 const f16 = render(BRAND+'/favicon.svg', 16, PUBLIC+'/icon-16.png');
 const f32 = render(BRAND+'/favicon.svg', 32, PUBLIC+'/icon-32.png');
 const f48 = render(BRAND+'/favicon.svg', 48, PUBLIC+'/icon-48.png');

@@ -11,7 +11,9 @@ Production vectors recreated from Figma logo exports (not PNG traces).
 | `brandmark.svg` / light / dark / transparent | Standalone notched italic **R** |
 | `favicon.svg` / `favicon.ico` | 16/32/48-optimized mark |
 | `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `maskable-icon.png` | App / PWA |
-| `social-avatar.png` | Dark avatar |
+| `social-avatar.svg` / `icon-social.svg` | Standalone square social mark (R + bottom-left C), stealth charcoal on black |
+| `social-avatar-light.svg` | Same square mark, ink on paper |
+| `social-avatar.png` (1024) / `social-avatar-512.png` | Rasters from social SVG via resvg |
 | `loading-logo.svg`, `loading-animation.svg` | Loader end-state + route→wordmark |
 
 Rebuild (SVG masters → all rasters via resvg, never upscale PNG):
