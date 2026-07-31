@@ -125,8 +125,9 @@ self.addEventListener("fetch", (event) => {
   if (
     url.pathname.startsWith("/icon") ||
     url.pathname.startsWith("/apple-touch") ||
+    url.pathname.startsWith("/brand/") ||
     url.pathname === "/manifest.webmanifest" ||
-    url.pathname === "/favicon.svg" ||
+    url.pathname === "/favicon.ico" ||
     url.pathname === "/browserconfig.xml"
   ) {
     event.respondWith(staleWhileRevalidate(req));

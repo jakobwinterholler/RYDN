@@ -1,6 +1,4 @@
-import { RYDN_FAV_R } from "../../assets/rydn-paths";
-
-/** RYDN brand mark — Figma notched geometric italic R. */
+/** RYDN brand mark — user's HighQuality square logo (img, not redrawn paths). */
 
 interface Props {
   size?: number;
@@ -8,24 +6,15 @@ interface Props {
   title?: string;
 }
 
-/**
- * Standalone notched R. Favicon-tuned path for 16×16 recognition:
- * forward lean, heavy stems, open bowl, horizontal right-side notch.
- * Uses currentColor.
- */
 export default function RydnMark({ size = 24, className, title = "RYDN" }: Props) {
   return (
-    <svg
+    <img
       className={className}
+      src="/brand/mark-192.png"
       width={size}
       height={size}
-      viewBox="0 0 32 32"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      role="img"
-      aria-label={title}
-    >
-      <path fill="currentColor" fillRule="evenodd" d={RYDN_FAV_R} />
-    </svg>
+      alt={title}
+      draggable={false}
+    />
   );
 }

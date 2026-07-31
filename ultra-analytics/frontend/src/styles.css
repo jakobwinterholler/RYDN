@@ -3499,13 +3499,18 @@ input {
   margin: 0;
 }
 
-/* RYDN loader — route draws (~1s), resolves into RYDN. wordmark */
+/* RYDN loader — route draws (~1s), resolves into user RYDN.BIKE wordmark */
 .rydn-loader {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 14px;
   color: var(--ink);
+}
+.rydn-loader__stage {
+  position: relative;
+  width: 168px;
+  height: 56px;
 }
 .rydn-loader__svg {
   display: block;
@@ -3533,8 +3538,13 @@ input {
   animation: rydnArrive 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 .rydn-loader__wordmark {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
   opacity: 0;
   animation: rydnResolve 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  color: var(--ink);
 }
 .rydn-loader__label {
   margin: 0;
