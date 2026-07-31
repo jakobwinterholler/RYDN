@@ -26,6 +26,7 @@ from .analysis.report import ANALYSIS_SCHEMA, build_report
 from .auth import current_user
 from .auth import router as auth_router
 from .config import get_config
+from .maps import router as maps_router
 from .middleware_security import SecurityHeadersMiddleware
 from .parsing.base import UnsupportedFormat, build_race, parse_upload
 from .paths import data_root, frontend_dist
@@ -67,6 +68,7 @@ async def lifespan(app: FastAPI):
         app_url=cfg.app_url,
         port=os.environ.get("PORT", ""),
         google=cfg.google_enabled,
+        google_maps=cfg.google_maps_enabled,
         strava=cfg.strava_enabled,
     )
     yield
@@ -89,6 +91,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(auth_router)
 app.include_router(providers_router)
+app.include_router(maps_router)
 
 
 @app.get("/health")

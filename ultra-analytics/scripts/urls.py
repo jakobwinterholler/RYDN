@@ -64,6 +64,8 @@ def load_env() -> Dict[str, str]:
             "TUNNEL_HOSTNAME",
             "GOOGLE_CLIENT_ID",
             "GOOGLE_CLIENT_SECRET",
+            "GOOGLE_MAPS_API_KEY",
+            "GOOGLE_API_KEY",
             "STRAVA_CLIENT_ID",
             "STRAVA_CLIENT_SECRET",
         ):
@@ -194,6 +196,8 @@ def sync_derived_env_files(urls: Optional[Urls] = None) -> Urls:
     for secret in (
         "GOOGLE_CLIENT_ID",
         "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_MAPS_API_KEY",
+        "GOOGLE_API_KEY",
         "STRAVA_CLIENT_ID",
         "STRAVA_CLIENT_SECRET",
     ):
@@ -229,6 +233,10 @@ def sync_derived_env_files(urls: Optional[Urls] = None) -> Urls:
         else:
             val = u.as_dict()[key]
         be_text = set_key(be_text, key, val)
+    # Maps key stays server-side; sync into backend/.env for local API process.
+    maps_key = (central.get("GOOGLE_MAPS_API_KEY") or central.get("GOOGLE_API_KEY") or "").strip()
+    if maps_key:
+        be_text = set_key(be_text, "GOOGLE_MAPS_API_KEY", maps_key)
     BACKEND_ENV.write_text(be_text, encoding="utf-8")
 
     FRONTEND_ENV_LOCAL.write_text(

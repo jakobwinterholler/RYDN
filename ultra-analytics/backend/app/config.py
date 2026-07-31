@@ -119,6 +119,7 @@ class Config:
     google_client_id: str
     google_client_secret: str
     google_redirect_uri: str
+    google_maps_api_key: str
     strava_client_id: str
     strava_client_secret: str
     strava_redirect_uri: str
@@ -131,6 +132,10 @@ class Config:
     @property
     def google_enabled(self) -> bool:
         return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def google_maps_enabled(self) -> bool:
+        return bool(self.google_maps_api_key)
 
     @property
     def strava_enabled(self) -> bool:
@@ -213,6 +218,8 @@ def get_config() -> Config:
         google_client_id=_env("GOOGLE_CLIENT_ID"),
         google_client_secret=_env("GOOGLE_CLIENT_SECRET"),
         google_redirect_uri=_strip(google_redirect),
+        # Maps Platform (Street View Metadata / Places) — never ship to the browser.
+        google_maps_api_key=_env("GOOGLE_MAPS_API_KEY") or _env("GOOGLE_API_KEY"),
         strava_client_id=_env("STRAVA_CLIENT_ID"),
         strava_client_secret=_env("STRAVA_CLIENT_SECRET"),
         strava_redirect_uri=_strip(strava_redirect),
@@ -341,6 +348,8 @@ PUBLIC_URL=https://rydn.bike
 
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+# Server-side only — Street View Metadata / Places (never expose to Vite/frontend)
+GOOGLE_MAPS_API_KEY=
 STRAVA_CLIENT_ID=
 STRAVA_CLIENT_SECRET=
 ULTRA_SECRET=

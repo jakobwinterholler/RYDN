@@ -267,28 +267,106 @@ function streetViewApiKey(options?: { apiKey?: string }): string | undefined {
     return options.apiKey;
   }
   if (typeof import.meta !== "undefined") {
+    // Prefer server-side proxy; client keys are discouraged (CORS + key exposure).
     return (import.meta as { env?: { VITE_GOOGLE_MAPS_API_KEY?: string } }).env
       ?.VITE_GOOGLE_MAPS_API_KEY;
   }
   return undefined;
 }
 
+function streetViewMetadataProxyUrl(options?: {
+  metadataProxyUrl?: string;
+}): string | undefined {
+  if (options?.metadataProxyUrl) {
+    return options.metadataProxyUrl;
+  }
+  if (typeof import.meta !== "undefined") {
+    const fromEnv = (import.meta as { env?: { VITE_STREET_VIEW_METADATA_PROXY?: string } })
+      .env?.VITE_STREET_VIEW_METADATA_PROXY;
+    if (fromEnv?.trim()) {
+      return fromEnv.trim();
+    }
+  }
+  // Same-origin RYDN / ultra-analytics backend proxy (key never in the browser).
+  return "/api/maps/streetview/metadata";
+}
+
+function parseMetadataPayload(data: {
+  status?: string;
+  location?: { lat: number; lng: number } | null;
+  pano_id?: string | null;
+}): StreetViewMetadataResult {
+  const parsed = parseStreetViewMetadataStatus(data.status);
+  const panorama =
+    parsed.available && data.location
+      ? { lat: data.location.lat, lon: data.location.lng }
+      : null;
+  const panoId =
+    parsed.available && typeof data.pano_id === "string" && data.pano_id.trim()
+      ? data.pano_id.trim()
+      : null;
+  return { ...parsed, panorama, panoId };
+}
+
 async function fetchStreetViewMetadataAt(
   lat: number,
   lon: number,
-  options?: { apiKey?: string; radiusM?: number; source?: "outdoor" | "default" },
+  options?: {
+    apiKey?: string;
+    metadataProxyUrl?: string;
+    radiusM?: number;
+    source?: "outdoor" | "default";
+  },
 ): Promise<StreetViewMetadataResult> {
   const radius = options?.radiusM ?? STREET_VIEW_SEARCH_RADIUS_M;
+  const unknown: StreetViewMetadataResult = {
+    available: true,
+    status: "UNKNOWN",
+    panorama: null,
+    panoId: null,
+  };
+
+  // 1) Server proxy — preferred; API key stays on the backend.
+  const proxy = streetViewMetadataProxyUrl(options);
+  if (proxy) {
+    const proxyParams = new URLSearchParams({
+      lat: String(lat),
+      lon: String(lon),
+      radius: String(radius),
+    });
+    if (options?.source === "outdoor" || options?.source === "default") {
+      proxyParams.set("source", options.source);
+    }
+    try {
+      const response = await fetch(`${proxy}?${proxyParams.toString()}`, {
+        credentials: "include",
+      });
+      if (response.ok) {
+        const data = (await response.json()) as {
+          status?: string;
+          location?: { lat: number; lng: number } | null;
+          pano_id?: string | null;
+        };
+        return parseMetadataPayload(data);
+      }
+    } catch {
+      // Fall through to optional direct key (tests / legacy).
+    }
+  }
+
+  // 2) Direct Google call only when a key is explicitly available (tests).
+  const apiKey = streetViewApiKey(options);
+  if (!apiKey) {
+    return unknown;
+  }
+
   const params = new URLSearchParams({
     location: `${lat},${lon}`,
     radius: String(radius),
+    key: apiKey,
   });
   if (options?.source === "outdoor") {
     params.set("source", "outdoor");
-  }
-  const apiKey = streetViewApiKey(options);
-  if (apiKey) {
-    params.set("key", apiKey);
   }
 
   try {
@@ -296,25 +374,16 @@ async function fetchStreetViewMetadataAt(
       `https://maps.googleapis.com/maps/api/streetview/metadata?${params.toString()}`,
     );
     if (!response.ok) {
-      return { available: true, status: "UNKNOWN", panorama: null, panoId: null };
+      return unknown;
     }
     const data = (await response.json()) as {
       status?: string;
       location?: { lat: number; lng: number };
       pano_id?: string;
     };
-    const parsed = parseStreetViewMetadataStatus(data.status);
-    const panorama =
-      parsed.available && data.location
-        ? { lat: data.location.lat, lon: data.location.lng }
-        : null;
-    const panoId =
-      parsed.available && typeof data.pano_id === "string" && data.pano_id.trim()
-        ? data.pano_id.trim()
-        : null;
-    return { ...parsed, panorama, panoId };
+    return parseMetadataPayload(data);
   } catch {
-    return { available: true, status: "UNKNOWN", panorama: null, panoId: null };
+    return unknown;
   }
 }
 
@@ -325,7 +394,11 @@ async function fetchStreetViewMetadataAt(
  */
 export async function fetchStreetViewMetadata(
   location: StreetViewLocation,
-  options?: StreetViewUrlOptions & { apiKey?: string; radiusM?: number },
+  options?: StreetViewUrlOptions & {
+    apiKey?: string;
+    metadataProxyUrl?: string;
+    radiusM?: number;
+  },
 ): Promise<StreetViewMetadataResult> {
   const poi = { lat: location.lat, lon: location.lon };
 
@@ -334,6 +407,7 @@ export async function fetchStreetViewMetadata(
   for (const source of ["outdoor", "default"] as const) {
     const result = await fetchStreetViewMetadataAt(poi.lat, poi.lon, {
       apiKey: options?.apiKey,
+      metadataProxyUrl: options?.metadataProxyUrl,
       radiusM: options?.radiusM,
       source,
     });
@@ -365,7 +439,7 @@ export interface ResolvedStreetView {
 /** Resolve Street View at the POI with nearest panorama search and POI-facing heading. */
 export async function resolveStreetView(
   location: StreetViewLocation,
-  options?: StreetViewUrlOptions & { apiKey?: string },
+  options?: StreetViewUrlOptions & { apiKey?: string; metadataProxyUrl?: string },
 ): Promise<ResolvedStreetView> {
   const poi = { lat: location.lat, lon: location.lon };
   const gpx = gpxPointAtStopKm(location, options);

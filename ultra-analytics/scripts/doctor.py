@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from urls import resolve, sync_derived_env_files  # noqa: E402
+from urls import load_env, resolve, sync_derived_env_files  # noqa: E402
 
 CF_DIR = Path.home() / ".cloudflared"
 
@@ -183,6 +183,15 @@ def main() -> int:
         "Google Client ID format",
         "ok" if u.google_client_id.endswith(".apps.googleusercontent.com") else "unexpected",
         "Should end with .apps.googleusercontent.com",
+    )
+    env_map = load_env()
+    maps_key = (env_map.get("GOOGLE_MAPS_API_KEY") or env_map.get("GOOGLE_API_KEY") or "").strip()
+    add(
+        "google_maps_key",
+        bool(maps_key),
+        "GOOGLE_MAPS_API_KEY set (server-side)",
+        "SET" if maps_key else "empty",
+        "Paste into ultra-analytics/.env (never VITE_*)",
     )
     add(
         "strava_id",
