@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-RYDN Direction #9 — original geometric italic brand vectors.
+RYDN brand vectors — Figma logo exports recreated as production Béziers.
 
-Feeling: premium / modern / fast / minimal / editorial / technical.
-Not a pixel trace of the board. Soft paper + ink for light-mode app icons.
+Creative source (dark-on-black presentation PNGs):
+  - R standalone brandmark (open-bowl italic R, horizontal right-side notch)
+  - RYDN. wordmark (circular period)
+  - RYDN.BIKE lockup (BIKE at ~0.66 cap height, baseline-aligned)
+
+Light-mode app icons: ink #111 / #1A1A18 on paper #F7F6F3.
+Never ship the PNG exports as the mark — regenerate all rasters via resvg from SVG.
 """
 
 from __future__ import annotations
@@ -11,7 +16,6 @@ from __future__ import annotations
 import math
 import struct
 import subprocess
-import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +24,7 @@ PUBLIC = ROOT / "frontend" / "public"
 SRC_ASSETS = ROOT / "frontend" / "src" / "assets"
 
 INK = "#111111"
+INK_SOFT = "#1A1A18"
 PAPER = "#F7F6F3"
 WHITE = "#FFFFFF"
 SLANT = -10.0
@@ -40,50 +45,62 @@ def xy(p: tuple[float, float]) -> str:
 
 
 def letter_R(ox: float = 0.0) -> tuple[str, float]:
+    """Open-bowl geometric italic R with horizontal notch (Figma brandmark)."""
+
     def P(x: float, y: float) -> tuple[float, float]:
         return skew(ox + x, y)
 
     w = STEM
+    # Construction from Figma R export (unskewed design space, height 100):
+    # - Continuous left stem (~20u)
+    # - Bowl curves from top, ends in a flat horizontal terminal (~y=35)
+    # - Thin right-side notch gap, then waist + diagonal leg
     d = (
-        f"M{xy(P(0, 0))}"
+        f"M{xy(P(0, 100))}"
+        f"L{xy(P(0, 0))}"
         f"L{xy(P(50, 0))}"
-        f"C{xy(P(74, 0))} {xy(P(86, 12))} {xy(P(86, 32))}"
-        f"C{xy(P(86, 48))} {xy(P(74, 56))} {xy(P(50, 56))}"
-        f"L{xy(P(72, 100))}"
-        f"L{xy(P(48, 100))}"
-        f"L{xy(P(28, 62))}"
-        f"L{xy(P(w, 62))}"
+        # Outer bowl — geometric arc, flat horizontal tip (not a teardrop)
+        f"C{xy(P(68, 0))} {xy(P(76, 10))} {xy(P(76, 24))}"
+        f"L{xy(P(76, 34))}"
+        f"L{xy(P(64, 34))}"
+        # Inner counter — thick wall, opens into the notch
+        f"L{xy(P(64, 24))}"
+        f"C{xy(P(64, 16))} {xy(P(58, 14))} {xy(P(46, 14))}"
+        f"L{xy(P(w, 14))}"
+        f"L{xy(P(w, 48))}"
+        # Lower form: clean triangular tip → waist → leg (Figma rows 22–37)
+        f"L{xy(P(40, 48))}"
+        f"L{xy(P(54, 38))}"
+        f"L{xy(P(70, 48))}"
+        f"L{xy(P(62, 62))}"
+        f"L{xy(P(82, 100))}"
+        f"L{xy(P(56, 100))}"
+        f"L{xy(P(38, 64))}"
+        f"L{xy(P(w, 64))}"
         f"L{xy(P(w, 100))}"
         f"L{xy(P(0, 100))}"
         f"Z"
-        f"M{xy(P(w, 14))}"
-        f"L{xy(P(48, 14))}"
-        f"C{xy(P(62, 14))} {xy(P(66, 20))} {xy(P(66, 32))}"
-        f"C{xy(P(66, 44))} {xy(P(62, 48))} {xy(P(48, 48))}"
-        f"L{xy(P(w, 48))}"
-        f"Z"
     )
-    return d, 86.0
+    return d, 84.0
 
 
 def letter_Y(ox: float = 0.0) -> tuple[str, float]:
     def P(x: float, y: float) -> tuple[float, float]:
         return skew(ox + x, y)
 
-    # V arms + vertical stem — classic geometric Y
     d = (
         f"M{xy(P(0, 0))}"
         f"L{xy(P(24, 0))}"
-        f"L{xy(P(40, 50))}"
-        f"L{xy(P(68, 0))}"
-        f"L{xy(P(92, 0))}"
-        f"L{xy(P(52, 58))}"
-        f"L{xy(P(52, 100))}"
-        f"L{xy(P(32, 100))}"
-        f"L{xy(P(32, 58))}"
+        f"L{xy(P(40, 48))}"
+        f"L{xy(P(56, 0))}"
+        f"L{xy(P(80, 0))}"
+        f"L{xy(P(50, 56))}"
+        f"L{xy(P(50, 100))}"
+        f"L{xy(P(30, 100))}"
+        f"L{xy(P(30, 56))}"
         f"Z"
     )
-    return d, 92.0
+    return d, 80.0
 
 
 def letter_D(ox: float = 0.0) -> tuple[str, float]:
@@ -93,19 +110,19 @@ def letter_D(ox: float = 0.0) -> tuple[str, float]:
     w = STEM
     d = (
         f"M{xy(P(0, 0))}"
-        f"L{xy(P(46, 0))}"
-        f"C{xy(P(78, 0))} {xy(P(94, 20))} {xy(P(94, 50))}"
-        f"C{xy(P(94, 80))} {xy(P(78, 100))} {xy(P(46, 100))}"
+        f"L{xy(P(44, 0))}"
+        f"C{xy(P(72, 0))} {xy(P(86, 18))} {xy(P(86, 50))}"
+        f"C{xy(P(86, 82))} {xy(P(72, 100))} {xy(P(44, 100))}"
         f"L{xy(P(0, 100))}"
         f"Z"
         f"M{xy(P(w, 16))}"
-        f"L{xy(P(46, 16))}"
-        f"C{xy(P(70, 16))} {xy(P(74, 30))} {xy(P(74, 50))}"
-        f"C{xy(P(74, 70))} {xy(P(70, 84))} {xy(P(46, 84))}"
+        f"L{xy(P(42, 16))}"
+        f"C{xy(P(64, 16))} {xy(P(68, 28))} {xy(P(68, 50))}"
+        f"C{xy(P(68, 72))} {xy(P(64, 84))} {xy(P(42, 84))}"
         f"L{xy(P(w, 84))}"
         f"Z"
     )
-    return d, 94.0
+    return d, 88.0
 
 
 def letter_N(ox: float = 0.0) -> tuple[str, float]:
@@ -113,30 +130,30 @@ def letter_N(ox: float = 0.0) -> tuple[str, float]:
         return skew(ox + x, y)
 
     w = STEM
-    # Classic geometric N: left stem, diagonal top-left → bottom-right, right stem
-    width = 88.0
+    width = 86.0
     d = (
         f"M{xy(P(0, 0))}"
         f"L{xy(P(w, 0))}"
-        f"L{xy(P(w, 52))}"
+        f"L{xy(P(w, 48))}"
         f"L{xy(P(width - w, 0))}"
         f"L{xy(P(width, 0))}"
         f"L{xy(P(width, 100))}"
         f"L{xy(P(width - w, 100))}"
-        f"L{xy(P(width - w, 48))}"
+        f"L{xy(P(width - w, 52))}"
         f"L{xy(P(w, 100))}"
         f"L{xy(P(0, 100))}"
         f"Z"
     )
-    return d, width + 2
+    return d, width
 
 
 def _small_P(ox: float, scale: float, x: float, y: float) -> tuple[float, float]:
+    """Scale letter toward baseline (BIKE sits on the RYDN baseline)."""
     y2 = 100 - (100 - y) * scale
     return skew(ox + x * scale, y2)
 
 
-def letter_B_small(ox: float, scale: float = 0.46) -> tuple[str, float]:
+def letter_B_small(ox: float, scale: float = 0.66) -> tuple[str, float]:
     P = lambda x, y: _small_P(ox, scale, x, y)  # noqa: E731
     w = STEM
     d = (
@@ -158,14 +175,14 @@ def letter_B_small(ox: float, scale: float = 0.46) -> tuple[str, float]:
     return d, 76 * scale + 2
 
 
-def letter_I_small(ox: float, scale: float = 0.46) -> tuple[str, float]:
+def letter_I_small(ox: float, scale: float = 0.66) -> tuple[str, float]:
     P = lambda x, y: _small_P(ox, scale, x, y)  # noqa: E731
     w = STEM
     d = f"M{xy(P(0, 0))}L{xy(P(w, 0))}L{xy(P(w, 100))}L{xy(P(0, 100))}Z"
     return d, 28 * scale + 2
 
 
-def letter_K_small(ox: float, scale: float = 0.46) -> tuple[str, float]:
+def letter_K_small(ox: float, scale: float = 0.66) -> tuple[str, float]:
     P = lambda x, y: _small_P(ox, scale, x, y)  # noqa: E731
     w = STEM
     pts = [
@@ -185,7 +202,7 @@ def letter_K_small(ox: float, scale: float = 0.46) -> tuple[str, float]:
     return d, 90 * scale + 2
 
 
-def letter_E_small(ox: float, scale: float = 0.46) -> tuple[str, float]:
+def letter_E_small(ox: float, scale: float = 0.66) -> tuple[str, float]:
     P = lambda x, y: _small_P(ox, scale, x, y)  # noqa: E731
     w = STEM
     t = 15
@@ -207,12 +224,25 @@ def letter_E_small(ox: float, scale: float = 0.46) -> tuple[str, float]:
     return d, 72 * scale + 2
 
 
-def period_dot(ox: float, scale: float = 0.46) -> tuple[str, float]:
-    s = 11 * scale
-    y0 = 100 - s
-    pts = [skew(ox, y0), skew(ox + s, y0), skew(ox + s, 100), skew(ox, 100)]
-    d = "M" + "L".join(xy(p) for p in pts) + "Z"
-    return d, s + 6
+def period_dot(ox: float, scale: float = 1.0) -> tuple[str, float]:
+    """Circular period on the baseline (Figma RYDN. / RYDN.BIKE)."""
+    r = 10.0 * scale
+    cx = ox + r
+    cy = 100 - r
+    k = 0.5522847498
+
+    def P(x: float, y: float) -> tuple[float, float]:
+        return skew(x, y)
+
+    d = (
+        f"M{xy(P(cx, cy - r))}"
+        f"C{xy(P(cx + k * r, cy - r))} {xy(P(cx + r, cy - k * r))} {xy(P(cx + r, cy))}"
+        f"C{xy(P(cx + r, cy + k * r))} {xy(P(cx + k * r, cy + r))} {xy(P(cx, cy + r))}"
+        f"C{xy(P(cx - k * r, cy + r))} {xy(P(cx - r, cy + k * r))} {xy(P(cx - r, cy))}"
+        f"C{xy(P(cx - r, cy - k * r))} {xy(P(cx - k * r, cy - r))} {xy(P(cx, cy - r))}"
+        f"Z"
+    )
+    return d, 2 * r + 10
 
 
 def svg_doc(body: str, view_box: str, w: str | None = None, h: str | None = None) -> str:
@@ -227,20 +257,23 @@ def svg_doc(body: str, view_box: str, w: str | None = None, h: str | None = None
 def compose_wordmark(fill: str, with_bike: bool = False) -> str:
     parts: list[str] = []
     x = 0.0
-    track = 12.0
+    track = 8.0
     for fn in (letter_R, letter_Y, letter_D, letter_N):
         d, adv = fn(x)
         parts.append(f'<path fill="{fill}" fill-rule="evenodd" d="{d}"/>')
         x += adv - track
+    # Period always — wordmark is RYDN. ; lockup is RYDN.BIKE
+    x += 6
+    d, adv = period_dot(x)
+    parts.append(f'<path fill="{fill}" d="{d}"/>')
+    x += adv
     if with_bike:
-        x += 22  # clear N overhang before .BIKE
-        d, adv = period_dot(x)
-        parts.append(f'<path fill="{fill}" d="{d}"/>')
-        x += adv + 4
+        x += 4
+        bike_scale = 0.66
         for fn in (letter_B_small, letter_I_small, letter_K_small, letter_E_small):
-            d, adv = fn(x)
+            d, adv = fn(x, bike_scale)
             parts.append(f'<path fill="{fill}" fill-rule="evenodd" d="{d}"/>')
-            x += adv + 4
+            x += adv + 3
     pad_l, pad_t, pad_r, pad_b = 24, 8, 28, 10
     body = (
         f'  <g transform="translate({pad_l},{pad_t})">\n    '
@@ -250,86 +283,71 @@ def compose_wordmark(fill: str, with_bike: bool = False) -> str:
     return svg_doc(body, f"0 0 {x + pad_l + pad_r:.0f} {100 + pad_t + pad_b}")
 
 
-# Favicon-optimized R for 16–48 only — heavier stems, open counter, snapped terminals.
-# Large app icons use the full Direction #9 brandmark (letter_R Béziers), never this glyph upscaled.
+# Favicon-tuned notched R for 16–48 — heavier stem, open counter, visible notch.
+# Snapped for crisp stems at 16/32; notch reads as a clean horizontal break on the right.
 FAV_R = (
-    "M8.2 4.2 "
-    "L17.8 4.2 "
-    "C22.6 4.2 26.2 7 26.2 11.4 "
-    "C26.2 15.2 23.6 17.8 19.2 18.2 "
-    "L24.4 27.8 "
-    "L19.1 27.8 "
-    "L14.4 19.1 "
-    "L11.6 19.1 "
-    "L9.5 27.8 "
-    "L4.8 27.8 "
-    "L8.2 4.2 "
-    "Z "
-    "M12.2 8 "
-    "L17.2 8 "
-    "C19.4 8 20.7 9.2 20.7 11.3 "
-    "C20.7 13.4 19.3 14.6 17.1 14.6 "
-    "L11.8 14.6 "
-    "Z"
+    "M7 27.5 L7 4.5 L17 4.5 "
+    "C21.5 4.5 24.5 6.5 24.5 10.5 "
+    "L24.5 14.5 L19.5 14.5 L19.5 11 "
+    "C19.5 9.2 18.2 8.5 16 8.5 L11 8.5 "
+    "L11 16.5 L15 16.5 L18.5 13.5 L22 16.5 L20 20 "
+    "L24.5 27.5 L18.5 27.5 L14.5 21 L11 21 L11 27.5 Z"
 )
 
-# Axis-aligned bounds of letter_R after -10° slant (design space, before icon padding).
-# x min from back-slanted left foot; x max from bowl control; y 0..100.
-_R_BOUNDS = (-17.63, 0.0, 86.0, 100.0)  # min_x, min_y, max_x, max_y
+# Axis-aligned bounds of letter_R after -10° slant (design space).
+_R_BOUNDS = (-17.63, 0.0, 82.0, 100.0)
 
-# Home-screen optical R (≤180 / apple-touch): heavier stem, slightly less slant, thicker bowl
-# walls, larger fill. Same Direction #9 DNA, tuned so AA fringe reads as solid ink at 60pt.
-HOME_STEM = 30.0
+# Home-screen optical R (≤180 / apple-touch): heavier stem, less slant, thicker walls.
+HOME_STEM = 28.0
 HOME_SLANT = -7.0
 HOME_FILL = 0.70
-# Sizes that rasterize from the home master (never upscaled from a smaller PNG).
 HOME_ICON_SIZES = (64, 72, 96, 120, 128, 144, 152, 167, 180, 192)
-# Soft edge snap thresholds (0=ink … 1=paper). Collapses soft gray fringe; keeps ~1px AA.
 SNAP_INK_MAX = 0.42
 SNAP_PAPER_MIN = 0.68
 
 
 def letter_R_home(ox: float = 0.0) -> tuple[str, float]:
-    """Home-screen optical R — same construction as letter_R, heavier stem / thicker walls."""
+    """Home-screen optical R — same notched DNA, heavier for AA at 60pt."""
 
     def P(x: float, y: float) -> tuple[float, float]:
         return skew(ox + x, y, HOME_SLANT)
 
     w = HOME_STEM
-    # Outer bowl to x=92; inner to x=58 → ~34-unit wall (was 20). Counter inset 18–50.
     d = (
-        f"M{xy(P(0, 0))}"
+        f"M{xy(P(0, 100))}"
+        f"L{xy(P(0, 0))}"
         f"L{xy(P(54, 0))}"
-        f"C{xy(P(80, 0))} {xy(P(92, 14))} {xy(P(92, 34))}"
-        f"C{xy(P(92, 50))} {xy(P(80, 58))} {xy(P(54, 58))}"
-        f"L{xy(P(78, 100))}"
-        f"L{xy(P(46, 100))}"
-        f"L{xy(P(30, 64))}"
-        f"L{xy(P(w, 64))}"
+        f"C{xy(P(74, 0))} {xy(P(84, 12))} {xy(P(84, 26))}"
+        f"L{xy(P(84, 36))}"
+        f"L{xy(P(68, 36))}"
+        f"L{xy(P(68, 26))}"
+        f"C{xy(P(68, 18))} {xy(P(60, 16))} {xy(P(46, 16))}"
+        f"L{xy(P(w, 16))}"
+        f"L{xy(P(w, 50))}"
+        f"L{xy(P(42, 50))}"
+        f"L{xy(P(56, 40))}"
+        f"L{xy(P(76, 50))}"
+        f"L{xy(P(66, 64))}"
+        f"L{xy(P(88, 100))}"
+        f"L{xy(P(54, 100))}"
+        f"L{xy(P(38, 66))}"
+        f"L{xy(P(w, 66))}"
         f"L{xy(P(w, 100))}"
         f"L{xy(P(0, 100))}"
-        f"Z"
-        f"M{xy(P(w, 18))}"
-        f"L{xy(P(50, 18))}"
-        f"C{xy(P(56, 18))} {xy(P(58, 24))} {xy(P(58, 34))}"
-        f"C{xy(P(58, 46))} {xy(P(56, 50))} {xy(P(50, 50))}"
-        f"L{xy(P(w, 50))}"
         f"Z"
     )
     return d, 96.0
 
 
 def _home_bounds() -> tuple[float, float, float, float]:
-    """Axis-aligned bounds of letter_R_home after HOME_SLANT."""
     pts = [
         skew(0, 0, HOME_SLANT),
         skew(0, 100, HOME_SLANT),
         skew(HOME_STEM, 100, HOME_SLANT),
-        skew(92, 34, HOME_SLANT),
-        skew(78, 100, HOME_SLANT),
+        skew(86, 24, HOME_SLANT),
+        skew(86, 100, HOME_SLANT),
         skew(54, 0, HOME_SLANT),
-        skew(92, 0, HOME_SLANT),
-        skew(92, 58, HOME_SLANT),
+        skew(76, 52, HOME_SLANT),
     ]
     xs = [p[0] for p in pts]
     ys = [p[1] for p in pts]
@@ -344,11 +362,9 @@ def _mark_place(
     bounds: tuple[float, float, float, float] | None = None,
     bias: tuple[float, float] = (-1.2, -1.0),
 ) -> tuple[str, float, float, float]:
-    """Return (path_d, translate_x, translate_y, scale) to optically center an R on a square canvas."""
     if path_d is None:
         path_d, _ = letter_R(0)
     min_x, min_y, max_x, max_y = bounds if bounds is not None else _R_BOUNDS
-    # Slight optical bias: italic R reads heavy on the right leg — nudge left/up a hair.
     cx = (min_x + max_x) / 2 + bias[0]
     cy = (min_y + max_y) / 2 + bias[1]
     scale = (canvas * fill_ratio) / (max_y - min_y)
@@ -358,9 +374,6 @@ def _mark_place(
 
 
 def _softsnap_rgba(im: "Image.Image") -> "Image.Image":  # type: ignore[name-defined]
-    """Collapse soft mid-gray AA into ink/paper while keeping a thin AA band."""
-    from PIL import Image
-
     im = im.convert("RGBA")
     out = im.copy()
     px = im.load()
@@ -389,18 +402,29 @@ def favicon_svg() -> str:
 def brandmark_svg(fill: str = "currentColor") -> str:
     d, _ = letter_R(0)
     return svg_doc(
-        f'  <g transform="translate(20,6)"><path fill="{fill}" fill-rule="evenodd" d="{d}"/></g>',
-        "0 0 118 114",
+        f'  <g transform="translate(22,4)"><path fill="{fill}" d="{d}"/></g>',
+        "0 0 118 110",
     )
 
 
 def icon_master(bg: str, fg: str) -> str:
-    # Full brandmark R on paper. ~58% fill leaves Apple-safe optical margin (not edge-to-edge).
     d, tx, ty, scale = _mark_place(1024.0, 0.58)
     return svg_doc(
         f'  <rect width="1024" height="1024" fill="{bg}"/>\n'
         f'  <g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">\n'
-        f'    <path fill="{fg}" fill-rule="evenodd" d="{d}"/>\n'
+        f'    <path fill="{fg}" d="{d}"/>\n'
+        f"  </g>",
+        "0 0 1024 1024",
+        "1024",
+        "1024",
+    )
+
+
+def icon_transparent(fg: str = INK) -> str:
+    d, tx, ty, scale = _mark_place(1024.0, 0.58)
+    return svg_doc(
+        f'  <g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">\n'
+        f'    <path fill="{fg}" d="{d}"/>\n'
         f"  </g>",
         "0 0 1024 1024",
         "1024",
@@ -409,11 +433,6 @@ def icon_master(bg: str, fg: str) -> str:
 
 
 def icon_home_master(bg: str, fg: str, canvas: float = 1024.0) -> str:
-    """Home-screen / apple-touch master — heavier R, ~70% fill, Apple-safe padding.
-
-    When canvas matches the target PNG size (e.g. 180), resvg renders 1:1 with
-    translate snapped to the pixel grid for sharper stems.
-    """
     d, _ = letter_R_home(0)
     d, tx, ty, scale = _mark_place(
         canvas,
@@ -422,14 +441,13 @@ def icon_home_master(bg: str, fg: str, canvas: float = 1024.0) -> str:
         bounds=_home_bounds(),
         bias=(-1.5, -1.2),
     )
-    # Snap placement to 1/4-px so horizontal terminals land on cleaner rows at 1:1.
     tx = round(tx * 4) / 4
     ty = round(ty * 4) / 4
     c = int(canvas) if canvas == int(canvas) else canvas
     return svg_doc(
         f'  <rect width="{c}" height="{c}" fill="{bg}"/>\n'
         f'  <g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">\n'
-        f'    <path fill="{fg}" fill-rule="evenodd" d="{d}"/>\n'
+        f'    <path fill="{fg}" d="{d}"/>\n'
         f"  </g>",
         f"0 0 {c} {c}",
         str(c),
@@ -438,8 +456,6 @@ def icon_home_master(bg: str, fg: str, canvas: float = 1024.0) -> str:
 
 
 def maskable_svg() -> str:
-    # Maskable safe zone ≈ center 80% circle — keep mark ~48% so it survives adaptive cropping.
-    # Use home optical R so adaptive Android icons stay bold at small sizes.
     d, _ = letter_R_home(0)
     d, tx, ty, scale = _mark_place(
         512.0,
@@ -451,7 +467,7 @@ def maskable_svg() -> str:
     return svg_doc(
         f'  <rect width="512" height="512" fill="{INK}"/>\n'
         f'  <g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">\n'
-        f'    <path fill="{WHITE}" fill-rule="evenodd" d="{d}"/>\n'
+        f'    <path fill="{WHITE}" d="{d}"/>\n'
         f"  </g>",
         "0 0 512 512",
     )
@@ -460,11 +476,13 @@ def maskable_svg() -> str:
 def loading_animation_svg() -> str:
     parts: list[str] = []
     x = 0.0
-    track = 12.0
+    track = 8.0
     for fn in (letter_R, letter_Y, letter_D, letter_N):
         d, adv = fn(x)
-        parts.append(f'<path fill="currentColor" fill-rule="evenodd" d="{d}"/>')
+        parts.append(f'<path fill="currentColor" d="{d}"/>')
         x += adv - track
+    d, adv = period_dot(x + 6)
+    parts.append(f'<path fill="currentColor" d="{d}"/>')
     route = "M18 42 C44 42 52 30 78 34 C104 38 112 46 148 42 C168 40 178 42 196 42"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 84" fill="none">
@@ -481,7 +499,7 @@ def loading_animation_svg() -> str:
     <circle class="dot" cx="18" cy="42" r="3.1" fill="currentColor" stroke="none"/>
     <circle class="dot" cx="196" cy="42" r="3.1" fill="currentColor" stroke="none"/>
   </g>
-  <g class="mark" transform="translate(8,10) scale(0.52)">
+  <g class="mark" transform="translate(8,10) scale(0.48)">
     {"".join(parts)}
   </g>
 </svg>
@@ -514,20 +532,28 @@ def main() -> None:
 
     write(BRAND / "logo.svg", compose_wordmark(INK, True))
     write(BRAND / "logo-dark.svg", compose_wordmark(WHITE, True))
-    write(BRAND / "logo-light.svg", compose_wordmark(INK, True))
+    write(BRAND / "logo-light.svg", compose_wordmark(INK_SOFT, True))
+    write(BRAND / "logo-transparent.svg", compose_wordmark("currentColor", True))
     write(BRAND / "wordmark.svg", compose_wordmark(INK, False))
+    write(BRAND / "wordmark-dark.svg", compose_wordmark(WHITE, False))
+    write(BRAND / "wordmark-light.svg", compose_wordmark(INK_SOFT, False))
+    write(BRAND / "wordmark-transparent.svg", compose_wordmark("currentColor", False))
     write(BRAND / "brandmark.svg", brandmark_svg(INK))
+    write(BRAND / "brandmark-dark.svg", brandmark_svg(WHITE))
+    write(BRAND / "brandmark-light.svg", brandmark_svg(INK_SOFT))
+    write(BRAND / "brandmark-transparent.svg", brandmark_svg("currentColor"))
     write(BRAND / "favicon.svg", favicon_svg())
     write(BRAND / "loading-logo.svg", compose_wordmark("currentColor", False))
     write(BRAND / "loading-animation.svg", loading_animation_svg())
     write(BRAND / "icon-dark.svg", icon_master(INK, WHITE))
     write(BRAND / "icon-light.svg", icon_master(PAPER, INK))
+    write(BRAND / "icon-transparent.svg", icon_transparent(INK))
     mono_d, mono_tx, mono_ty, mono_s = _mark_place(1024.0, 0.58)
     write(
         BRAND / "icon-mono.svg",
         svg_doc(
             f'  <g transform="translate({mono_tx:.2f},{mono_ty:.2f}) scale({mono_s:.4f})">'
-            f'<path fill="{INK}" fill-rule="evenodd" d="{mono_d}"/></g>',
+            f'<path fill="{INK}" d="{mono_d}"/></g>',
             "0 0 1024 1024",
             "1024",
             "1024",
@@ -537,26 +563,56 @@ def main() -> None:
     write(PUBLIC / "icon-source.svg", icon_master(PAPER, INK))
     write(PUBLIC / "icon-source-home.svg", icon_home_master(PAPER, INK, 1024.0))
     write(BRAND / "icon-home.svg", icon_home_master(PAPER, INK, 1024.0))
-    # 1:1 pixel-snapped masters for critical home-screen sizes (resvg without downscale).
     for s in (120, 152, 167, 180, 192):
         write(PUBLIC / f"icon-source-home-{s}.svg", icon_home_master(PAPER, INK, float(s)))
     write(PUBLIC / "favicon.svg", favicon_svg())
     write(PUBLIC / "icon-maskable.svg", maskable_svg())
-    # In-app mark: favicon-tuned R for small UI; large icons use full brandmark via icon-source.svg
+
+    r_d, _ = letter_R(0)
+    # Same tracking as compose_wordmark for in-app loader paths
+    wx = 0.0
+    track = 8.0
+    wr, wa = letter_R(wx)
+    wx += wa - track
+    wy, wa = letter_Y(wx)
+    wx += wa - track
+    wd, wa = letter_D(wx)
+    wx += wa - track
+    wn, wa = letter_N(wx)
+    wx += wa - track + 6
+    wp, _ = period_dot(wx)
+
     write(
         SRC_ASSETS / "rydn-mark.svg",
         svg_doc(
-            f'  <!-- RYDN Direction #9 — favicon-tuned R (UI / 16–48). App icons use brandmark Béziers. -->\n'
+            f'  <!-- RYDN notched R — favicon-tuned for UI 16–48; app icons use brandmark Béziers. -->\n'
             f'  <path fill="currentColor" fill-rule="evenodd" d="{FAV_R}"/>',
             "0 0 32 32",
         ),
     )
     write(SRC_ASSETS / "rydn-wordmark.svg", compose_wordmark("currentColor", False))
+    write(
+        SRC_ASSETS / "rydn-paths.ts",
+        "/** Auto-generated by scripts/build_brand_d9.py — do not edit by hand. */\n"
+        f'export const RYDN_FAV_R = "{FAV_R}";\n'
+        f'export const RYDN_BRAND_R = "{r_d}";\n'
+        f"export const RYDN_WORDMARK = {{\n"
+        f'  r: "{wr}",\n'
+        f'  y: "{wy}",\n'
+        f'  d: "{wd}",\n'
+        f'  n: "{wn}",\n'
+        f'  period: "{wp}",\n'
+        f"}} as const;\n",
+    )
 
     home_sizes_js = ",".join(str(s) for s in HOME_ICON_SIZES)
     pixel_exact = (120, 152, 167, 180, 192)
     pixel_exact_js = ",".join(str(s) for s in pixel_exact)
-    large_sizes = [s for s in (64, 72, 96, 120, 128, 144, 152, 167, 180, 192, 256, 384, 512, 1024) if s not in HOME_ICON_SIZES]
+    large_sizes = [
+        s
+        for s in (64, 72, 96, 120, 128, 144, 152, 167, 180, 192, 256, 384, 512, 1024)
+        if s not in HOME_ICON_SIZES
+    ]
     large_sizes_js = ",".join(str(s) for s in large_sizes)
 
     batch = ROOT / "scripts" / "_resvg_batch.mjs"
@@ -583,24 +639,20 @@ function homeSrc(size) {{
   const exact = PUBLIC+`/icon-source-home-${{size}}.svg`;
   return (PIXEL_EXACT.has(size) && existsSync(exact)) ? exact : HOME;
 }}
-// Brand pack: apple-touch from 1:1 180 SVG master.
 render(homeSrc(180), 180, BRAND+'/apple-touch-icon.png');
 render(homeSrc(192), 192, BRAND+'/icon-192.png');
 render(FULL, 512, BRAND+'/icon-512.png');
 render(PUBLIC+'/icon-maskable.svg', 512, BRAND+'/maskable-icon.png');
 render(BRAND+'/icon-dark.svg', 512, BRAND+'/social-avatar.png');
-// Tiny sizes: favicon-optimized SVG (never upscale a PNG).
 const f16 = render(BRAND+'/favicon.svg', 16, PUBLIC+'/icon-16.png');
 const f32 = render(BRAND+'/favicon.svg', 32, PUBLIC+'/icon-32.png');
 const f48 = render(BRAND+'/favicon.svg', 48, PUBLIC+'/icon-48.png');
 writeFileSync(BRAND+'/_f16.png', f16);
 writeFileSync(BRAND+'/_f32.png', f32);
 writeFileSync(BRAND+'/_f48.png', f48);
-// Home-screen sizes: optical heavy R, each size rasterized DIRECTLY from SVG.
 for (const s of [{home_sizes_js}]) {{
   render(homeSrc(s), s, PUBLIC+`/icon-${{s}}.png`);
 }}
-// Large sizes: full-detail brandmark, each size from SVG (never from a smaller PNG).
 for (const s of [{large_sizes_js}]) {{
   render(FULL, s, PUBLIC+`/icon-${{s}}.png`);
 }}
@@ -642,7 +694,6 @@ for (const [src,size,out] of [
         p.unlink()
     batch.unlink()
 
-    # Soft-snap home-screen PNGs: solidify gray fringe into ink/paper (keep thin AA).
     try:
         from PIL import Image
 
@@ -660,7 +711,6 @@ for (const [src,size,out] of [
             snapped.save(path, format="PNG", optimize=True)
             print(f"softsnap {path.relative_to(ROOT)}")
 
-        # Keep brand pack copies in sync with public after snap (512/maskable stay full-detail).
         (PUBLIC / "apple-touch-icon.png").write_bytes((PUBLIC / "icon-180.png").read_bytes())
         (PUBLIC / "apple-touch-icon-152.png").write_bytes((PUBLIC / "icon-152.png").read_bytes())
         (PUBLIC / "apple-touch-icon-167.png").write_bytes((PUBLIC / "icon-167.png").read_bytes())
@@ -672,7 +722,6 @@ for (const [src,size,out] of [
             Image.open(PUBLIC / f"icon-{s}.png").resize((s * 10, s * 10), Image.NEAREST).save(
                 BRAND / f"_preview-icon{s}-xx.png"
             )
-        # Nearest-neighbor proof zooms of apple-touch edges.
         at = Image.open(PUBLIC / "apple-touch-icon.png").convert("RGB")
         at.crop((95, 105, 155, 165)).resize((300, 300), Image.NEAREST).save(BRAND / "_proof-180-leg.png")
         at.crop((40, 30, 110, 100)).resize((300, 300), Image.NEAREST).save(BRAND / "_proof-180-bowl.png")
@@ -683,7 +732,7 @@ for (const [src,size,out] of [
     except Exception as exc:
         print("softsnap/preview skipped:", exc)
 
-    print("Direction #9 brand pack complete →", BRAND)
+    print("RYDN Figma brand pack complete →", BRAND)
 
 
 if __name__ == "__main__":

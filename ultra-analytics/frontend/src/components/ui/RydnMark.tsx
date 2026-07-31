@@ -1,4 +1,6 @@
-/** RYDN brand mark — Direction #9 geometric italic R. */
+import { RYDN_FAV_R } from "../../assets/rydn-paths";
+
+/** RYDN brand mark — Figma notched geometric italic R. */
 
 interface Props {
   size?: number;
@@ -7,8 +9,9 @@ interface Props {
 }
 
 /**
- * Standalone R from Direction #9. Optically tuned for 16×16 recognition:
- * forward lean, heavy stems, open counter. Uses currentColor.
+ * Standalone notched R. Favicon-tuned path for 16×16 recognition:
+ * forward lean, heavy stems, open bowl, horizontal right-side notch.
+ * Uses currentColor.
  */
 export default function RydnMark({ size = 24, className, title = "RYDN" }: Props) {
   return (
@@ -22,11 +25,7 @@ export default function RydnMark({ size = 24, className, title = "RYDN" }: Props
       role="img"
       aria-label={title}
     >
-      <path
-        fill="currentColor"
-        fillRule="evenodd"
-        d="M8.2 4.2H17.8c4.8 0 8.4 2.8 8.4 7.2 0 3.8-2.6 6.4-7 6.8L24.4 27.8h-5.3l-4.7-8.7h-2.8L9.5 27.8H4.8L8.2 4.2zm4 3.8v6.6h4.9c2.2 0 3.5-1.2 3.5-3.3S19.3 8 17.1 8H12.2z"
-      />
+      <path fill="currentColor" fillRule="evenodd" d={RYDN_FAV_R} />
     </svg>
   );
 }

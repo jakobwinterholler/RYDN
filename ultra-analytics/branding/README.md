@@ -1,26 +1,30 @@
-# RYDN Brand Direction Boards
+# RYDN Brand
 
-Visual directions for the RYDN mark and system.
-
-## Shipped: Direction #9 — Geometric Italic
-
-Production brand system (original vectors, not board traces):
+Production vectors recreated from Figma logo exports (not PNG traces).
 
 `ultra-analytics/assets/brand/`
 
 | Asset | Role |
 |-------|------|
-| `logo.svg` / `logo-dark.svg` / `logo-light.svg` | Primary **RYDN.BIKE** wordmark |
-| `wordmark.svg` | Secondary **RYDN** (in-app) |
-| `brandmark.svg` | Standalone geometric italic **R** |
+| `logo.svg` / `logo-light.svg` / `logo-dark.svg` / `logo-transparent.svg` | Primary **RYDN.BIKE** lockup |
+| `wordmark.svg` / light / dark / transparent | Secondary **RYDN.** (in-app) |
+| `brandmark.svg` / light / dark / transparent | Standalone notched italic **R** |
 | `favicon.svg` / `favicon.ico` | 16/32/48-optimized mark |
 | `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `maskable-icon.png` | App / PWA |
-| `social-avatar.png` | Dark circular-ready avatar |
+| `social-avatar.png` | Dark avatar |
 | `loading-logo.svg`, `loading-animation.svg` | Loader end-state + route→wordmark |
 
-Rebuild: `python3 scripts/build_brand_d9.py`
+Rebuild (SVG masters → all rasters via resvg, never upscale PNG):
 
-Personality: premium, modern, fast, minimal, editorial, technical — Linear / Arc / Nothing / Vercel / Garmin energy. Soft paper `#F7F6F3` + ink `#111111` (+ app sage accent unchanged).
+```bash
+python3 scripts/build_brand_d9.py
+```
+
+**Mark DNA (from Figma):** bold geometric italic; open-bowl **R** with a horizontal right-side notch between bowl tip and waist/leg; circular period; **BIKE** at ~0.66 cap height on the baseline.
+
+**App colors:** paper `#F7F6F3` + ink `#111111` / `#1A1A18` (sage accent unchanged).
+
+After deploy: remove and re-add the iOS home-screen icon so Springboard picks up the new 180×180 asset.
 
 ## Earlier exploration boards (A–E)
 

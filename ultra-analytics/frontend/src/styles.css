@@ -3499,7 +3499,7 @@ input {
   margin: 0;
 }
 
-/* Direction #9 loader — route draws (~1s), resolves into RYDN wordmark */
+/* RYDN loader — route draws (~1s), resolves into RYDN. wordmark */
 .rydn-loader {
   display: flex;
   flex-direction: column;
