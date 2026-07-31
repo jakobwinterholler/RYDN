@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { User } from "../../types";
-import RydnMark from "../ui/RydnMark";
+import shellHeaderMark from "../../assets/shell-header-mark.png";
 
 export type ShellSpace = "ultras" | "library" | "you";
 
@@ -19,7 +19,14 @@ export default function AppShell({ user, space, onSpace, children }: Props) {
     <div className="shell">
       <header className="shell__header">
         <div className="shell__brand" aria-label="RYDN">
-          <RydnMark size={18} className="shell__mark" />
+          <img
+            className="shell__mark"
+            src={shellHeaderMark}
+            width={28}
+            height={28}
+            alt=""
+            draggable={false}
+          />
           <span className="shell__word">RYDN</span>
         </div>
 
