@@ -277,18 +277,105 @@ FAV_R = (
 # x min from back-slanted left foot; x max from bowl control; y 0..100.
 _R_BOUNDS = (-17.63, 0.0, 86.0, 100.0)  # min_x, min_y, max_x, max_y
 
+# Home-screen optical R (≤180 / apple-touch): heavier stem, slightly less slant, thicker bowl
+# walls, larger fill. Same Direction #9 DNA, tuned so AA fringe reads as solid ink at 60pt.
+HOME_STEM = 30.0
+HOME_SLANT = -7.0
+HOME_FILL = 0.70
+# Sizes that rasterize from the home master (never upscaled from a smaller PNG).
+HOME_ICON_SIZES = (64, 72, 96, 120, 128, 144, 152, 167, 180, 192)
+# Soft edge snap thresholds (0=ink … 1=paper). Collapses soft gray fringe; keeps ~1px AA.
+SNAP_INK_MAX = 0.42
+SNAP_PAPER_MIN = 0.68
 
-def _mark_place(canvas: float, fill_ratio: float) -> tuple[str, float, float, float]:
-    """Return (path_d, translate_x, translate_y, scale) to optically center letter_R on a square canvas."""
-    d, _ = letter_R(0)
-    min_x, min_y, max_x, max_y = _R_BOUNDS
+
+def letter_R_home(ox: float = 0.0) -> tuple[str, float]:
+    """Home-screen optical R — same construction as letter_R, heavier stem / thicker walls."""
+
+    def P(x: float, y: float) -> tuple[float, float]:
+        return skew(ox + x, y, HOME_SLANT)
+
+    w = HOME_STEM
+    # Outer bowl to x=92; inner to x=58 → ~34-unit wall (was 20). Counter inset 18–50.
+    d = (
+        f"M{xy(P(0, 0))}"
+        f"L{xy(P(54, 0))}"
+        f"C{xy(P(80, 0))} {xy(P(92, 14))} {xy(P(92, 34))}"
+        f"C{xy(P(92, 50))} {xy(P(80, 58))} {xy(P(54, 58))}"
+        f"L{xy(P(78, 100))}"
+        f"L{xy(P(46, 100))}"
+        f"L{xy(P(30, 64))}"
+        f"L{xy(P(w, 64))}"
+        f"L{xy(P(w, 100))}"
+        f"L{xy(P(0, 100))}"
+        f"Z"
+        f"M{xy(P(w, 18))}"
+        f"L{xy(P(50, 18))}"
+        f"C{xy(P(56, 18))} {xy(P(58, 24))} {xy(P(58, 34))}"
+        f"C{xy(P(58, 46))} {xy(P(56, 50))} {xy(P(50, 50))}"
+        f"L{xy(P(w, 50))}"
+        f"Z"
+    )
+    return d, 96.0
+
+
+def _home_bounds() -> tuple[float, float, float, float]:
+    """Axis-aligned bounds of letter_R_home after HOME_SLANT."""
+    pts = [
+        skew(0, 0, HOME_SLANT),
+        skew(0, 100, HOME_SLANT),
+        skew(HOME_STEM, 100, HOME_SLANT),
+        skew(92, 34, HOME_SLANT),
+        skew(78, 100, HOME_SLANT),
+        skew(54, 0, HOME_SLANT),
+        skew(92, 0, HOME_SLANT),
+        skew(92, 58, HOME_SLANT),
+    ]
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _mark_place(
+    canvas: float,
+    fill_ratio: float,
+    *,
+    path_d: str | None = None,
+    bounds: tuple[float, float, float, float] | None = None,
+    bias: tuple[float, float] = (-1.2, -1.0),
+) -> tuple[str, float, float, float]:
+    """Return (path_d, translate_x, translate_y, scale) to optically center an R on a square canvas."""
+    if path_d is None:
+        path_d, _ = letter_R(0)
+    min_x, min_y, max_x, max_y = bounds if bounds is not None else _R_BOUNDS
     # Slight optical bias: italic R reads heavy on the right leg — nudge left/up a hair.
-    cx = (min_x + max_x) / 2 - 1.2
-    cy = (min_y + max_y) / 2 - 1.0
+    cx = (min_x + max_x) / 2 + bias[0]
+    cy = (min_y + max_y) / 2 + bias[1]
     scale = (canvas * fill_ratio) / (max_y - min_y)
     tx = canvas / 2 - cx * scale
     ty = canvas / 2 - cy * scale
-    return d, tx, ty, scale
+    return path_d, tx, ty, scale
+
+
+def _softsnap_rgba(im: "Image.Image") -> "Image.Image":  # type: ignore[name-defined]
+    """Collapse soft mid-gray AA into ink/paper while keeping a thin AA band."""
+    from PIL import Image
+
+    im = im.convert("RGBA")
+    out = im.copy()
+    px = im.load()
+    op = out.load()
+    ink = (0x11, 0x11, 0x11, 255)
+    paper = (0xF7, 0xF6, 0xF3, 255)
+    for y in range(im.size[1]):
+        for x in range(im.size[0]):
+            r, g, b, a = px[x, y]
+            t = (r - 17) / 230.0
+            if t < SNAP_INK_MAX:
+                op[x, y] = ink
+            elif t > SNAP_PAPER_MIN:
+                op[x, y] = paper
+    return out
 
 
 def favicon_svg() -> str:
@@ -321,9 +408,46 @@ def icon_master(bg: str, fg: str) -> str:
     )
 
 
+def icon_home_master(bg: str, fg: str, canvas: float = 1024.0) -> str:
+    """Home-screen / apple-touch master — heavier R, ~70% fill, Apple-safe padding.
+
+    When canvas matches the target PNG size (e.g. 180), resvg renders 1:1 with
+    translate snapped to the pixel grid for sharper stems.
+    """
+    d, _ = letter_R_home(0)
+    d, tx, ty, scale = _mark_place(
+        canvas,
+        HOME_FILL,
+        path_d=d,
+        bounds=_home_bounds(),
+        bias=(-1.5, -1.2),
+    )
+    # Snap placement to 1/4-px so horizontal terminals land on cleaner rows at 1:1.
+    tx = round(tx * 4) / 4
+    ty = round(ty * 4) / 4
+    c = int(canvas) if canvas == int(canvas) else canvas
+    return svg_doc(
+        f'  <rect width="{c}" height="{c}" fill="{bg}"/>\n'
+        f'  <g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">\n'
+        f'    <path fill="{fg}" fill-rule="evenodd" d="{d}"/>\n'
+        f"  </g>",
+        f"0 0 {c} {c}",
+        str(c),
+        str(c),
+    )
+
+
 def maskable_svg() -> str:
     # Maskable safe zone ≈ center 80% circle — keep mark ~48% so it survives adaptive cropping.
-    d, tx, ty, scale = _mark_place(512.0, 0.48)
+    # Use home optical R so adaptive Android icons stay bold at small sizes.
+    d, _ = letter_R_home(0)
+    d, tx, ty, scale = _mark_place(
+        512.0,
+        0.52,
+        path_d=d,
+        bounds=_home_bounds(),
+        bias=(-1.5, -1.2),
+    )
     return svg_doc(
         f'  <rect width="512" height="512" fill="{INK}"/>\n'
         f'  <g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">\n'
@@ -411,6 +535,11 @@ def main() -> None:
     )
 
     write(PUBLIC / "icon-source.svg", icon_master(PAPER, INK))
+    write(PUBLIC / "icon-source-home.svg", icon_home_master(PAPER, INK, 1024.0))
+    write(BRAND / "icon-home.svg", icon_home_master(PAPER, INK, 1024.0))
+    # 1:1 pixel-snapped masters for critical home-screen sizes (resvg without downscale).
+    for s in (120, 152, 167, 180, 192):
+        write(PUBLIC / f"icon-source-home-{s}.svg", icon_home_master(PAPER, INK, float(s)))
     write(PUBLIC / "favicon.svg", favicon_svg())
     write(PUBLIC / "icon-maskable.svg", maskable_svg())
     # In-app mark: favicon-tuned R for small UI; large icons use full brandmark via icon-source.svg
@@ -424,26 +553,40 @@ def main() -> None:
     )
     write(SRC_ASSETS / "rydn-wordmark.svg", compose_wordmark("currentColor", False))
 
+    home_sizes_js = ",".join(str(s) for s in HOME_ICON_SIZES)
+    pixel_exact = (120, 152, 167, 180, 192)
+    pixel_exact_js = ",".join(str(s) for s in pixel_exact)
+    large_sizes = [s for s in (64, 72, 96, 120, 128, 144, 152, 167, 180, 192, 256, 384, 512, 1024) if s not in HOME_ICON_SIZES]
+    large_sizes_js = ",".join(str(s) for s in large_sizes)
+
     batch = ROOT / "scripts" / "_resvg_batch.mjs"
     batch.write_text(
         f"""
-import {{ readFileSync, writeFileSync, copyFileSync }} from 'node:fs';
+import {{ readFileSync, writeFileSync, copyFileSync, existsSync }} from 'node:fs';
 import {{ join }} from 'node:path';
 import {{ createRequire }} from 'node:module';
 const require = createRequire(join(process.cwd(), 'frontend/package.json'));
 const {{ Resvg }} = require('@resvg/resvg-js');
 const BRAND = 'assets/brand';
 const PUBLIC = 'frontend/public';
+const HOME = PUBLIC+'/icon-source-home.svg';
+const FULL = PUBLIC+'/icon-source.svg';
+const PIXEL_EXACT = new Set([{pixel_exact_js}]);
 function render(src, size, out) {{
   const r = new Resvg(readFileSync(src), {{ fitTo: {{ mode: 'width', value: size }}, background: 'transparent' }});
   const png = r.render().asPng();
   writeFileSync(out, png);
-  console.log(out, png.length);
+  console.log(out, png.length, '(SVG→'+size+'px)');
   return png;
 }}
-render(BRAND+'/icon-light.svg', 180, BRAND+'/apple-touch-icon.png');
-render(BRAND+'/icon-light.svg', 192, BRAND+'/icon-192.png');
-render(BRAND+'/icon-light.svg', 512, BRAND+'/icon-512.png');
+function homeSrc(size) {{
+  const exact = PUBLIC+`/icon-source-home-${{size}}.svg`;
+  return (PIXEL_EXACT.has(size) && existsSync(exact)) ? exact : HOME;
+}}
+// Brand pack: apple-touch from 1:1 180 SVG master.
+render(homeSrc(180), 180, BRAND+'/apple-touch-icon.png');
+render(homeSrc(192), 192, BRAND+'/icon-192.png');
+render(FULL, 512, BRAND+'/icon-512.png');
 render(PUBLIC+'/icon-maskable.svg', 512, BRAND+'/maskable-icon.png');
 render(BRAND+'/icon-dark.svg', 512, BRAND+'/social-avatar.png');
 // Tiny sizes: favicon-optimized SVG (never upscale a PNG).
@@ -453,9 +596,13 @@ const f48 = render(BRAND+'/favicon.svg', 48, PUBLIC+'/icon-48.png');
 writeFileSync(BRAND+'/_f16.png', f16);
 writeFileSync(BRAND+'/_f32.png', f32);
 writeFileSync(BRAND+'/_f48.png', f48);
-// Every larger size rasterized directly from master SVG (resvg), never from a smaller PNG.
-for (const s of [64,72,96,120,128,144,152,167,180,192,256,384,512,1024]) {{
-  render(PUBLIC+'/icon-source.svg', s, PUBLIC+`/icon-${{s}}.png`);
+// Home-screen sizes: optical heavy R, each size rasterized DIRECTLY from SVG.
+for (const s of [{home_sizes_js}]) {{
+  render(homeSrc(s), s, PUBLIC+`/icon-${{s}}.png`);
+}}
+// Large sizes: full-detail brandmark, each size from SVG (never from a smaller PNG).
+for (const s of [{large_sizes_js}]) {{
+  render(FULL, s, PUBLIC+`/icon-${{s}}.png`);
 }}
 copyFileSync(PUBLIC+'/icon-180.png', PUBLIC+'/apple-touch-icon.png');
 copyFileSync(PUBLIC+'/icon-152.png', PUBLIC+'/apple-touch-icon-152.png');
@@ -470,7 +617,9 @@ for (const [src,size,out] of [
   [BRAND+'/logo.svg', 900, BRAND+'/_preview-logo.png'],
   [BRAND+'/wordmark.svg', 700, BRAND+'/_preview-wordmark.png'],
   [BRAND+'/brandmark.svg', 280, BRAND+'/_preview-brandmark.png'],
-  [PUBLIC+'/icon-source.svg', 256, BRAND+'/_preview-icon.png'],
+  [homeSrc(180), 180, BRAND+'/_preview-icon-180.png'],
+  [homeSrc(120), 120, BRAND+'/_preview-icon-120.png'],
+  [HOME, 256, BRAND+'/_preview-icon.png'],
   [BRAND+'/favicon.svg', 128, BRAND+'/_preview-favicon.png'],
 ]) {{
   const r = new Resvg(readFileSync(src), {{ fitTo: {{ mode: 'width', value: size }}, background: '{PAPER}' }});
@@ -493,15 +642,46 @@ for (const [src,size,out] of [
         p.unlink()
     batch.unlink()
 
+    # Soft-snap home-screen PNGs: solidify gray fringe into ink/paper (keep thin AA).
     try:
         from PIL import Image
+
+        snap_targets = [
+            *(PUBLIC / f"icon-{s}.png" for s in HOME_ICON_SIZES),
+            PUBLIC / "apple-touch-icon.png",
+            PUBLIC / "apple-touch-icon-152.png",
+            PUBLIC / "apple-touch-icon-167.png",
+            PUBLIC / "icon-maskable-192.png",
+        ]
+        for path in snap_targets:
+            if not path.exists():
+                continue
+            snapped = _softsnap_rgba(Image.open(path))
+            snapped.save(path, format="PNG", optimize=True)
+            print(f"softsnap {path.relative_to(ROOT)}")
+
+        # Keep brand pack copies in sync with public after snap (512/maskable stay full-detail).
+        (PUBLIC / "apple-touch-icon.png").write_bytes((PUBLIC / "icon-180.png").read_bytes())
+        (PUBLIC / "apple-touch-icon-152.png").write_bytes((PUBLIC / "icon-152.png").read_bytes())
+        (PUBLIC / "apple-touch-icon-167.png").write_bytes((PUBLIC / "icon-167.png").read_bytes())
+        (BRAND / "apple-touch-icon.png").write_bytes((PUBLIC / "apple-touch-icon.png").read_bytes())
+        (BRAND / "icon-192.png").write_bytes((PUBLIC / "icon-192.png").read_bytes())
+        (BRAND / "maskable-icon.png").write_bytes((PUBLIC / "icon-maskable-512.png").read_bytes())
 
         for s in (16, 32, 48):
             Image.open(PUBLIC / f"icon-{s}.png").resize((s * 10, s * 10), Image.NEAREST).save(
                 BRAND / f"_preview-icon{s}-xx.png"
             )
-    except Exception:
-        pass
+        # Nearest-neighbor proof zooms of apple-touch edges.
+        at = Image.open(PUBLIC / "apple-touch-icon.png").convert("RGB")
+        at.crop((95, 105, 155, 165)).resize((300, 300), Image.NEAREST).save(BRAND / "_proof-180-leg.png")
+        at.crop((40, 30, 110, 100)).resize((300, 300), Image.NEAREST).save(BRAND / "_proof-180-bowl.png")
+        Image.open(PUBLIC / "icon-120.png").convert("RGB").resize((360, 360), Image.NEAREST).save(
+            BRAND / "_proof-120-nn.png"
+        )
+        at.resize((540, 540), Image.NEAREST).save(BRAND / "_proof-180-nn.png")
+    except Exception as exc:
+        print("softsnap/preview skipped:", exc)
 
     print("Direction #9 brand pack complete →", BRAND)
 

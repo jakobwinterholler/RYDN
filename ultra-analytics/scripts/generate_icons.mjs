@@ -3,11 +3,12 @@
  * Rasterize RYDN icons from Direction #9 SVG masters (never PNG upscale).
  *
  * Pipeline:
- *   1) Prefer scripts/build_brand_d9.py — regenerates SVG masters + resvg batch
- *   2) Fallback: resvg each size from frontend/public/icon-source.svg (+ favicon.svg for ≤48)
+ *   1) Prefer scripts/build_brand_d9.py — regenerates SVG masters + resvg batch + softsnap
+ *   2) Fallback: resvg each size from home/full SVG masters (+ favicon.svg for ≤48)
  *
  * Masters:
- *   - assets/brand/brandmark.svg / icon-source.svg — full geometric italic R (Béziers)
+ *   - icon-source-home.svg — optical heavy R for ≤192 / apple-touch (home screen)
+ *   - icon-source.svg — full geometric italic R for ≥256
  *   - favicon.svg — favicon-tuned R for 16–48 only
  *
  * Run: node scripts/generate_icons.mjs
@@ -33,10 +34,12 @@ if (existsSync(BRAND_BUILD)) {
 }
 
 const SOURCE = join(PUBLIC, "icon-source.svg");
+const SOURCE_HOME = join(PUBLIC, "icon-source-home.svg");
 /** Every size is rendered from SVG at that pixel width — never scaled from a smaller PNG. */
 const SIZES = [16, 32, 48, 64, 72, 96, 120, 128, 144, 152, 167, 180, 192, 256, 384, 512, 1024];
 const MASKABLE = [192, 512];
 const FAVICON_MAX = 48;
+const HOME_MAX = 192;
 
 async function loadResvg() {
   const require = createRequire(join(FRONTEND, "package.json"));
@@ -65,10 +68,11 @@ async function main() {
   mkdirSync(PUBLIC, { recursive: true });
   const { Resvg } = await loadResvg();
   const master = readFileSync(SOURCE);
+  const home = existsSync(SOURCE_HOME) ? readFileSync(SOURCE_HOME) : master;
   const fav = readFileSync(join(PUBLIC, "favicon.svg"));
 
   for (const size of SIZES) {
-    const src = size <= FAVICON_MAX ? fav : master;
+    const src = size <= FAVICON_MAX ? fav : size <= HOME_MAX ? home : master;
     writeFileSync(join(PUBLIC, `icon-${size}.png`), rasterize(Resvg, src, size));
     console.log(`wrote icon-${size}.png (SVG→${size}px)`);
   }
