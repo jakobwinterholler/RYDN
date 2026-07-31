@@ -16,7 +16,7 @@ from typing import List, Optional
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import store
@@ -291,6 +291,37 @@ def get_route(route_id: str, user: dict = Depends(current_user)) -> JSONResponse
     if not detail:
         raise HTTPException(status_code=404, detail="Route not found.")
     return JSONResponse(detail)
+
+
+@app.get("/api/routes/{route_id}/export.gpx")
+def export_planned_route_gpx(
+    route_id: str, user: dict = Depends(current_user)
+) -> Response:
+    """Download planned-route GPX: course + verified water/shop waypoints only.
+
+    Excludes sleep, cafés, bike shops, and unverified POIs. Auth required;
+    other users' routes 404.
+    """
+    exported = routes_store.export_route_gpx(user["id"], route_id)
+    if not exported:
+        raise HTTPException(status_code=404, detail="Route not found.")
+    filename, body = exported
+    # ASCII fallback + RFC 5987 for emoji-safe route names.
+    ascii_name = filename.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    from urllib.parse import quote
+
+    disposition = (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+    return Response(
+        content=body,
+        media_type="application/gpx+xml",
+        headers={
+            "Content-Disposition": disposition,
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.get("/api/routes/{route_id}/analysis")

@@ -450,6 +450,57 @@ def get_route_analysis(
     return analysis
 
 
+def export_route_gpx(uid: str, route_id: str) -> Optional[tuple]:
+    """Build GPX 1.1 for a planned route: course track + verified water/shop waypoints.
+
+    Returns ``(filename, gpx_bytes)`` or ``None`` if the route is missing.
+    Auth/ownership is enforced by the caller via uid-scoped paths.
+    """
+    from .parsing.route_gpx_export import (
+        build_export_gpx,
+        export_filename,
+        filter_export_waypoints,
+        merge_verified_stops,
+        track_points_from_parsed,
+        track_points_from_route,
+    )
+
+    route = get_route(uid, route_id)
+    if not route:
+        return None
+
+    track_pts = track_points_from_route(route)
+    gpx_path = _gpx_path(uid, route_id)
+    if os.path.isfile(gpx_path):
+        try:
+            parsed = parse_route_gpx(gpx_path)
+            from_file = track_points_from_parsed(parsed.points)
+            if len(from_file) >= 2:
+                track_pts = from_file
+        except Exception:
+            pass
+
+    recommended: List[dict] = []
+    cache = _analysis_path(uid, route_id)
+    if os.path.isfile(cache):
+        try:
+            with open(cache, "r", encoding="utf-8") as f:
+                analysis = json.load(f)
+            recommended = list(analysis.get("recommendedStops") or [])
+        except (OSError, json.JSONDecodeError, TypeError):
+            recommended = []
+
+    merged = merge_verified_stops(
+        recommended,
+        route.get("savedStops") or {},
+        route.get("stopReviews") or {},
+    )
+    waypoints = filter_export_waypoints(merged)
+    name = str(route.get("name") or "Route")
+    body = build_export_gpx(name=name, track_points=track_pts, waypoints=waypoints)
+    return export_filename(name), body
+
+
 def delete_route(uid: str, route_id: str) -> bool:
     path = _path(uid, route_id)
     if not os.path.isfile(path):

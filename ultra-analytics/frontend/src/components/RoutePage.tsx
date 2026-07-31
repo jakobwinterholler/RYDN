@@ -1315,6 +1315,8 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
 
         {mode === "ride" && (
           <RidePanel
+            routeId={routeId}
+            routeName={route.name}
             verified={rideVerified}
             profile={analysis?.profile}
             rideKm={rideKm}

@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { downloadRouteGpx } from "../../api";
 import type { RecommendedStop } from "../../types";
 import { RydnPlanIcon, iconForCategory } from "./icons";
 import {
@@ -24,6 +25,8 @@ const PROFILE_H = 72;
 const PAD = 4;
 
 type Props = {
+  routeId: string;
+  routeName?: string;
   verified: RecommendedStop[];
   profile: ElevProfile | null | undefined;
   rideKm: number;
@@ -113,6 +116,8 @@ function ElevProfileChart({
 }
 
 export default function RidePanel({
+  routeId,
+  routeName,
   verified,
   profile,
   rideKm,
@@ -124,6 +129,22 @@ export default function RidePanel({
   const listRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
   const onKmRef = useRef(onRideKmChange);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const onExportGpx = async () => {
+    if (exporting) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      const fallback = `${(routeName || "route").replace(/[^\w\-]+/g, "_") || "route"}.gpx`;
+      await downloadRouteGpx(routeId, fallback);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : "Could not export GPX.");
+    } finally {
+      setExporting(false);
+    }
+  };
   const rideKmRef = useRef(rideKm);
   const [activeId, setActiveId] = useState<string | null>(null);
   const elevOk = hasUsableElevation(profile);
@@ -304,6 +325,26 @@ export default function RidePanel({
             );
           })
         )}
+        <div className="ride-panel__export">
+          <button
+            type="button"
+            className="btn btn--secondary ride-panel__export-btn"
+            data-testid="ride-export-gpx"
+            disabled={exporting}
+            aria-busy={exporting || undefined}
+            onClick={() => void onExportGpx()}
+          >
+            {exporting ? "Exporting…" : "Export for GPS"}
+          </button>
+          <p className="ride-panel__export-hint">
+            GPX with your route plus verified water and shops
+          </p>
+          {exportError ? (
+            <p className="ride-panel__export-error" role="alert">
+              {exportError}
+            </p>
+          ) : null}
+        </div>
         <div className="ride-panel__list-end" aria-hidden />
       </div>
     </aside>

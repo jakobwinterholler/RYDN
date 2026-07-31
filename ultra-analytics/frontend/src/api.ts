@@ -441,6 +441,38 @@ export async function deleteRoute(id: string): Promise<void> {
   if (!res.ok) await fail(res, "Could not delete route.");
 }
 
+/** Download planned-route GPX (course + verified water/shop waypoints). */
+export async function downloadRouteGpx(id: string, fallbackName = "route.gpx"): Promise<void> {
+  const res = await request(`/api/routes/${id}/export.gpx`);
+  if (!res.ok) await fail(res, "Could not export GPX.");
+  const blob = await res.blob();
+  let filename = fallbackName;
+  const cd = res.headers.get("Content-Disposition") || "";
+  const utf = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  const plain = /filename="([^"]+)"/i.exec(cd) || /filename=([^;]+)/i.exec(cd);
+  if (utf?.[1]) {
+    try {
+      filename = decodeURIComponent(utf[1]);
+    } catch {
+      filename = utf[1];
+    }
+  } else if (plain?.[1]) {
+    filename = plain[1].trim().replace(/^"|"$/g, "");
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export async function loadSample(): Promise<RideSummary> {
   const res = await request("/api/sample", { method: "POST" });
   if (!res.ok) await fail(res, "No sample ride available.");

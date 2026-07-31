@@ -92,6 +92,15 @@ data is wiped on every redeploy.
 
 ---
 
+## Planned route GPX export
+
+`GET /api/routes/{id}/export.gpx` (auth) downloads a GPX 1.1 file with the course
+track plus **verified water** and **verified shop** waypoints only (no sleep,
+cafés, bike shops, or unverified POIs). Waypoint `<name>` is emoji-only
+(`💧` / `🛒`). Garmin-compatible `<sym>` values: `Drinking Water`,
+`Shopping Center` (de-facto GPX interchange; best multi-brand icon / proximity
+mapping without custom device config). UI: Ride tab → bottom of Ride panel.
+
 ## Auto deploys
 
 Every push to the connected branch (use `main`) rebuilds and deploys. Health check: `GET /health`.
