@@ -6389,13 +6389,20 @@ input {
   padding: 8px 16px calc(72px + env(safe-area-inset-bottom, 0px));
 }
 
+.plan-sheet--compact.plan-sheet--streetview {
+  max-height: min(85vh, 640px);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
 .plan-sheet--compact .plan-sheet__title {
   font-size: 18px;
   margin: 0 0 4px;
 }
 
 .plan-sheet--compact .plan-sheet__rating {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   font-size: 12px;
 }
 
@@ -6412,6 +6419,168 @@ input {
   min-height: 40px;
 }
 
+.plan-sheet--streetview .plan-sheet__cta {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0;
+  padding: 8px 0 2px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--paper-elevated) 0%, transparent) 0%,
+    var(--paper-elevated) 28%
+  );
+}
+
+.plan-streetview {
+  position: relative;
+  flex-shrink: 0;
+  height: 270px;
+  margin: 0 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.plan-streetview__stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.plan-streetview__stage.is-live {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.plan-streetview__overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.plan-streetview__placeholder {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 18px;
+  text-align: center;
+}
+
+.plan-streetview__blur {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 80% at 20% 30%, color-mix(in srgb, var(--ink) 6%, transparent), transparent 55%),
+    radial-gradient(100% 70% at 80% 70%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 50%),
+    linear-gradient(145deg, #ecebe6 0%, #f4f3ef 45%, #e7e5df 100%);
+  filter: blur(0.5px);
+}
+
+.plan-streetview__blur::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      -18deg,
+      transparent,
+      transparent 10px,
+      color-mix(in srgb, var(--ink) 3%, transparent) 10px,
+      color-mix(in srgb, var(--ink) 3%, transparent) 11px
+    );
+  opacity: 0.55;
+}
+
+.plan-streetview__copy {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+}
+
+.plan-streetview__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.plan-streetview__caption {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-secondary);
+}
+
+.plan-streetview__load {
+  min-width: 168px;
+  min-height: 44px;
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.plan-streetview__empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 20px 16px;
+  text-align: center;
+  background: var(--paper);
+}
+
+.plan-streetview__empty .plan-streetview__title {
+  font-size: 15px;
+  font-weight: 550;
+  font-family: var(--font-body, inherit);
+  max-width: 240px;
+  color: var(--ink-secondary);
+}
+
+.plan-streetview__empty-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+  max-width: 320px;
+}
+
+.plan-streetview__verify-anyway {
+  min-height: 44px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Soften Google Street View chrome inside our card */
+.plan-streetview__stage.is-live .gm-style {
+  border-radius: inherit;
+}
+
+.plan-streetview__stage.is-live .gm-iv-address,
+.plan-streetview__stage.is-live .gm-style-cc,
+.plan-streetview__stage.is-live button[title="Keyboard shortcuts"],
+.plan-streetview__stage.is-live a[href^="https://maps.google.com/maps"] {
+  opacity: 0.55;
+}
+
 .plan-sheet__cat-chip {
   display: inline-flex;
   align-items: center;
@@ -6425,6 +6594,11 @@ input {
 
 .plan-sheet__cta {
   margin: 0 0 10px;
+}
+
+.plan-sheet__nav--pair {
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 8px;
 }
 
 .plan-sheet__verify {

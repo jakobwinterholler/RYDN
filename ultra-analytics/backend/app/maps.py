@@ -2,6 +2,11 @@
 
 Browsers cannot call Street View Metadata (CORS). Clients hit these endpoints;
 the backend attaches ``GOOGLE_MAPS_API_KEY`` when calling Google.
+
+``GET /api/maps/js-config`` returns the key only to signed-in users so the Maps
+JavaScript API is not baked into the Vite bundle. Restrict the key by HTTP
+referrer in Google Cloud Console (rydn.bike). Enable Maps JavaScript API and
+Street View (Metadata / Static as needed).
 """
 
 from __future__ import annotations
@@ -9,8 +14,9 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from .auth import current_user
 from .config import get_config
 from .util.logging_util import log_event
 
@@ -105,6 +111,22 @@ async def streetview_metadata(
 ) -> dict[str, Any]:
     """Proxy Street View Metadata so the browser never sees the API key."""
     return await fetch_street_view_metadata(lat, lon, radius=radius, source=source)
+
+
+@router.get("/js-config")
+def maps_js_config(user: dict = Depends(current_user)) -> dict[str, Any]:
+    """Return Maps JS API key for lazy client load (auth required).
+
+    The key is never committed or baked into the frontend build. Callers must
+    load the Maps JavaScript API only after an explicit user action (e.g.
+    "Load Street View"). Configure HTTP referrer restrictions in GCP.
+    """
+    del user  # auth gate only
+    cfg = get_config()
+    key = cfg.google_maps_api_key
+    if not key:
+        return {"apiKey": None, "configured": False}
+    return {"apiKey": key, "configured": True}
 
 
 @router.get("/status")

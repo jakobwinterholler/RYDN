@@ -1,4 +1,4 @@
-"""CSP must allow MapLibre OpenFreeMap + blob workers (Planning map)."""
+"""CSP must allow MapLibre OpenFreeMap + blob workers + Google Maps JS."""
 
 from __future__ import annotations
 
@@ -26,6 +26,19 @@ class SecurityCspTests(unittest.TestCase):
         self.assertIn("worker-src 'self' blob:", csp)
         connect = next(part for part in csp.split(";") if "connect-src" in part)
         self.assertIn("tiles.openfreemap.org", connect)
+
+    def test_csp_allows_google_maps_javascript(self) -> None:
+        async def homepage(_request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/", homepage)])
+        app.add_middleware(SecurityHeadersMiddleware)
+        client = TestClient(app)
+        csp = client.get("/").headers["content-security-policy"]
+        self.assertIn("https://maps.googleapis.com", csp)
+        script = next(part for part in csp.split(";") if "script-src" in part)
+        self.assertIn("maps.googleapis.com", script)
+        self.assertIn("maps.gstatic.com", script)
 
 
 if __name__ == "__main__":

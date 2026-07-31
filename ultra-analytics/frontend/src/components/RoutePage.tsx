@@ -23,6 +23,7 @@ import Icon from "./ui/Icon";
 import RydnLoader from "./ui/RydnLoader";
 import ScoreLine from "./ui/ScoreLine";
 import PlanMap, { type PlanMapBBox } from "./plan/PlanMap";
+import StreetView from "./plan/StreetView";
 import { RydnPlanIcon, iconForCategory } from "./plan/icons";
 import {
   DEFAULT_LAYERS,
@@ -283,7 +284,13 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const [layers, setLayers] = useState<Record<PlanLayerId, boolean>>(DEFAULT_LAYERS);
   const [qa, setQa] = useState<QuickActionId | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** Street View empty state — hide duplicate Directions/Verify row. */
+  const [streetViewEmpty, setStreetViewEmpty] = useState(false);
   const [verifyIndex, setVerifyIndex] = useState(0);
+
+  useEffect(() => {
+    setStreetViewEmpty(false);
+  }, [selectedId]);
   const [targetKm, setTargetKm] = useState(250);
   const [rideKm, setRideKm] = useState(0);
   const [reviewMotion, setReviewMotion] = useState<ReviewMotion | null>(null);
@@ -1324,7 +1331,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         {/* Compact stop sheet — Plan only (Ride cards carry the timeline). */}
         {mode === "plan" && (selectedStop || peek) && (
           <div
-            className={`plan-sheet plan-sheet--compact${selectedStop?.reviewStatus === "verified" ? " plan-sheet--verified" : ""}`}
+            className={`plan-sheet plan-sheet--compact${selectedStop ? " plan-sheet--streetview" : ""}${selectedStop?.reviewStatus === "verified" ? " plan-sheet--verified" : ""}`}
             role="dialog"
             aria-label="Selection"
           >
@@ -1378,64 +1385,80 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
                     ) : null}
                   </p>
                 )}
-                <div className="plan-sheet__cta">
-                  <button
-                    type="button"
-                    className={[
-                      "btn",
-                      "btn--block",
-                      "plan-sheet__verify",
-                      selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
-                        ? "plan-sheet__verify--done"
-                        : "btn--primary",
-                      reviewing?.status === "verified" ? "btn--working" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    disabled={
-                      selectedStop.reviewStatus === "verified" ||
-                      (locked && reviewing?.status !== "verified")
-                    }
-                    aria-busy={reviewing?.status === "verified" || undefined}
-                    onClick={() => reviewStop(selectedStop.id, "verified")}
-                  >
-                    {reviewing?.status === "verified" && reviewing.phase === "confirming" && (
-                      <span className="btn__spinner" aria-hidden />
-                    )}
-                    {selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
+                <StreetView
+                  key={selectedStop.id}
+                  latitude={selectedStop.lat}
+                  longitude={selectedStop.lon}
+                  mapsUrl={
+                    selectedStop.googleMapsUrl ||
+                    mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
+                  }
+                  onEmptyChange={setStreetViewEmpty}
+                  onVerifyAnyway={() => reviewStop(selectedStop.id, "verified")}
+                  verifyDisabled={
+                    selectedStop.reviewStatus === "verified" ||
+                    (locked && reviewing?.status !== "verified")
+                  }
+                  verifyLabel={
+                    selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
                       ? "Verified ✓"
-                      : "Verify"}
-                  </button>
-                </div>
-                <div className="plan-sheet__nav" role="group" aria-label="Maps actions">
-                  <a
-                    className="plan-sheet__nav-btn plan-sheet__nav-btn--emphasis"
-                    href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).google}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Navigate
-                  </a>
-                  <a
-                    className="plan-sheet__nav-btn"
-                    href={
-                      selectedStop.googleMapsUrl ||
-                      mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
-                    }
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Maps
-                  </a>
-                  <a
-                    className="plan-sheet__nav-btn"
-                    href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).streetView}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Street View
-                  </a>
-                </div>
+                      : "Verify anyway"
+                  }
+                />
+                {!streetViewEmpty && (
+                  <>
+                    <div className="plan-sheet__nav plan-sheet__nav--pair" role="group" aria-label="Maps actions">
+                      <a
+                        className="plan-sheet__nav-btn plan-sheet__nav-btn--emphasis"
+                        href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).google}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Directions
+                      </a>
+                      <a
+                        className="plan-sheet__nav-btn"
+                        href={
+                          selectedStop.googleMapsUrl ||
+                          mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
+                        }
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open Google Maps
+                      </a>
+                    </div>
+                    <div className="plan-sheet__cta">
+                      <button
+                        type="button"
+                        className={[
+                          "btn",
+                          "btn--block",
+                          "plan-sheet__verify",
+                          selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
+                            ? "plan-sheet__verify--done"
+                            : "btn--primary",
+                          reviewing?.status === "verified" ? "btn--working" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        disabled={
+                          selectedStop.reviewStatus === "verified" ||
+                          (locked && reviewing?.status !== "verified")
+                        }
+                        aria-busy={reviewing?.status === "verified" || undefined}
+                        onClick={() => reviewStop(selectedStop.id, "verified")}
+                      >
+                        {reviewing?.status === "verified" && reviewing.phase === "confirming" && (
+                          <span className="btn__spinner" aria-hidden />
+                        )}
+                        {selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
+                          ? "Verified ✓"
+                          : "✓ Verify"}
+                      </button>
+                    </div>
+                  </>
+                )}
               </>
             )}
             {peek?.kind === "climb" && (

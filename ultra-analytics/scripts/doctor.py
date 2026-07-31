@@ -191,7 +191,7 @@ def main() -> int:
         bool(maps_key),
         "GOOGLE_MAPS_API_KEY set (server-side)",
         "SET" if maps_key else "empty",
-        "Paste into ultra-analytics/.env (never VITE_*)",
+        "Paste into ultra-analytics/.env (never VITE_*); enable Maps JS + Street View Metadata in GCP",
     )
     add(
         "strava_id",

@@ -25,6 +25,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
 
         # CSP — allow self + configured API origin + Google Fonts + MapLibre tiles
+        # + lazy Google Maps JavaScript API (Street View panorama, user-initiated).
         # MapLibre fetches style/TileJSON/glyphs/vector tiles via connect-src (not img-src).
         # The bundled maplibre-gl worker is created from a blob: URL.
         connect = "'self'"
@@ -38,6 +39,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "https://rydn.bike",
             "https://tiles.openfreemap.org",
             "https://tile.openstreetmap.org",
+            "https://maps.googleapis.com",
+            "https://maps.gstatic.com",
+            "https://*.googleapis.com",
+            "https://*.gstatic.com",
         ):
             if extra not in connect:
                 connect += f" {extra}"
@@ -50,10 +55,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "img-src 'self' data: blob: https:; "
             "font-src 'self' https://fonts.gstatic.com data:; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "script-src 'self' 'wasm-unsafe-eval' blob:; "
+            "script-src 'self' 'wasm-unsafe-eval' blob: https://maps.googleapis.com https://maps.gstatic.com; "
             f"connect-src {connect}; "
             "worker-src 'self' blob:; "
             "child-src 'self' blob:; "
+            "frame-src 'self' https://maps.googleapis.com https://www.google.com; "
             "manifest-src 'self'"
         )
         if cfg.is_production:
