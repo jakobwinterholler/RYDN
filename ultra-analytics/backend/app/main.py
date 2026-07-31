@@ -703,6 +703,22 @@ def delete_ultra(ultra_id: str, user: dict = Depends(current_user)) -> JSONRespo
     return JSONResponse({"deleted": ultra_id})
 
 
+def _athlete_weight_kg(user: dict) -> float | None:
+    """Strava (or other provider) athlete weight for W/kg — never invent."""
+    for conn in (user.get("providers") or {}).values():
+        athlete = (conn or {}).get("athlete") or {}
+        raw = athlete.get("weight")
+        if raw is None:
+            continue
+        try:
+            w = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if w > 0:
+            return round(w, 2)
+    return None
+
+
 @app.get("/api/rides/{ride_id}")
 async def get_ride(ride_id: str, user: dict = Depends(current_user)) -> JSONResponse:
     report = store.get_ride(user["id"], ride_id)
@@ -713,7 +729,12 @@ async def get_ride(ride_id: str, user: dict = Depends(current_user)) -> JSONResp
         report = await analyze_provider_ride(user, ride_id)  # lazy provider analysis
     if report is None:
         raise HTTPException(status_code=404, detail="Ride not found.")
-    return JSONResponse(report)
+    # Share-screen enrichments (not baked into cached analysis).
+    payload = store.get_ride_payload(user["id"], ride_id) or {}
+    out = dict(report)
+    out["source"] = payload.get("source") or "upload"
+    out["athleteWeightKg"] = _athlete_weight_kg(user)
+    return JSONResponse(out)
 
 
 @app.delete("/api/rides/{ride_id}")

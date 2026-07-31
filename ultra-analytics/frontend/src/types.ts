@@ -666,6 +666,12 @@ export interface Report {
     recommendations: string[];
     narrative: string[];
   };
+  /** Editorial polyline for the ride share first screen. */
+  route?: { points?: number[][] };
+  /** Where the ride came from — e.g. "strava" | "upload". */
+  source?: string;
+  /** Athlete body weight (kg) from Strava profile when known — for W/kg. */
+  athleteWeightKg?: number | null;
 }
 
 /** Stitched Ultra expedition analytics — one activity, not N day reports. */
