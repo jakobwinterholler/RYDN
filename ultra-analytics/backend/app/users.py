@@ -36,11 +36,30 @@ def _normalize(user: dict) -> dict:
     providers are separate concerns — connections live under user['providers']."""
     user.setdefault("providers", {})
     user.setdefault("onboardedAt", None)
+    user.setdefault("weightKg", None)
     # migrate any legacy embedded Strava connection into the providers map
     legacy = user.pop("strava", None)
     if legacy and "strava" not in user["providers"]:
         user["providers"]["strava"] = legacy
     return user
+
+
+# Body weight for W/kg — user-set profile value (kg). Clear with None.
+WEIGHT_KG_MIN = 30.0
+WEIGHT_KG_MAX = 200.0
+
+
+def parse_weight_kg(raw) -> float | None:
+    """Validate a profile weight. Returns None to clear. Raises ValueError if bad."""
+    if raw is None or raw == "":
+        return None
+    try:
+        w = float(raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError("Weight must be a number in kilograms.") from e
+    if not (WEIGHT_KG_MIN <= w <= WEIGHT_KG_MAX):
+        raise ValueError(f"Weight must be between {WEIGHT_KG_MIN:.0f} and {WEIGHT_KG_MAX:.0f} kg.")
+    return round(w, 1)
 
 
 def get_user(uid: str) -> Optional[dict]:
@@ -124,6 +143,11 @@ def get_or_create_dev_user() -> dict:
 def public_user(user: dict) -> dict:
     """The safe subset sent to the browser — identity only, never tokens.
     Provider *connection* status is served separately by /api/providers."""
+    weight = user.get("weightKg")
+    try:
+        weight_out = float(weight) if weight is not None else None
+    except (TypeError, ValueError):
+        weight_out = None
     return {
         "id": user["id"],
         "provider": user.get("provider"),  # the auth provider (google/local)
@@ -131,6 +155,7 @@ def public_user(user: dict) -> dict:
         "name": user.get("name"),
         "avatar": user.get("avatar"),
         "onboardedAt": user.get("onboardedAt"),
+        "weightKg": weight_out,
     }
 
 

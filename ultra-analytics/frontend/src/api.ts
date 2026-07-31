@@ -90,6 +90,16 @@ export async function markOnboarded(): Promise<User> {
   return (await res.json()) as User;
 }
 
+export async function updateProfile(patch: { weightKg?: number | null }): Promise<User> {
+  const res = await request("/api/auth/profile", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) await fail(res, "Could not save profile.");
+  return (await res.json()) as User;
+}
+
 // ---- ride providers ----
 export async function getProviders(): Promise<Provider[]> {
   const res = await request("/api/providers");

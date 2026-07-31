@@ -98,6 +98,8 @@ export interface User {
   name: string | null;
   avatar: string | null;
   onboardedAt: number | null;
+  /** User-set body weight (kg) for Avg W/kg. Null = unset (may fall back to Strava). */
+  weightKg?: number | null;
 }
 
 // A ride provider (where rides come from) — separate from auth.

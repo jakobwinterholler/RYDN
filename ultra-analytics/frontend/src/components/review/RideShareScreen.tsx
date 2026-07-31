@@ -5,8 +5,8 @@ import type { Report } from "../../types";
 import { cleanDayTitle } from "../ui/titles";
 import { fmtDate } from "../ui/format";
 import { fmtElapsed } from "../ui/ScoreLine";
-import RoutePreview from "../ui/RoutePreview";
 import UltraElevProfile from "../ui/UltraElevProfile";
+import RideShareMap from "./RideShareMap";
 
 type IntroReveal = "hold" | "play" | false;
 
@@ -102,7 +102,7 @@ export default function RideShareScreen({ report }: { report: Report }) {
       </div>
 
       <div className="ride-share__certificate">
-        <RoutePreview
+        <RideShareMap
           className="ride-share__map"
           points={points}
           reveal={introReveal}

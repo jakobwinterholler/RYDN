@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { devLogin, getAuthConfig, getMe, getProviders, logout, markOnboarded } from "../api";
+import {
+  devLogin,
+  getAuthConfig,
+  getMe,
+  getProviders,
+  logout,
+  markOnboarded,
+  updateProfile,
+} from "../api";
 import type { AuthConfig, Provider, User } from "../types";
 
 export interface AuthState {
@@ -11,6 +19,7 @@ export interface AuthState {
   refreshUser: () => Promise<void>;
   refreshProviders: () => Promise<void>;
   completeOnboarding: () => Promise<void>;
+  updateUserProfile: (patch: { weightKg?: number | null }) => Promise<User>;
   signInDev: () => Promise<void>;
   signInGoogle: () => void;
   signOut: () => Promise<void>;
@@ -60,6 +69,12 @@ export function useAuth(): AuthState {
     }
   }, []);
 
+  const updateUserProfile = useCallback(async (patch: { weightKg?: number | null }) => {
+    const next = await updateProfile(patch);
+    setUser(next);
+    return next;
+  }, []);
+
   const signInDev = useCallback(async () => {
     setError(null);
     try {
@@ -94,6 +109,7 @@ export function useAuth(): AuthState {
     refreshUser,
     refreshProviders: loadProviders,
     completeOnboarding,
+    updateUserProfile,
     signInDev,
     signInGoogle,
     signOut,

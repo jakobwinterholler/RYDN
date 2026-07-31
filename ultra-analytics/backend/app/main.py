@@ -704,7 +704,15 @@ def delete_ultra(ultra_id: str, user: dict = Depends(current_user)) -> JSONRespo
 
 
 def _athlete_weight_kg(user: dict) -> float | None:
-    """Strava (or other provider) athlete weight for W/kg — never invent."""
+    """Body weight for W/kg — prefer user profile, else provider athlete weight. Never invent."""
+    profile = user.get("weightKg")
+    if profile is not None:
+        try:
+            w = float(profile)
+            if 30.0 <= w <= 200.0:
+                return round(w, 2)
+        except (TypeError, ValueError):
+            pass
     for conn in (user.get("providers") or {}).values():
         athlete = (conn or {}).get("athlete") or {}
         raw = athlete.get("weight")

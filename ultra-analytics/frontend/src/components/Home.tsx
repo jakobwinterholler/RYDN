@@ -51,6 +51,7 @@ interface Props {
   onOpenRoute: (id: string) => void;
   onSignOut: () => void;
   onRefreshProviders: () => Promise<void>;
+  onUpdateProfile: (patch: { weightKg?: number | null }) => Promise<User>;
   bootError?: string | null;
   onDismissBootError?: () => void;
 }
@@ -66,6 +67,7 @@ export default function Home({
   onOpenRoute,
   onSignOut,
   onRefreshProviders,
+  onUpdateProfile,
   bootError,
   onDismissBootError,
 }: Props) {
@@ -233,6 +235,7 @@ export default function Home({
           onSync={runSync}
           onUpload={() => setShowUpload(true)}
           onSignOut={onSignOut}
+          onUpdateProfile={onUpdateProfile}
         />
       )}
 
@@ -545,6 +548,7 @@ function YouSpace({
   onSync,
   onUpload,
   onSignOut,
+  onUpdateProfile,
 }: {
   user: User;
   providers: Provider[];
@@ -552,9 +556,62 @@ function YouSpace({
   onSync: () => void;
   onUpload: () => void;
   onSignOut: () => void;
+  onUpdateProfile: (patch: { weightKg?: number | null }) => Promise<User>;
 }) {
   const connected = providers.find((p) => p.connected);
   const connectable = providers.find((p) => p.enabled && !p.connected);
+  const savedWeight =
+    user.weightKg != null && Number.isFinite(user.weightKg) ? String(user.weightKg) : "";
+  const [weightDraft, setWeightDraft] = useState(savedWeight);
+  const [weightBusy, setWeightBusy] = useState(false);
+  const [weightError, setWeightError] = useState<string | null>(null);
+  const [weightNotice, setWeightNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setWeightDraft(savedWeight);
+  }, [savedWeight]);
+
+  const saveWeight = async () => {
+    setWeightBusy(true);
+    setWeightError(null);
+    setWeightNotice(null);
+    const trimmed = weightDraft.trim().replace(",", ".");
+    try {
+      if (!trimmed) {
+        await onUpdateProfile({ weightKg: null });
+        setWeightNotice("Weight cleared.");
+      } else {
+        const n = Number(trimmed);
+        if (!Number.isFinite(n) || n < 30 || n > 200) {
+          setWeightError("Enter a weight between 30 and 200 kg.");
+          return;
+        }
+        await onUpdateProfile({ weightKg: Math.round(n * 10) / 10 });
+        setWeightNotice("Weight saved — used for Avg W/kg.");
+      }
+    } catch (e) {
+      setWeightError((e as Error).message);
+    } finally {
+      setWeightBusy(false);
+    }
+  };
+
+  const clearWeight = async () => {
+    setWeightDraft("");
+    setWeightBusy(true);
+    setWeightError(null);
+    setWeightNotice(null);
+    try {
+      await onUpdateProfile({ weightKg: null });
+      setWeightNotice("Weight cleared.");
+    } catch (e) {
+      setWeightError((e as Error).message);
+    } finally {
+      setWeightBusy(false);
+    }
+  };
+
+  const weightDirty = weightDraft.trim() !== savedWeight;
 
   return (
     <div className="space space--narrow">
@@ -567,6 +624,59 @@ function YouSpace({
         <div className="you-card__name">{user.name}</div>
         <div className="you-card__email">{user.email}</div>
       </div>
+
+      <section className="you-section">
+        <h2 className="space__label">Body weight</h2>
+        <p className="space__hint">
+          Used for Avg W/kg on the shareable ride screen. Overrides Strava athlete weight when set.
+        </p>
+        <label className="field you-weight">
+          <span>Weight (kg)</span>
+          <div className="you-weight__row">
+            <input
+              type="number"
+              inputMode="decimal"
+              min={30}
+              max={200}
+              step={0.1}
+              placeholder="e.g. 72"
+              value={weightDraft}
+              onChange={(e) => {
+                setWeightDraft(e.target.value);
+                setWeightError(null);
+                setWeightNotice(null);
+              }}
+              disabled={weightBusy}
+              aria-describedby="you-weight-hint"
+            />
+            <button
+              type="button"
+              className="btn btn--secondary"
+              onClick={() => void saveWeight()}
+              disabled={weightBusy || !weightDirty}
+            >
+              {weightBusy ? "Saving…" : "Save"}
+            </button>
+            {savedWeight ? (
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => void clearWeight()}
+                disabled={weightBusy}
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+        </label>
+        <p id="you-weight-hint" className="field__hint">
+          {savedWeight
+            ? `Current: ${savedWeight} kg`
+            : "Not set — W/kg uses Strava weight when available."}
+        </p>
+        {weightError ? <p className="you-weight__error">{weightError}</p> : null}
+        {weightNotice ? <p className="space__hint">{weightNotice}</p> : null}
+      </section>
 
       <section className="you-section">
         <h2 className="space__label">Connections</h2>

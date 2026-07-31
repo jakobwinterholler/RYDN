@@ -341,6 +341,7 @@ export default function App() {
         onOpenRoute={(id) => navigate({ kind: "route", routeId: id })}
         onSignOut={auth.signOut}
         onRefreshProviders={auth.refreshProviders}
+        onUpdateProfile={auth.updateUserProfile}
         bootError={bootError}
         onDismissBootError={() => setBootError(null)}
       />

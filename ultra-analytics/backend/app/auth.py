@@ -24,8 +24,10 @@ from .users import (
     COOKIE_NAME,
     get_user,
     get_or_create_dev_user,
+    parse_weight_kg,
     public_user,
     read_session,
+    save_user,
     sign_session,
     upsert_google_user,
 )
@@ -103,12 +105,31 @@ def mark_onboarded(request: Request) -> JSONResponse:
     """Record that the user has passed the first-launch provider prompt."""
     import time
 
-    from .users import save_user
-
     user = current_user(request)
     if not user.get("onboardedAt"):
         user["onboardedAt"] = time.time()
         save_user(user)
+    return JSONResponse(public_user(user))
+
+
+@router.patch("/profile")
+async def update_profile(request: Request) -> JSONResponse:
+    """Update editable profile fields (body weight for W/kg). Pass weightKg: null to clear."""
+    user = current_user(request)
+    try:
+        body = await request.json()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid JSON body.") from e
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object.")
+
+    if "weightKg" in body:
+        try:
+            user["weightKg"] = parse_weight_kg(body.get("weightKg"))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    save_user(user)
     return JSONResponse(public_user(user))
 
 

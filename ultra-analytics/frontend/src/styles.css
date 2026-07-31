@@ -520,6 +520,25 @@ input {
   color: var(--ink-tertiary);
   margin-top: 2px;
 }
+.you-weight {
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+.you-weight__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.you-weight__row input {
+  width: 7.5rem;
+  flex: 0 0 auto;
+}
+.you-weight__error {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #9b3b2e;
+}
 
 /* Ultra cabinet — premium dense shelf */
 .ultra-grid {
@@ -3802,6 +3821,27 @@ input {
 .ride-share__map.route-preview--empty {
   aspect-ratio: 640 / 320;
 }
+.ride-share-map {
+  position: relative;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--map-sea);
+  aspect-ratio: 640 / 320;
+}
+.ride-share-map__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.ride-share-map .maplibregl-ctrl-attrib {
+  font-size: 9px;
+  opacity: 0.55;
+  background: transparent !important;
+}
+.ride-share-map .maplibregl-ctrl-attrib a {
+  color: var(--ink-tertiary);
+}
 .ride-share__score {
   padding: 12px 4px 8px;
 }
@@ -5591,7 +5631,8 @@ input {
     padding-bottom: 10px;
   }
   .ride-share__map .route-preview__svg,
-  .ride-share__map.route-preview--empty {
+  .ride-share__map.route-preview--empty,
+  .ride-share-map {
     aspect-ratio: 640 / 280;
   }
   .ride-score__v {
