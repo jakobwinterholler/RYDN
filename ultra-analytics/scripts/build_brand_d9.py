@@ -250,8 +250,8 @@ def compose_wordmark(fill: str, with_bike: bool = False) -> str:
     return svg_doc(body, f"0 0 {x + pad_l + pad_r:.0f} {100 + pad_t + pad_b}")
 
 
-# Optically tuned R for 16–48 — baked forward lean, heavy stems, open counter.
-# Not a naive scale of the wordmark R; terminals snapped for small-size clarity.
+# Favicon-optimized R for 16–48 only — heavier stems, open counter, snapped terminals.
+# Large app icons use the full Direction #9 brandmark (letter_R Béziers), never this glyph upscaled.
 FAV_R = (
     "M8.2 4.2 "
     "L17.8 4.2 "
@@ -273,6 +273,23 @@ FAV_R = (
     "Z"
 )
 
+# Axis-aligned bounds of letter_R after -10° slant (design space, before icon padding).
+# x min from back-slanted left foot; x max from bowl control; y 0..100.
+_R_BOUNDS = (-17.63, 0.0, 86.0, 100.0)  # min_x, min_y, max_x, max_y
+
+
+def _mark_place(canvas: float, fill_ratio: float) -> tuple[str, float, float, float]:
+    """Return (path_d, translate_x, translate_y, scale) to optically center letter_R on a square canvas."""
+    d, _ = letter_R(0)
+    min_x, min_y, max_x, max_y = _R_BOUNDS
+    # Slight optical bias: italic R reads heavy on the right leg — nudge left/up a hair.
+    cx = (min_x + max_x) / 2 - 1.2
+    cy = (min_y + max_y) / 2 - 1.0
+    scale = (canvas * fill_ratio) / (max_y - min_y)
+    tx = canvas / 2 - cx * scale
+    ty = canvas / 2 - cy * scale
+    return d, tx, ty, scale
+
 
 def favicon_svg() -> str:
     return svg_doc(
@@ -291,14 +308,12 @@ def brandmark_svg(fill: str = "currentColor") -> str:
 
 
 def icon_master(bg: str, fg: str) -> str:
-    scale = 17.5
-    cx, cy = 15.2, 16.2
-    tx = 512 - cx * scale
-    ty = 512 - cy * scale
+    # Full brandmark R on paper. ~58% fill leaves Apple-safe optical margin (not edge-to-edge).
+    d, tx, ty, scale = _mark_place(1024.0, 0.58)
     return svg_doc(
         f'  <rect width="1024" height="1024" fill="{bg}"/>\n'
-        f'  <g transform="translate({tx:.1f},{ty:.1f}) scale({scale})">\n'
-        f'    <path fill="{fg}" fill-rule="evenodd" d="{FAV_R}"/>\n'
+        f'  <g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">\n'
+        f'    <path fill="{fg}" fill-rule="evenodd" d="{d}"/>\n'
         f"  </g>",
         "0 0 1024 1024",
         "1024",
@@ -307,14 +322,12 @@ def icon_master(bg: str, fg: str) -> str:
 
 
 def maskable_svg() -> str:
-    scale = 9.0
-    cx, cy = 15.2, 16.2
-    tx = 256 - cx * scale
-    ty = 256 - cy * scale
+    # Maskable safe zone ≈ center 80% circle — keep mark ~48% so it survives adaptive cropping.
+    d, tx, ty, scale = _mark_place(512.0, 0.48)
     return svg_doc(
         f'  <rect width="512" height="512" fill="{INK}"/>\n'
-        f'  <g transform="translate({tx:.1f},{ty:.1f}) scale({scale})">\n'
-        f'    <path fill="{WHITE}" fill-rule="evenodd" d="{FAV_R}"/>\n'
+        f'  <g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">\n'
+        f'    <path fill="{WHITE}" fill-rule="evenodd" d="{d}"/>\n'
         f"  </g>",
         "0 0 512 512",
     )
@@ -385,11 +398,12 @@ def main() -> None:
     write(BRAND / "loading-animation.svg", loading_animation_svg())
     write(BRAND / "icon-dark.svg", icon_master(INK, WHITE))
     write(BRAND / "icon-light.svg", icon_master(PAPER, INK))
+    mono_d, mono_tx, mono_ty, mono_s = _mark_place(1024.0, 0.58)
     write(
         BRAND / "icon-mono.svg",
         svg_doc(
-            f'  <g transform="translate({512 - 15.2 * 17.5:.1f},{512 - 16.2 * 17.5:.1f}) scale(17.5)">'
-            f'<path fill="{INK}" fill-rule="evenodd" d="{FAV_R}"/></g>',
+            f'  <g transform="translate({mono_tx:.2f},{mono_ty:.2f}) scale({mono_s:.4f})">'
+            f'<path fill="{INK}" fill-rule="evenodd" d="{mono_d}"/></g>',
             "0 0 1024 1024",
             "1024",
             "1024",
@@ -399,11 +413,11 @@ def main() -> None:
     write(PUBLIC / "icon-source.svg", icon_master(PAPER, INK))
     write(PUBLIC / "favicon.svg", favicon_svg())
     write(PUBLIC / "icon-maskable.svg", maskable_svg())
-    # In-app mark: 32×32 optically tuned R (same geometry as favicon glyph)
+    # In-app mark: favicon-tuned R for small UI; large icons use full brandmark via icon-source.svg
     write(
         SRC_ASSETS / "rydn-mark.svg",
         svg_doc(
-            f'  <!-- RYDN Direction #9 — geometric italic R (16×16 → 1024) -->\n'
+            f'  <!-- RYDN Direction #9 — favicon-tuned R (UI / 16–48). App icons use brandmark Béziers. -->\n'
             f'  <path fill="currentColor" fill-rule="evenodd" d="{FAV_R}"/>',
             "0 0 32 32",
         ),
@@ -432,13 +446,15 @@ render(BRAND+'/icon-light.svg', 192, BRAND+'/icon-192.png');
 render(BRAND+'/icon-light.svg', 512, BRAND+'/icon-512.png');
 render(PUBLIC+'/icon-maskable.svg', 512, BRAND+'/maskable-icon.png');
 render(BRAND+'/icon-dark.svg', 512, BRAND+'/social-avatar.png');
+// Tiny sizes: favicon-optimized SVG (never upscale a PNG).
 const f16 = render(BRAND+'/favicon.svg', 16, PUBLIC+'/icon-16.png');
 const f32 = render(BRAND+'/favicon.svg', 32, PUBLIC+'/icon-32.png');
 const f48 = render(BRAND+'/favicon.svg', 48, PUBLIC+'/icon-48.png');
 writeFileSync(BRAND+'/_f16.png', f16);
 writeFileSync(BRAND+'/_f32.png', f32);
 writeFileSync(BRAND+'/_f48.png', f48);
-for (const s of [72,96,120,128,144,152,167,180,192,256,384,512,1024]) {{
+// Every larger size rasterized directly from master SVG (resvg), never from a smaller PNG.
+for (const s of [64,72,96,120,128,144,152,167,180,192,256,384,512,1024]) {{
   render(PUBLIC+'/icon-source.svg', s, PUBLIC+`/icon-${{s}}.png`);
 }}
 copyFileSync(PUBLIC+'/icon-180.png', PUBLIC+'/apple-touch-icon.png');
