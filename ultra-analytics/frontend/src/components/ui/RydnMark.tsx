@@ -1,4 +1,4 @@
-/** RYDN brand mark — typographic R; leg becomes a route line + terminal dot. */
+/** RYDN brand mark — Direction #9 geometric italic R. */
 
 interface Props {
   size?: number;
@@ -7,9 +7,8 @@ interface Props {
 }
 
 /**
- * Direction B mark. Tuned for 16×16 recognition:
- * editorial serif stem + bowl; route-leg stroke; solid terminal.
- * Uses currentColor.
+ * Standalone R from Direction #9. Optically tuned for 16×16 recognition:
+ * forward lean, heavy stems, open counter. Uses currentColor.
  */
 export default function RydnMark({ size = 24, className, title = "RYDN" }: Props) {
   return (
@@ -26,16 +25,8 @@ export default function RydnMark({ size = 24, className, title = "RYDN" }: Props
       <path
         fill="currentColor"
         fillRule="evenodd"
-        d="M5.4 3.35H17.5c4.85 0 8.05 2.85 8.05 7.1 0 3.9-2.75 6.55-7.15 7H9.85V27.15h1.7v1.3H5.4v-1.3h1.65V4.65H5.4V3.35zm4.45 2.45v8.35h7.1c2.55 0 4.1-1.45 4.1-3.7 0-2.3-1.55-3.65-4.1-3.65h-7.1z"
+        d="M8.2 4.2H17.8c4.8 0 8.4 2.8 8.4 7.2 0 3.8-2.6 6.4-7 6.8L24.4 27.8h-5.3l-4.7-8.7h-2.8L9.5 27.8H4.8L8.2 4.2zm4 3.8v6.6h4.9c2.2 0 3.5-1.2 3.5-3.3S19.3 8 17.1 8H12.2z"
       />
-      <path
-        d="M15.2 17.45c2.05 1.75 2.9 4.35 4.35 6.3 1.45 2 3.85 3.1 6.95 2.3"
-        stroke="currentColor"
-        strokeWidth="1.85"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx="26.6" cy="25.9" r="2.15" fill="currentColor" />
     </svg>
   );
 }

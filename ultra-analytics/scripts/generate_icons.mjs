@@ -1,23 +1,32 @@
 #!/usr/bin/env node
 /**
- * Rasterize RYDN icons from the master SVG (not from a tiny favicon).
- * Apple / PWA recommended sizes. Requires: npm i -D @resvg/resvg-js (dev) or npx.
+ * Rasterize RYDN icons from Direction #9 masters.
+ * Prefers scripts/build_brand_d9.py (full brand pack). This script is a
+ * thin re-raster from frontend/public/icon-source.svg + favicon.svg.
  *
- * Run from repo: node scripts/generate_icons.mjs
- * Or: cd frontend && node ../scripts/generate_icons.mjs
+ * Run: node scripts/generate_icons.mjs
+ * Or:  python3 scripts/build_brand_d9.py
  */
 
-import { readFileSync, writeFileSync, copyFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PUBLIC = join(__dirname, "../frontend/public");
-const FRONTEND = join(__dirname, "../frontend");
-const SOURCE = join(PUBLIC, "icon-source.svg");
+const ROOT = join(__dirname, "..");
+const PUBLIC = join(ROOT, "frontend/public");
+const FRONTEND = join(ROOT, "frontend");
+const BRAND_BUILD = join(__dirname, "build_brand_d9.py");
 
-/** Apple HIG + common PWA / Android sizes */
+/** Prefer the full Direction #9 brand builder when available. */
+if (existsSync(BRAND_BUILD)) {
+  const r = spawnSync("python3", [BRAND_BUILD], { cwd: ROOT, stdio: "inherit" });
+  process.exit(r.status ?? 1);
+}
+
+const SOURCE = join(PUBLIC, "icon-source.svg");
 const SIZES = [16, 32, 48, 72, 96, 120, 128, 144, 152, 167, 180, 192, 256, 384, 512, 1024];
 const MASKABLE = [192, 512];
 
@@ -36,53 +45,33 @@ async function loadResvg() {
   }
 }
 
-function maskableSvg(masterSvg, size) {
-  // Safe zone ~80%: slightly more padding so the mark survives circular/squircle masks
-  const pad = Math.round(size * 0.12);
-  const inner = size - pad * 2;
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" fill="none">
-  <rect width="${size}" height="${size}" fill="#F7F6F3"/>
-  <svg x="${pad}" y="${pad}" width="${inner}" height="${inner}" viewBox="0 0 1024 1024">
-    ${masterSvg.replace(/<\?xml[^>]*>/, "").replace(/<svg[^>]*>/, "").replace(/<\/svg>\s*$/, "")}
-  </svg>
-</svg>`;
-}
-
 async function main() {
   mkdirSync(PUBLIC, { recursive: true });
   const { Resvg } = await loadResvg();
   const master = readFileSync(SOURCE, "utf8");
+  const fav = readFileSync(join(PUBLIC, "favicon.svg"));
 
-  for (const size of SIZES) {
-    const resvg = new Resvg(master, {
-      fitTo: { mode: "width", value: size },
-      background: "transparent",
-    });
-    const png = resvg.render().asPng();
-    const out = join(PUBLIC, `icon-${size}.png`);
-    writeFileSync(out, png);
-    console.log(`wrote icon-${size}.png (${png.length} bytes)`);
+  for (const size of [16, 32, 48]) {
+    const resvg = new Resvg(fav, { fitTo: { mode: "width", value: size }, background: "transparent" });
+    writeFileSync(join(PUBLIC, `icon-${size}.png`), resvg.render().asPng());
   }
 
+  for (const size of SIZES.filter((s) => s > 48)) {
+    const resvg = new Resvg(master, { fitTo: { mode: "width", value: size }, background: "transparent" });
+    writeFileSync(join(PUBLIC, `icon-${size}.png`), resvg.render().asPng());
+    console.log(`wrote icon-${size}.png`);
+  }
+
+  const maskable = readFileSync(join(PUBLIC, "icon-maskable.svg"));
   for (const size of MASKABLE) {
-    const svg = maskableSvg(master, size);
-    const resvg = new Resvg(svg, {
-      fitTo: { mode: "width", value: size },
-    });
-    const png = resvg.render().asPng();
-    writeFileSync(join(PUBLIC, `icon-maskable-${size}.png`), png);
-    console.log(`wrote icon-maskable-${size}.png`);
+    const resvg = new Resvg(maskable, { fitTo: { mode: "width", value: size } });
+    writeFileSync(join(PUBLIC, `icon-maskable-${size}.png`), resvg.render().asPng());
   }
 
-  // Apple touch aliases (exact recommended pixel sizes)
   copyFileSync(join(PUBLIC, "icon-180.png"), join(PUBLIC, "apple-touch-icon.png"));
   copyFileSync(join(PUBLIC, "icon-152.png"), join(PUBLIC, "apple-touch-icon-152.png"));
   copyFileSync(join(PUBLIC, "icon-167.png"), join(PUBLIC, "apple-touch-icon-167.png"));
-  console.log("wrote apple-touch-icon*.png");
-
-  // Favicon: keep the hand-tuned 16px vector (Direction B bold R). Do not overwrite from master.
-  console.log("kept favicon.svg (Direction B simplified mark)");
+  console.log("Direction #9 icons refreshed");
 }
 
 main().catch((e) => {

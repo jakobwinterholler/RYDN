@@ -3480,7 +3480,7 @@ input {
   margin: 0;
 }
 
-/* Editorial route-line loader — calm draw to terminal (Direction B) */
+/* Direction #9 loader — route draws (~1s), resolves into RYDN wordmark */
 .rydn-loader {
   display: flex;
   flex-direction: column;
@@ -3494,23 +3494,28 @@ input {
   color: var(--ink);
 }
 .rydn-loader__trail {
-  opacity: 0.16;
+  opacity: 0.14;
 }
 .rydn-loader__end {
-  opacity: 0.16;
+  opacity: 0.14;
 }
 .rydn-loader__start {
-  opacity: 0.92;
+  opacity: 0.9;
+  animation: rydnDotFade 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 .rydn-loader__draw {
   stroke-dasharray: 100;
   stroke-dashoffset: 100;
-  animation: rydnDraw 3.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  opacity: 0.85;
+  animation: rydnDraw 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  opacity: 0.88;
 }
 .rydn-loader__arrive {
   opacity: 0;
-  animation: rydnArrive 3.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: rydnArrive 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+.rydn-loader__wordmark {
+  opacity: 0;
+  animation: rydnResolve 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 .rydn-loader__label {
   margin: 0;
@@ -3521,45 +3526,77 @@ input {
 @keyframes rydnDraw {
   0% {
     stroke-dashoffset: 100;
-    opacity: 0.4;
+    opacity: 0.45;
   }
-  58% {
+  52% {
     stroke-dashoffset: 0;
     opacity: 0.9;
   }
-  82% {
+  68% {
     stroke-dashoffset: 0;
-    opacity: 0.9;
+    opacity: 0;
   }
   100% {
     stroke-dashoffset: 0;
-    opacity: 0.22;
+    opacity: 0;
   }
 }
 @keyframes rydnArrive {
   0%,
-  52% {
+  48% {
     opacity: 0;
   }
-  62%,
-  82% {
+  56%,
+  64% {
     opacity: 0.95;
   }
+  72%,
   100% {
-    opacity: 0.18;
+    opacity: 0;
+  }
+}
+@keyframes rydnDotFade {
+  0%,
+  52% {
+    opacity: 0.9;
+  }
+  68%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes rydnResolve {
+  0%,
+  58% {
+    opacity: 0;
+  }
+  70%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .rydn-loader__draw,
-  .rydn-loader__arrive {
+  .rydn-loader__arrive,
+  .rydn-loader__start,
+  .rydn-loader__wordmark {
     animation: none;
   }
   .rydn-loader__draw {
     stroke-dashoffset: 0;
-    opacity: 0.7;
+    opacity: 0;
   }
-  .rydn-loader__arrive {
-    opacity: 0.85;
+  .rydn-loader__wordmark {
+    opacity: 1;
+  }
+  .rydn-loader__start,
+  .rydn-loader__arrive,
+  .rydn-loader__trail,
+  .rydn-loader__end {
+    opacity: 0;
   }
 }
 .home2__empty {
