@@ -100,6 +100,62 @@ export async function updateProfile(patch: { weightKg?: number | null }): Promis
   return (await res.json()) as User;
 }
 
+export type RedeemResult = User & {
+  /** Client hint from special codes (e.g. RYDN-ONBOARD → "onboarding"). */
+  redeemAction?: string | null;
+};
+
+export async function redeemSubscriptionCode(code: string): Promise<RedeemResult> {
+  const res = await request("/api/subscription/redeem", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) await fail(res, "Could not redeem that code.");
+  return (await res.json()) as RedeemResult;
+}
+
+export async function getBillingStatus(): Promise<import("./types").BillingStatus> {
+  const res = await request("/api/billing/status");
+  if (!res.ok) await fail(res, "Could not load billing status.");
+  return (await res.json()) as import("./types").BillingStatus;
+}
+
+/** Starts Stripe Checkout — caller should navigate to ``url``. */
+export async function createBillingCheckoutSession(
+  interval: "month" | "year" = "month",
+): Promise<{ url: string }> {
+  const res = await request("/api/billing/checkout-session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ interval }),
+  });
+  if (!res.ok) await fail(res, "Could not start checkout.");
+  return (await res.json()) as { url: string };
+}
+
+export async function createBillingPortalSession(): Promise<{ url: string }> {
+  const res = await request("/api/billing/portal-session", { method: "POST" });
+  if (!res.ok) await fail(res, "Could not open billing portal.");
+  return (await res.json()) as { url: string };
+}
+
+export async function bootstrapBilling(): Promise<{ configured: boolean }> {
+  const res = await request("/api/billing/bootstrap", { method: "POST" });
+  if (!res.ok) await fail(res, "Could not finish Stripe setup.");
+  return (await res.json()) as { configured: boolean };
+}
+
+export async function createRacePassCheckout(routeId?: string): Promise<{ url: string }> {
+  const res = await request("/api/billing/race-pass-checkout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(routeId ? { routeId } : {}),
+  });
+  if (!res.ok) await fail(res, "Could not start Race Pass checkout.");
+  return (await res.json()) as { url: string };
+}
+
 // ---- ride providers ----
 export async function getProviders(): Promise<Provider[]> {
   const res = await request("/api/providers");
@@ -487,7 +543,7 @@ export async function listRides(): Promise<RideSummary[]> {
 
 export async function getCabinet(): Promise<Cabinet> {
   const res = await request("/api/cabinet");
-  if (!res.ok) await fail(res, "Could not load your Ultras.");
+  if (!res.ok) await fail(res, "Could not load your trips.");
   return (await res.json()) as Cabinet;
 }
 
@@ -511,20 +567,20 @@ export async function createUltra(body: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) await fail(res, "Could not create Ultra.");
+  if (!res.ok) await fail(res, "Could not create trip.");
   return (await res.json()) as Ultra;
 }
 
 export async function getUltra(id: string): Promise<UltraDetail> {
   const res = await request(`/api/ultras/${id}`);
-  if (!res.ok) await fail(res, "Ultra not found.");
+  if (!res.ok) await fail(res, "Trip not found.");
   return (await res.json()) as UltraDetail;
 }
 
 export async function getUltraAnalysis(id: string, force = false): Promise<UltraAnalysis> {
   const q = force ? "?force=true" : "";
   const res = await request(`/api/ultras/${id}/analysis${q}`);
-  if (!res.ok) await fail(res, "Could not load Ultra analytics.");
+  if (!res.ok) await fail(res, "Could not load trip analytics.");
   return (await res.json()) as UltraAnalysis;
 }
 
@@ -549,13 +605,13 @@ export async function patchUltra(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) await fail(res, "Could not update Ultra.");
+  if (!res.ok) await fail(res, "Could not update trip.");
   return (await res.json()) as UltraDetail;
 }
 
 export async function deleteUltra(id: string): Promise<void> {
   const res = await request(`/api/ultras/${id}`, { method: "DELETE" });
-  if (!res.ok) await fail(res, "Could not delete Ultra.");
+  if (!res.ok) await fail(res, "Could not delete trip.");
 }
 
 export async function getRide(id: string): Promise<Report> {

@@ -17,6 +17,7 @@ import httpx
 
 from ..config import get_config
 from ..models import Activity, Race, Sample
+from ..util.usage_meter import record as record_usage
 from .base import RideProvider
 
 _AUTH = "https://www.strava.com/oauth/authorize"
@@ -85,6 +86,7 @@ class StravaProvider(RideProvider):
                     "grant_type": "authorization_code",
                 },
             )
+        record_usage("strava.oauth", ok=res.is_success)
         res.raise_for_status()
         tok = res.json()
         athlete = tok.get("athlete", {})
@@ -112,6 +114,7 @@ class StravaProvider(RideProvider):
                     "refresh_token": connection["refreshToken"],
                 },
             )
+        record_usage("strava.oauth", ok=res.is_success)
         res.raise_for_status()
         tok = res.json()
         connection["accessToken"] = tok["access_token"]
@@ -127,6 +130,7 @@ class StravaProvider(RideProvider):
                 f"{_API}/athlete",
                 headers={"Authorization": f"Bearer {token}"},
             )
+            record_usage("strava.api", ok=res.is_success)
             res.raise_for_status()
             athlete = res.json()
         gear: Dict[str, str] = {}
@@ -158,6 +162,7 @@ class StravaProvider(RideProvider):
                         headers={"Authorization": f"Bearer {token}"},
                         params={"include_all_efforts": "false"},
                     )
+                    record_usage("strava.api", ok=res.status_code == 200)
                     if res.status_code == 429:
                         break
                     if res.status_code != 200:
@@ -215,6 +220,7 @@ class StravaProvider(RideProvider):
                     headers={"Authorization": f"Bearer {token}"},
                     params={"per_page": 200, "page": page},
                 )
+                record_usage("strava.api", ok=res.status_code == 200)
                 if res.status_code == 429:
                     break
                 res.raise_for_status()
@@ -236,6 +242,7 @@ class StravaProvider(RideProvider):
                 f"{_API}/activities/{external_id}",
                 headers={"Authorization": f"Bearer {token}"},
             )
+        record_usage("strava.api", ok=res.status_code == 200)
         if res.status_code != 200:
             return None
         act = res.json()
@@ -252,6 +259,7 @@ class StravaProvider(RideProvider):
                     "key_by_type": "true",
                 },
             )
+        record_usage("strava.api", ok=res.is_success)
         res.raise_for_status()
         return res.json()
 

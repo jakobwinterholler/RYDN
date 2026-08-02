@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from .config import get_config
 from .cookies import clear_cookie, cookie_kwargs
 from .oauth_origin import google_redirect_uri, provider_redirect_uri, request_origin
+from .util.usage_meter import record as record_usage
 from .users import (
     COOKIE_NAME,
     get_user,
@@ -190,14 +191,17 @@ async def google_callback(request: Request, code: str = "", state: str = "") -> 
             },
         )
         if token_res.status_code != 200:
+            record_usage("google_oauth", ok=False)
             return RedirectResponse(f"{origin}/?auth_error=token")
         access_token = token_res.json().get("access_token")
         info_res = await client.get(
             _GOOGLE_USERINFO, headers={"Authorization": f"Bearer {access_token}"}
         )
         if info_res.status_code != 200:
+            record_usage("google_oauth", ok=False)
             return RedirectResponse(f"{origin}/?auth_error=userinfo")
         info = info_res.json()
+    record_usage("google_oauth", ok=True)
 
     user = upsert_google_user(
         sub=info["sub"],

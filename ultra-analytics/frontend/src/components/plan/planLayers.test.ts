@@ -159,4 +159,33 @@ describe("Search → markerVisible pipeline", () => {
   it("does not expose Verified as a layers-panel category", () => {
     expect(LAYER_TOGGLES.some((t) => t.id === "verified")).toBe(false);
   });
+
+  it("never shows climb markers on the Plan/Ride map", () => {
+    const climb: PlanMarker = {
+      id: "climb-1",
+      lat: 48.14,
+      lon: 11.55,
+      kind: "climb",
+      layer: "system",
+      name: "Col",
+    };
+    expect(markerVisible(climb, DEFAULT_LAYERS, null)).toBe(false);
+    expect(markerVisible(climb, { ...DEFAULT_LAYERS, climbs: true }, null)).toBe(false);
+    expect(markerVisible(climb, DEFAULT_LAYERS, null, "climb-1")).toBe(false);
+  });
+
+  it("never shows critical-decision markers (they used the climb glyph)", () => {
+    const decision: PlanMarker = {
+      id: "remote-gap-1",
+      lat: 48.2,
+      lon: 11.6,
+      kind: "decision",
+      layer: "system",
+      name: "No services for 40 km",
+    };
+    expect(markerVisible(decision, DEFAULT_LAYERS, null)).toBe(false);
+    expect(markerVisible(decision, { ...DEFAULT_LAYERS, climbs: true }, null)).toBe(false);
+    expect(markerVisible(decision, DEFAULT_LAYERS, null, "remote-gap-1")).toBe(false);
+    expect(stopMatchesLayer(decision, "climbs")).toBe(false);
+  });
 });

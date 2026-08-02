@@ -277,9 +277,9 @@ async function loginLocal(page: Page) {
   await expect(page.getByRole("navigation", { name: /Primary/i })).toBeVisible({ timeout: 15_000 });
 }
 
-async function goSpace(page: Page, name: "Ultras" | "Library" | "You") {
-  if (name === "You") {
-    await page.getByRole("button", { name: "You", exact: true }).first().click();
+async function goSpace(page: Page, name: "Planning" | "Trips" | "Library" | "Account") {
+  if (name === "Account") {
+    await page.getByRole("button", { name: "Account", exact: true }).first().click();
     return;
   }
   await page.locator("nav[aria-label='Primary']").first().getByRole("button", { name, exact: true }).click();
@@ -290,14 +290,15 @@ test.describe("Critical journeys", () => {
     await installApi(page);
   });
 
-  test("login (local) lands in cabinet", async ({ page }) => {
+  test("login (local) lands in Planning", async ({ page }) => {
     await loginLocal(page);
-    await expect(page.getByRole("button", { name: "Ultras", exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Planning", exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Trips", exact: true }).first()).toBeVisible();
   });
 
-  test("sync Strava from You", async ({ page }) => {
+  test("sync Strava from Account", async ({ page }) => {
     await loginLocal(page);
-    await goSpace(page, "You");
+    await goSpace(page, "Account");
     await page.getByRole("button", { name: /Sync/i }).first().click();
     await expect(page.getByText(/Imported|up to date/i)).toBeVisible({ timeout: 10_000 });
   });
@@ -313,11 +314,11 @@ test.describe("Critical journeys", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
   });
 
-  test("create, edit, insights, back, delete Ultra, logout", async ({ page }) => {
+  test("create, edit, insights, back, delete trip, logout", async ({ page }) => {
     await loginLocal(page);
 
     await goSpace(page, "Library");
-    await page.getByRole("button", { name: /Group into Ultra/i }).first().click();
+    await page.getByRole("button", { name: /Group into trip/i }).first().click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await dialog.locator('input[placeholder="The Capitals"]').fill("Alps Traverse");
@@ -325,7 +326,7 @@ test.describe("Critical journeys", () => {
     await dialog.locator(".group-row").nth(1).click();
     await dialog.locator(".sheet__header .btn--primary").click();
 
-    await goSpace(page, "Ultras");
+    await goSpace(page, "Trips");
     await page.getByRole("button", { name: /Alps Traverse/i }).click();
     await expect(page.getByRole("heading", { name: /Alps Traverse/i })).toBeVisible();
 
@@ -336,7 +337,7 @@ test.describe("Critical journeys", () => {
     await edit.getByRole("button", { name: /^Save$/ }).first().click();
     await expect(page.getByRole("heading", { name: /Alps Traverse Edited/i })).toBeVisible();
 
-    const analyticsBtn = page.getByRole("button", { name: /See Ultra Analytics/i });
+    const analyticsBtn = page.getByRole("button", { name: /See trip analytics/i });
     await expect(analyticsBtn).toBeVisible();
     await analyticsBtn.click();
     await expect(page.getByRole("heading", { name: /Analytics/i })).toBeVisible();
@@ -345,11 +346,11 @@ test.describe("Critical journeys", () => {
 
     await page.getByRole("button", { name: /^Edit$/i }).click();
     page.once("dialog", (d) => d.accept());
-    await page.getByRole("button", { name: /Delete Ultra/i }).click();
-    await expect(page.getByRole("button", { name: "Ultras", exact: true }).first()).toBeVisible();
+    await page.getByRole("button", { name: /Delete trip/i }).click();
+    await expect(page.getByRole("button", { name: "Trips", exact: true }).first()).toBeVisible();
 
-    await goSpace(page, "You");
-    await page.getByRole("button", { name: /Sign out/i }).click();
+    await goSpace(page, "Account");
+    await page.getByRole("button", { name: /Log out|Sign out/i }).click();
     await expect(page.getByRole("button", { name: /Continue in local mode/i })).toBeVisible({
       timeout: 10_000,
     });

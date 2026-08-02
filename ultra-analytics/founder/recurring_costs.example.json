@@ -1,0 +1,16 @@
+{
+  "currency": "eur",
+  "note": "Optional overrides merged into paid_stack.json by id. Prefer founder/data/usage/paid_stack.json.",
+  "items": [
+    {
+      "id": "google-maps",
+      "amountCents": 0,
+      "note": "Paste monthly GCP Billing total (cents) when Maps usage exceeds free credit."
+    },
+    {
+      "id": "domain",
+      "amountCents": 1500,
+      "cadence": "year"
+    }
+  ]
+}

@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, Query
 from .auth import current_user
 from .config import get_config
 from .util.logging_util import log_event
+from .util.usage_meter import record as record_usage
 
 router = APIRouter(prefix="/api/maps", tags=["maps"])
 
@@ -63,15 +64,18 @@ async def fetch_street_view_metadata(
             resp = await client.get(_STREET_VIEW_META, params=params)
     except httpx.HTTPError as exc:
         log_event("maps.streetview_metadata_error", error=type(exc).__name__)
+        record_usage("google_maps.streetview_metadata", ok=False)
         return _unknown_payload()
 
     if not resp.is_success:
         log_event("maps.streetview_metadata_http", status=resp.status_code)
+        record_usage("google_maps.streetview_metadata", ok=False)
         return _unknown_payload()
 
     try:
         data = resp.json()
     except ValueError:
+        record_usage("google_maps.streetview_metadata", ok=False)
         return _unknown_payload()
 
     status = str(data.get("status") or "UNKNOWN")
@@ -80,6 +84,7 @@ async def fetch_street_view_metadata(
         lat_v = loc.get("lat")
         lng_v = loc.get("lng")
         pano = data.get("pano_id")
+        record_usage("google_maps.streetview_metadata", ok=True)
         return {
             "status": "OK",
             "available": True,
@@ -91,6 +96,7 @@ async def fetch_street_view_metadata(
             "pano_id": str(pano).strip() if isinstance(pano, str) and pano.strip() else None,
         }
     if status == "ZERO_RESULTS":
+        record_usage("google_maps.streetview_metadata", ok=True)
         return {
             "status": "ZERO_RESULTS",
             "available": False,
@@ -99,6 +105,7 @@ async def fetch_street_view_metadata(
         }
     # REQUEST_DENIED / OVER_QUERY_LIMIT / etc. — degrade gracefully
     log_event("maps.streetview_metadata_status", status=status)
+    record_usage("google_maps.streetview_metadata", ok=False)
     return _unknown_payload()
 
 
@@ -126,6 +133,7 @@ def maps_js_config(user: dict = Depends(current_user)) -> dict[str, Any]:
     key = cfg.google_maps_api_key
     if not key:
         return {"apiKey": None, "configured": False}
+    record_usage("google_maps.js_config", ok=True)
     return {"apiKey": key, "configured": True}
 
 

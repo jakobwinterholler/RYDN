@@ -77,9 +77,35 @@ matching will make it exact later.
 backend/          FastAPI analysis service
   app/parsing/    FIT / TCX / GPX → canonical Activity  (+ merge into a Race)
   app/analysis/   overview · performance · climbs · stops · ledger · pacing · summary
+  app/subscription/  tiers · feature gates · redeem codes (Stripe-ready hook)
   app/models.py   canonical data model (Sample / Activity / Race)
 frontend/         Vite + React report UI
 ```
 
 Adding a new source (Strava, Garmin, Coros Dura) means adding one parser that
 emits canonical `Activity` objects — the analysis layer never changes.
+
+## Accounts & subscription (no payments yet)
+
+Every logged-in account has `subscriptionTier`: `free` or `pro` (guest =
+unauthenticated). The backend user record is the source of truth; `/api/auth/me`
+exposes `subscriptionTier`. Feature access goes through `can_access` /
+`canAccess` — never invent Pro on the client.
+
+| Tier | Access |
+|------|--------|
+| **Free** | Library, Analytics, Certificates, Ultras / multi-day, ride history |
+| **Pro** | Planning, Verify, Ride mode, GPX export |
+
+**Redeem a code** on **You** (or `POST /api/subscription/redeem` with
+`{"code":"…"}`). Codes live in `backend/data/redeem_codes.json` (under
+`ULTRA_DATA_DIR` in production).
+
+**Dev / beta test codes (reusable):**
+- `RYDN-PRO-BETA` → Pro
+- `RYDN-FREE-TEST` → Free (QA reset)
+- `RYDN-ONBOARD` → open product onboarding (no plan change)
+
+Future Stripe (or any billing) should call
+`set_subscription_tier(user_id, "pro", source="stripe")` — gating code only
+reads the tier.

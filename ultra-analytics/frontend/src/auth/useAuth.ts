@@ -6,8 +6,11 @@ import {
   getProviders,
   logout,
   markOnboarded,
+  redeemSubscriptionCode,
   updateProfile,
+  type RedeemResult,
 } from "../api";
+import { clearOnboardingSeen } from "../onboarding/persistence";
 import type { AuthConfig, Provider, User } from "../types";
 
 export interface AuthState {
@@ -20,6 +23,7 @@ export interface AuthState {
   refreshProviders: () => Promise<void>;
   completeOnboarding: () => Promise<void>;
   updateUserProfile: (patch: { weightKg?: number | null }) => Promise<User>;
+  redeemCode: (code: string) => Promise<RedeemResult>;
   signInDev: () => Promise<void>;
   signInGoogle: () => void;
   signOut: () => Promise<void>;
@@ -75,6 +79,15 @@ export function useAuth(): AuthState {
     return next;
   }, []);
 
+  const redeemCode = useCallback(async (code: string) => {
+    const redeemed = await redeemSubscriptionCode(code);
+    // Re-read /api/auth/me so the shell always reflects persisted tier.
+    const me = await getMe();
+    if (!me) throw new Error("Signed out — sign in again to see your plan.");
+    setUser(me);
+    return { ...me, redeemAction: redeemed.redeemAction ?? null };
+  }, []);
+
   const signInDev = useCallback(async () => {
     setError(null);
     try {
@@ -96,6 +109,7 @@ export function useAuth(): AuthState {
       setError((e as Error).message);
       return;
     }
+    clearOnboardingSeen();
     setUser(null);
     setProviders([]);
   }, []);
@@ -110,6 +124,7 @@ export function useAuth(): AuthState {
     refreshProviders: loadProviders,
     completeOnboarding,
     updateUserProfile,
+    redeemCode,
     signInDev,
     signInGoogle,
     signOut,

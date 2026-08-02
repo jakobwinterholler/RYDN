@@ -1,10 +1,11 @@
 /** Interactive planning map — MapLibre + OpenFreeMap Liberty (keyless vector). */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type MapMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { ensurePlanSprites, iconForMarker, markerImageId, type ClusterTone } from "./icons";
 import type { PlanMarker } from "./planLayers";
+import { normalizePlanSearchBBox, wrapLongitude } from "./planSearchUi";
 
 /** OpenFreeMap Liberty — roads, paths, water, forests, places. No API key. */
 export const PLAN_MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
@@ -32,6 +33,12 @@ export interface PlanMapBBox {
   east: number;
 }
 
+/** Live camera read — Search must not rely on possibly stale React bbox state. */
+export interface PlanMapViewApi {
+  getCenter: () => { lat: number; lon: number } | null;
+  getBBox: () => PlanMapBBox | null;
+}
+
 interface Props {
   points: number[][];
   markers: PlanMarker[];
@@ -45,6 +52,23 @@ interface Props {
   onSelectMarker?: (id: string) => void;
   /** Map center — used for nearest panel. Debounced by parent via this callback. */
   onViewChange?: (center: { lat: number; lon: number }, bbox: PlanMapBBox, userMoved: boolean) => void;
+  /** Filled with live getCenter/getBBox once the map exists. */
+  viewApiRef?: MutableRefObject<PlanMapViewApi | null>;
+}
+
+function readMapBBox(map: MapLibreMap): PlanMapBBox {
+  const b = map.getBounds();
+  return normalizePlanSearchBBox({
+    south: b.getSouth(),
+    west: b.getWest(),
+    north: b.getNorth(),
+    east: b.getEast(),
+  });
+}
+
+function readMapCenter(map: MapLibreMap): { lat: number; lon: number } {
+  const c = map.getCenter();
+  return { lat: c.lat, lon: wrapLongitude(c.lng) };
 }
 
 function validPts(points: number[][]): number[][] {
@@ -223,7 +247,7 @@ function fitRoute(map: MapLibreMap, points: number[][]) {
   if (pts.length < 2) return;
   const bounds = new maplibregl.LngLatBounds([pts[0][1], pts[0][0]], [pts[0][1], pts[0][0]]);
   for (const p of pts) bounds.extend([p[1], p[0]]);
-  map.fitBounds(bounds, { padding: 56, maxZoom: 12, duration: 480 });
+  map.fitBounds(bounds, { padding: 56, maxZoom: 12, duration: 480, bearing: 0 });
 }
 
 /** Pick dominant category tone for a cluster from aggregated counts. */
@@ -309,6 +333,28 @@ function ensureLayers(map: MapLibreMap) {
     });
   }
 
+  // Subtle direction chevrons along the GPX — same source as the route line.
+  if (map.getSource("route") && !map.getLayer("route-direction")) {
+    map.addLayer({
+      id: "route-direction",
+      type: "symbol",
+      source: "route",
+      layout: {
+        "symbol-placement": "line",
+        "symbol-spacing": 70,
+        "icon-image": "rydn-route-chevron",
+        "icon-size": 0.4,
+        "icon-rotation-alignment": "map",
+        "icon-pitch-alignment": "map",
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+      },
+      paint: {
+        "icon-opacity": 0.52,
+      },
+    });
+  }
+
   if (!map.getSource("ends")) {
     map.addSource("ends", { type: "geojson", data: endsToGeoJSON([]) });
     map.addLayer({
@@ -348,11 +394,11 @@ function ensureLayers(map: MapLibreMap) {
     ["linear"],
     ["get", "point_count"],
     2,
-    0.55,
+    0.72,
     10,
-    0.65,
+    0.84,
     25,
-    0.75,
+    0.96,
   ];
   if (!map.getLayer("stops-clusters")) {
     map.addLayer({
@@ -374,7 +420,7 @@ function ensureLayers(map: MapLibreMap) {
     map.setLayoutProperty("stops-clusters", "icon-size", clusterSizeExpr);
   }
 
-  // Halo under selected / nearest-5 / hover (unclustered only) — sized for half markers
+  // Halo under selected / nearest-5 / hover (unclustered only) — matches larger markers
   const haloRadiusExpr: maplibregl.ExpressionSpecification = [
     "interpolate",
     ["linear"],
@@ -383,22 +429,22 @@ function ensureLayers(map: MapLibreMap) {
     [
       "case",
       ["boolean", ["feature-state", "hover"], false],
-      7,
+      10,
       ["==", ["get", "selected"], 1],
-      6.5,
+      9.5,
       ["==", ["get", "emphasize"], 1],
-      6,
+      8.5,
       0,
     ],
     14,
     [
       "case",
       ["boolean", ["feature-state", "hover"], false],
-      11,
+      15,
       ["==", ["get", "selected"], 1],
-      10,
+      14,
       ["==", ["get", "emphasize"], 1],
-      9,
+      12.5,
       0,
     ],
   ];
@@ -447,19 +493,19 @@ function ensureLayers(map: MapLibreMap) {
     ],
     ["coalesce", ["to-number", ["get", "pop"]], 1],
   ];
-  // ~50% of prior on-map size (sprites stay ~48–56px logical @ pixelRatio 2)
+  // Outdoor glanceable size (sprites ~60–68px logical @ pixelRatio 2)
   const iconSizeExpr: maplibregl.ExpressionSpecification = [
     "interpolate",
     ["linear"],
     ["zoom"],
     7,
-    stateMul(0.48),
+    stateMul(0.7),
     10,
-    stateMul(0.62),
+    stateMul(0.88),
     13,
-    stateMul(0.78),
+    stateMul(1.05),
     16,
-    stateMul(0.92),
+    stateMul(1.18),
   ];
   const iconOpacityExpr: maplibregl.ExpressionSpecification = [
     "*",
@@ -541,6 +587,7 @@ export default function PlanMap({
   searching = false,
   onSelectMarker,
   onViewChange,
+  viewApiRef,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -548,6 +595,8 @@ export default function PlanMap({
   const hoveredIdRef = useRef<string | null>(null);
   const onSelectRef = useRef(onSelectMarker);
   const onViewRef = useRef(onViewChange);
+  const viewApiHostRef = useRef(viewApiRef);
+  viewApiHostRef.current = viewApiRef;
   const pointsRef = useRef(points);
   const markersRef = useRef(markers);
   const selectedRef = useRef(selectedId);
@@ -669,16 +718,38 @@ export default function PlanMap({
       style: PLAN_MAP_STYLE,
       center: [10, 48],
       zoom: 5,
+      bearing: 0,
       attributionControl: { compact: true },
       dragRotate: false,
       pitchWithRotate: false,
+      touchPitch: false,
       fadeDuration: 180,
       maxPitch: 0,
     });
+    // Always north-up — no two-finger rotate / bearing gestures.
+    map.dragRotate.disable();
+    map.touchZoomRotate.disableRotation();
     mapRef.current = map;
+    const lockNorth = () => {
+      if (Math.abs(map.getBearing()) > 0.01) map.setBearing(0);
+    };
+    map.on("rotate", lockNorth);
+    map.on("rotateend", lockNorth);
     if (typeof window !== "undefined" && import.meta.env.DEV) {
       (window as unknown as { __planMap?: MapLibreMap }).__planMap = map;
     }
+
+    const viewApi: PlanMapViewApi = {
+      getCenter: () => {
+        const m = mapRef.current;
+        return m ? readMapCenter(m) : null;
+      },
+      getBBox: () => {
+        const m = mapRef.current;
+        return m ? readMapBBox(m) : null;
+      },
+    };
+    if (viewApiHostRef.current) viewApiHostRef.current.current = viewApi;
 
     const applyFallback = (reason: string) => {
       if (cancelled || usedFallback) return;
@@ -696,31 +767,36 @@ export default function PlanMap({
       "top-right",
     );
 
+    const emitView = () => {
+      onViewRef.current?.(readMapCenter(map), readMapBBox(map), userMovedRef.current);
+    };
+
+    // Search reads live getBBox() — do not thrash emit on every ResizeObserver tick
+    // (iOS URL-bar / desktop scrollbar loops). Debounce resize + single settle emit.
+    let resizeTimer: number | null = null;
+    const resizeMap = (emitAfter: boolean) => {
+      if (cancelled || !mapRef.current) return;
+      map.resize();
+      if (emitAfter) emitView();
+    };
+    const scheduleResize = () => {
+      if (resizeTimer != null) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null;
+        resizeMap(true);
+      }, 80);
+    };
+
     requestAnimationFrame(() => {
-      if (!cancelled) map.resize();
+      if (!cancelled) resizeMap(true);
     });
     const ro =
       typeof ResizeObserver !== "undefined"
         ? new ResizeObserver(() => {
-            if (!cancelled && mapRef.current) map.resize();
+            scheduleResize();
           })
         : null;
     ro?.observe(el);
-
-    const emitView = () => {
-      const c = map.getCenter();
-      const b = map.getBounds();
-      onViewRef.current?.(
-        { lat: c.lat, lon: c.lng },
-        {
-          south: b.getSouth(),
-          west: b.getWest(),
-          north: b.getNorth(),
-          east: b.getEast(),
-        },
-        userMovedRef.current,
-      );
-    };
 
     const onMoveEnd = () => emitView();
     const onDragStart = () => {
@@ -755,7 +831,7 @@ export default function PlanMap({
         const source = map.getSource("stops") as GeoJSONSource | undefined;
         if (source && clusterId != null && coords) {
           void source.getClusterExpansionZoom(clusterId).then((zoom) => {
-            map.easeTo({ center: [coords[0], coords[1]], zoom, duration: 380 });
+            map.easeTo({ center: [coords[0], coords[1]], zoom, duration: 380, bearing: 0 });
           });
         }
         return;
@@ -779,7 +855,7 @@ export default function PlanMap({
           const nearEdge =
             pad.x < 48 || pad.y < 56 || pad.x > width - 48 || pad.y > height - 160;
           if (nearEdge) {
-            map.easeTo({ center: [lon, lat], duration: 380, offset: [0, -56] });
+            map.easeTo({ center: [lon, lat], duration: 380, offset: [0, -56], bearing: 0 });
           }
         }
       }
@@ -862,12 +938,18 @@ export default function PlanMap({
     return () => {
       cancelled = true;
       window.clearTimeout(fallbackTimer);
+      if (resizeTimer != null) window.clearTimeout(resizeTimer);
       if (popRafRef.current != null) {
         cancelAnimationFrame(popRafRef.current);
         popRafRef.current = null;
       }
       ro?.disconnect();
       clearHover();
+      map.off("rotate", lockNorth);
+      map.off("rotateend", lockNorth);
+      if (viewApiHostRef.current?.current === viewApi) {
+        viewApiHostRef.current.current = null;
+      }
       map.remove();
       mapRef.current = null;
     };
@@ -921,6 +1003,7 @@ export default function PlanMap({
         zoom: Math.max(map.getZoom(), 14),
         duration: 420,
         offset: [0, -56],
+        bearing: 0,
       });
       return;
     }
@@ -933,6 +1016,7 @@ export default function PlanMap({
       padding: { top: 72, bottom: 140, left: 48, right: 72 },
       maxZoom: 14,
       duration: 520,
+      bearing: 0,
     });
     // Only when the focus set identity changes (QA toggle / card tap)
     // eslint-disable-next-line react-hooks/exhaustive-deps

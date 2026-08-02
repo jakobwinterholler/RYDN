@@ -85,6 +85,53 @@ def bbox_intersects(
     return not (an < bs or bn < as_ or ae < bw or be < aw)
 
 
+def wrap_longitude(lon: float) -> float:
+    """Wrap longitude into (-180, 180]."""
+    x = ((float(lon) + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
+    return 180.0 if x == -180.0 else x
+
+
+def normalize_viewport_bbox(
+    south: float, west: float, north: float, east: float
+) -> Tuple[float, float, float, float]:
+    """Snap MapLibre unwrapped lng (±360·k) into principal range; keep span.
+
+    Desktop world-copy pans often report west/east near 360+ while OSM POIs
+    live near lon≈0–3 — without this, spatial filter returns zero hits.
+
+    When west>east (antimeridian / inverted), wrap each edge independently if
+    that yields a sane principal box; otherwise reject.
+    """
+    s, n = float(south), float(north)
+    if s > n:
+        s, n = n, s
+    west_f, east_f = float(west), float(east)
+    span_lon = east_f - west_f
+    if span_lon < 0:
+        # Inverted or dateline-crossing in principal coords — try independent wrap.
+        w2, e2 = wrap_longitude(west_f), wrap_longitude(east_f)
+        if w2 < e2:
+            west_f, east_f = w2, e2
+            span_lon = east_f - west_f
+        else:
+            raise ValueError("Invalid bounding box.")
+    mid = wrap_longitude((west_f + east_f) / 2.0)
+    half = span_lon / 2.0
+    w, e = mid - half, mid + half
+    # Degenerate / zero-area viewports (map not laid out yet).
+    if s >= n or w >= e or (n - s) < 1e-9 or (e - w) < 1e-9:
+        raise ValueError("Invalid bounding box.")
+    return (s, w, n, e)
+
+
+def corridor_has_pois(corridor: Optional[Dict[str, Any]]) -> bool:
+    """True when a corridor blob has at least one POI (empty ≠ warm cache)."""
+    if not corridor or not isinstance(corridor, dict):
+        return False
+    pois = corridor.get("pois")
+    return isinstance(pois, list) and len(pois) > 0
+
+
 def load_corridor_cache(fingerprint: str) -> Optional[Dict[str, Any]]:
     path = _cache_path(fingerprint)
     if not os.path.isfile(path):
@@ -95,6 +142,9 @@ def load_corridor_cache(fingerprint: str) -> Optional[Dict[str, Any]]:
         if int(data.get("schema") or 0) < CACHE_SCHEMA:
             return None
         if not isinstance(data.get("pois"), list):
+            return None
+        # Poisoned empty corridor from a failed Overpass build must not stick forever.
+        if not data["pois"]:
             return None
         return data
     except (OSError, json.JSONDecodeError, TypeError, ValueError):

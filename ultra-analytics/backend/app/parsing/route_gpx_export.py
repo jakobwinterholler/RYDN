@@ -1,16 +1,20 @@
-"""GPX 1.1 export for planned routes — course geometry + verified water/shop waypoints.
+"""GPX 1.1 export for planned routes — course geometry + verified stops only.
 
-GPX ``<sym>`` has no formal enum; Garmin names are the de-facto interchange standard
-and the ones most bike computers (Garmin, Coros, Wahoo, Hammerhead, Polar) map when
-importing waypoints.
+Export never copies imported ``<wpt>`` / checkpoints from the source GPX.
+The track comes from the course geometry; waypoints are rebuilt from RYDN
+verified water / shop / hotel (sleep) only.
 
-Choices (prefer proximity-alert-capable icons without custom device config):
-- Water → ``Drinking Water`` — classic Garmin outdoors symbol; widely listed
-  (BaseCamp/Montana custom-symbol tables, plotaroute GPX support) and commonly
-  preserved through Connect / Edge imports.
-- Shop  → ``Shopping Center`` — classic Garmin POI symbol for markets/stores.
-  There is no universal GPX ``Store`` / ``Supermarket``; FIT course-point type
-  ``store`` is a separate format. Avoid ``Restaurant`` (dining) for food shops.
+GPX ``<sym>`` has no formal enum; Garmin names are the de-facto interchange
+standard and what Coros / Wahoo / Hammerhead typically map on import.
+
+Coros choices (plain names + Garmin-compatible symbols):
+- Water → name ``Water``, ``<sym>Drinking Water</sym>``, ``<type>Water</type>``
+  Classic outdoors refill icon; Coros shows imported waypoints as checkpoints
+  and preserves common Garmin symbols when present.
+- Shop  → name ``Shop``, ``<sym>Shopping Center</sym>``, ``<type>Shop</type>``
+  Markets/stores (not cafés). No universal GPX ``Store``; avoid ``Restaurant``.
+- Hotel → name ``Hotel``, ``<sym>Lodging</sym>``, ``<type>Hotel</type>``
+  Sleep / hotel / hostel / camping verified by the rider.
 """
 
 from __future__ import annotations
@@ -28,12 +32,16 @@ GPX_SCHEMA_LOC = (
     "http://www.topografix.com/GPX/1/1/gpx.xsd"
 )
 
-# Garmin-compatible waypoint symbols (see module docstring).
+# Garmin-compatible waypoint symbols (see module docstring). Coros maps these
+# better than free-form text; FIT course-point types are a separate format.
 SYM_WATER = "Drinking Water"
 SYM_SHOP = "Shopping Center"
+SYM_HOTEL = "Lodging"
 
-NAME_WATER = "💧"
-NAME_SHOP = "🛒"
+# Plain Coros-friendly labels — no emojis (device lists truncate / garble them).
+NAME_WATER = "Water"
+NAME_SHOP = "Shop"
+NAME_HOTEL = "Hotel"
 
 ET.register_namespace("", GPX_NS)
 ET.register_namespace("xsi", GPX_XSI)
@@ -74,8 +82,20 @@ def is_export_shop(stop: Dict[str, Any]) -> bool:
     return group == "resupply"
 
 
+def is_export_hotel(stop: Dict[str, Any]) -> bool:
+    """Verified sleep — hotel / hostel / camping / shelter."""
+    cat = (stop.get("category") or "").lower()
+    group = (stop.get("group") or "").lower()
+    if group == "sleep":
+        return True
+    return any(
+        x in cat
+        for x in ("hotel", "hostel", "motel", "guesthouse", "guest house", "camping", "campsite", "shelter", "hut")
+    )
+
+
 def filter_export_waypoints(stops: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Verified water + shop only; rejects sleep/café/bike/unverified."""
+    """Verified water + shop + hotel/sleep only; rejects café/bike/unverified."""
     out: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for stop in stops:
@@ -95,6 +115,8 @@ def filter_export_waypoints(stops: Iterable[Dict[str, Any]]) -> List[Dict[str, A
             kind = "water"
         elif is_export_shop(stop):
             kind = "shop"
+        elif is_export_hotel(stop):
+            kind = "hotel"
         if kind is None:
             continue
         sid = str(stop.get("id") or f"{lat_f:.6f},{lon_f:.6f}")
@@ -147,13 +169,21 @@ def _safe_filename(name: str) -> str:
     return f"{stem}.gpx"
 
 
+def _wpt_labels(kind: str) -> Tuple[str, str, str]:
+    if kind == "water":
+        return NAME_WATER, SYM_WATER, "Water"
+    if kind == "hotel":
+        return NAME_HOTEL, SYM_HOTEL, "Hotel"
+    return NAME_SHOP, SYM_SHOP, "Shop"
+
+
 def build_export_gpx(
     *,
     name: str,
     track_points: Sequence[Tuple[float, float, Optional[float]]],
     waypoints: Sequence[Dict[str, Any]],
 ) -> bytes:
-    """Emit standards-compliant GPX 1.1 with ``<trk>`` + filtered ``<wpt>``."""
+    """Emit GPX 1.1 with ``<trk>`` + filtered verified ``<wpt>`` only (no source POIs)."""
     root = ET.Element(
         f"{{{GPX_NS}}}gpx",
         {
@@ -167,17 +197,12 @@ def build_export_gpx(
     root.append(meta)
 
     for stop in waypoints:
-        kind = stop.get("_exportKind")
+        kind = str(stop.get("_exportKind") or "shop")
+        label, sym, wpt_type = _wpt_labels(kind)
         wpt = _el("wpt", lat=f"{float(stop['lat']):.7f}", lon=f"{float(stop['lon']):.7f}")
-        if kind == "water":
-            wpt.append(_el("name", NAME_WATER))
-            wpt.append(_el("sym", SYM_WATER))
-            wpt.append(_el("type", "Water"))
-        else:
-            wpt.append(_el("name", NAME_SHOP))
-            wpt.append(_el("sym", SYM_SHOP))
-            wpt.append(_el("type", "Shop"))
-        # Optional human hint for apps that ignore emoji names; keep <name> emoji-only.
+        wpt.append(_el("name", label))
+        wpt.append(_el("sym", sym))
+        wpt.append(_el("type", wpt_type))
         cat = stop.get("category")
         if cat:
             wpt.append(_el("desc", str(cat)))
@@ -200,7 +225,6 @@ def build_export_gpx(
     rough = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     try:
         pretty = minidom.parseString(rough).toprettyxml(indent="  ", encoding="utf-8")
-        # minidom adds an extra XML declaration line we already have via encoding=
         return pretty
     except Exception:
         return rough

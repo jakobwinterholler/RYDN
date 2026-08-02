@@ -25,7 +25,7 @@ function sourceLabel(report: Report): string {
     return "Strava";
   }
   if (src === "upload") return "Upload";
-  return report.race.kind === "race" ? "Ultra Race" : "Training Ride";
+  return report.race.kind === "race" ? "Race" : "Training Ride";
 }
 
 function sportLabel(report: Report): string {

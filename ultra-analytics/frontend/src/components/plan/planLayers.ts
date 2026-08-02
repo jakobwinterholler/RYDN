@@ -100,12 +100,10 @@ export const QUICK_ACTIONS: {
   id: QuickActionId;
   label: string;
   layer: PlanLayerId;
-  emoji: string;
 }[] = [
-  // Real emoji characters (bed includes VS16 → 🛏️)
-  { id: "water", label: "Water", layer: "water", emoji: "\u{1F4A7}" },
-  { id: "food", label: "Shops", layer: "food", emoji: "\u{1F6D2}" },
-  { id: "sleep", label: "Sleep", layer: "sleep", emoji: "\u{1F6CF}\u{FE0F}" },
+  { id: "water", label: "Water", layer: "water" },
+  { id: "food", label: "Shops", layer: "food" },
+  { id: "sleep", label: "Sleep", layer: "sleep" },
 ];
 
 /** Layer id labels (tests / docs). Verified is a badge on icons, not a QA category. */
@@ -114,7 +112,6 @@ export const LAYER_TOGGLES: { id: PlanLayerId; label: string }[] = [
   { id: "food", label: "Shops" },
   { id: "sleep", label: "Sleep" },
   { id: "rejected", label: "Rejected" },
-  { id: "climbs", label: "Climbs" },
   { id: "remote", label: "Remote" },
   { id: "stages", label: "Stages" },
 ];
@@ -162,7 +159,9 @@ export function stopMatchesLayer(m: PlanMarker, layer: PlanLayerId): boolean {
     case "rejected":
       return m.status === "rejected";
     case "climbs":
-      return m.kind === "climb" || m.kind === "decision";
+      // Climb layer is retired on Plan/Ride — never match decisions either
+      // (they previously shared the mountain glyph and looked like climbs).
+      return false;
     case "remote":
       return m.kind === "remote";
     case "stages":
@@ -196,19 +195,15 @@ export function markerVisible(
   qa: QuickActionId | null,
   selectedId?: string | null,
 ): boolean {
+  // Climbs + critical-decision pins never appear on Plan/Ride maps.
+  // Decisions used the mountain glyph and read as climb pins; analysis/briefing keep them.
+  if (m.kind === "climb" || m.kind === "decision") return false;
+
   if (selectedId && m.id === selectedId) return true;
 
   if (m.status === "rejected" && !layers.rejected) return false;
 
   // Warnings / structure — never flooded by QA unless they match
-  if (m.kind === "decision") {
-    if (qa) return false;
-    return true;
-  }
-  if (m.kind === "climb") {
-    if (qa) return false;
-    return layers.climbs;
-  }
   if (m.kind === "remote") {
     if (qa) return false;
     return layers.remote;

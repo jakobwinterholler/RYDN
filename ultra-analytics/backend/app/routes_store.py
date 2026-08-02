@@ -157,6 +157,7 @@ def _summary(route: dict) -> dict:
         "verificationProgress": {"done": done, "total": len(checks)},
         "objectType": "route",
         "hasAnalysis": bool(route.get("hasAnalysis")),
+        "proUnlock": route.get("proUnlock") if isinstance(route.get("proUnlock"), dict) else None,
     }
 
 
@@ -187,6 +188,15 @@ def get_route(uid: str, route_id: str) -> Optional[dict]:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def set_pro_unlock(uid: str, route_id: str, unlock: Dict[str, Any]) -> Optional[dict]:
+    """Attach a Race Pass (or similar) unlock to one planned route."""
+    route = get_route(uid, route_id)
+    if not route:
+        return None
+    route["proUnlock"] = dict(unlock)
+    return _save(uid, route)
 
 
 def _save(uid: str, route: dict) -> dict:
@@ -451,10 +461,11 @@ def get_route_analysis(
 
 
 def export_route_gpx(uid: str, route_id: str) -> Optional[tuple]:
-    """Build GPX 1.1 for a planned route: course track + verified water/shop waypoints.
+    """Build GPX 1.1: course track only + verified water/shop/hotel waypoints.
 
-    Returns ``(filename, gpx_bytes)`` or ``None`` if the route is missing.
-    Auth/ownership is enforced by the caller via uid-scoped paths.
+    Never re-emits imported source POIs/checkpoints — track from geometry,
+    waypoints rebuilt from RYDN verified stops. Returns ``(filename, gpx_bytes)``
+    or ``None`` if the route is missing.
     """
     from .parsing.route_gpx_export import (
         build_export_gpx,

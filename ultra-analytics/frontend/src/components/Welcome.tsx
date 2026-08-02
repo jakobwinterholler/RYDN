@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getAuthConfig } from "../api";
 import type { AuthConfig, SetupStatus } from "../types";
+import GoogleMark from "./ui/GoogleMark";
 import RydnMark from "./ui/RydnMark";
 
 interface Props {
@@ -36,26 +37,26 @@ export default function Welcome({ config, onGoogle, onDev, error }: Props) {
 
   return (
     <div className="welcome">
-      <div className="welcome__card welcome__card--wide">
-        <div className="welcome__logo">
-          <RydnMark size={28} className="welcome__mark" />
-          <span className="welcome__word">RYDN</span>
+      <div className="welcome__glow welcome__glow--a" aria-hidden />
+      <div className="welcome__glow welcome__glow--b" aria-hidden />
+      <div className={`welcome__card${googleEnabled ? "" : " welcome__card--wide"}`}>
+        <div className="welcome__brand">
+          <RydnMark size={56} className="welcome__mark" />
+          <h1 className="welcome__name">RYDN</h1>
         </div>
-        <h1 className="welcome__headline">Plan with what you’ve ridden.</h1>
+        <p className="welcome__tagline">Plan with what you’ve ridden.</p>
 
         {googleEnabled ? (
-          <>
+          <div className="welcome__actions">
             {justBecameReady && (
               <p className="welcome__ready">Credentials detected. You’re ready.</p>
             )}
-            <button className="google-btn" onClick={onGoogle}>
-              <span className="google-btn__g">G</span>
-              Continue with Google
+            <button type="button" className="google-btn" onClick={onGoogle}>
+              <GoogleMark size={20} className="google-btn__mark" />
+              <span className="google-btn__label">Continue with Google</span>
             </button>
-            <p className="connect__sub" style={{ marginTop: 18 }}>
-              Next: Connect Strava → sync source days → Ultras.
-            </p>
-          </>
+            <p className="welcome__fine">Secure sign-in. We never post for you.</p>
+          </div>
         ) : (
           <SetupPanel setup={setup} onDev={onDev} />
         )}
@@ -118,7 +119,7 @@ function SetupPanel({ setup, onDev }: { setup?: SetupStatus; onDev: () => void }
 
       <p className="setup-panel__next">{setup?.nextStep}</p>
 
-      <button className="ghost-btn welcome__primary" onClick={onDev}>
+      <button type="button" className="ghost-btn welcome__primary" onClick={onDev}>
         Continue in local mode
       </button>
     </div>

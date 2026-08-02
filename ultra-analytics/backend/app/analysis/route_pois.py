@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import httpx
 
 from ..util.geo import haversine_m
+from ..util.usage_meter import record as record_usage
 from . import poi_corridor
 
 log = logging.getLogger("rydn.search")
@@ -259,11 +260,14 @@ def _fetch_elements(
                 with httpx.Client(timeout=timeout) as client:
                     res = client.post(url, data={"data": query})
                 if res.status_code in (429, 504):
+                    record_usage("overpass", ok=False)
                     time.sleep(min(0.35, max(0.0, deadline - time.perf_counter())))
                     continue
                 res.raise_for_status()
+                record_usage("overpass", ok=True)
                 return list((res.json() or {}).get("elements") or [])
             except Exception as exc:  # noqa: BLE001
+                record_usage("overpass", ok=False)
                 last_err = exc
                 time.sleep(min(0.25, max(0.0, deadline - time.perf_counter())))
     raise RuntimeError(f"Overpass unavailable: {last_err}")
@@ -391,11 +395,16 @@ def fetch_route_pois(
         try:
             with open(analysis_path, "r", encoding="utf-8") as f:
                 cached = json.load(f)
-            if isinstance(cached.get("pois"), list):
+            cached_pois = cached.get("pois")
+            cached_sleep = cached.get("sleep") if isinstance(cached.get("sleep"), list) else []
+            # Empty [] without complete=True is poisoned (failed Overpass persisted).
+            # complete=True means a successful build that truly found nothing in-pad.
+            analysis_complete = bool(cached.get("complete"))
+            if isinstance(cached_pois, list) and (cached_pois or analysis_complete):
                 # Prefer existing Search corridor; if missing, rebuild from raw OSM cache.
                 existing = poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
-                if existing:
-                    poi_corridor.put_memory_corridor(existing)
+                if poi_corridor.corridor_has_pois(existing):
+                    poi_corridor.put_memory_corridor(existing)  # type: ignore[arg-type]
                 else:
                     # Re-project from raw Overpass cache at corridor width (no network).
                     south, west, north, east = _bbox(track)
@@ -407,41 +416,46 @@ def fetch_route_pois(
                         try:
                             with open(raw_path, "r", encoding="utf-8") as rf:
                                 raw_elems = json.load(rf)
-                            pad = poi_corridor.corridor_pad_m()
-                            wp, ws = _elements_to_projected(
-                                raw_elems,
-                                track,
-                                max_off_route_m=pad,
-                                primary_only=False,
-                            )
-                            _ensure_search_corridor_from_projected(track, wp, ws, force=True)
+                            if isinstance(raw_elems, list) and raw_elems:
+                                pad = poi_corridor.corridor_pad_m()
+                                wp, ws = _elements_to_projected(
+                                    raw_elems,
+                                    track,
+                                    max_off_route_m=pad,
+                                    primary_only=False,
+                                )
+                                _ensure_search_corridor_from_projected(track, wp, ws, force=True)
+                            else:
+                                _ensure_search_corridor_from_projected(
+                                    track, cached_pois, cached_sleep, force=True
+                                )
                         except (OSError, json.JSONDecodeError, TypeError):
                             _ensure_search_corridor_from_projected(
-                                track,
-                                cached.get("pois") or [],
-                                cached.get("sleep") or [],
-                                force=False,
+                                track, cached_pois, cached_sleep, force=True
                             )
                     else:
                         _ensure_search_corridor_from_projected(
-                            track,
-                            cached.get("pois") or [],
-                            cached.get("sleep") or [],
-                            force=False,
+                            track, cached_pois, cached_sleep, force=True
                         )
                 log.info(
                     "poi_analysis cache=hit fingerprint=%s pois=%d sleep=%d ms=%.0f",
                     fp,
-                    len(cached.get("pois") or []),
-                    len(cached.get("sleep") or []),
+                    len(cached_pois),
+                    len(cached_sleep),
                     (time.perf_counter() - t0) * 1000,
                 )
                 return {
-                    "pois": cached["pois"],
-                    "sleep": cached.get("sleep") or [],
+                    "pois": cached_pois,
+                    "sleep": cached_sleep,
                     "cache": "hit",
                     "error": None,
                 }
+            # Drop poisoned empty analysis so preload/Search can rebuild.
+            try:
+                os.remove(analysis_path)
+                log.info("poi_analysis cache=empty-poison removed fingerprint=%s", fp)
+            except OSError:
+                pass
         except (OSError, json.JSONDecodeError, TypeError):
             pass
 
@@ -458,7 +472,15 @@ def fetch_route_pois(
         try:
             with open(raw_path, "r", encoding="utf-8") as f:
                 elements = json.load(f)
-            cache_status = "hit"
+            # Empty raw cache is also poison — refetch.
+            if isinstance(elements, list) and elements:
+                cache_status = "hit"
+            else:
+                elements = []
+                try:
+                    os.remove(raw_path)
+                except OSError:
+                    pass
         except (OSError, json.JSONDecodeError):
             elements = []
 
@@ -469,8 +491,10 @@ def fetch_route_pois(
             t_op0 = time.perf_counter()
             elements = _fetch_elements(_build_query(south, west, north, east))
             t_op = (time.perf_counter() - t_op0) * 1000
-            with open(raw_path, "w", encoding="utf-8") as f:
-                json.dump(elements, f)
+            # Only persist non-empty OSM payloads — never glue a failed fetch forever.
+            if elements:
+                with open(raw_path, "w", encoding="utf-8") as f:
+                    json.dump(elements, f)
             cache_status = "miss"
         except Exception as exc:  # noqa: BLE001
             error = str(exc)
@@ -497,13 +521,25 @@ def fetch_route_pois(
     pois = [p for p in pois if p.get("group") != "sleep"]
     t_proj = (time.perf_counter() - t_proj0) * 1000
 
-    try:
-        with open(analysis_path, "w", encoding="utf-8") as f:
-            json.dump({"pois": pois, "sleep": sleep, "fingerprint": fp}, f)
-    except OSError:
-        pass
+    # Persist only after a successful Overpass/project cycle (complete=True).
+    # Failed fetches must not write pois=[] — that poisoned Search forever.
+    if error is None:
+        try:
+            with open(analysis_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "pois": pois,
+                        "sleep": sleep,
+                        "fingerprint": fp,
+                        "complete": True,
+                    },
+                    f,
+                )
+        except OSError:
+            pass
 
-    _ensure_search_corridor_from_projected(track, wide_pois, wide_sleep, force=True)
+    if wide_pois or wide_sleep:
+        _ensure_search_corridor_from_projected(track, wide_pois, wide_sleep, force=True)
 
     log.info(
         "poi_analysis cache=%s fingerprint=%s pois=%d sleep=%d overpass_ms=%s project_ms=%.0f total_ms=%.0f err=%s",
@@ -532,7 +568,12 @@ def _ensure_search_corridor_from_projected(
     existing = None if force else (
         poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
     )
-    if existing and int(existing.get("schema") or 0) >= poi_corridor.CACHE_SCHEMA:
+    # Reuse warm corridor only when it actually has POIs (empty shell ≠ hit).
+    if (
+        existing
+        and int(existing.get("schema") or 0) >= poi_corridor.CACHE_SCHEMA
+        and poi_corridor.corridor_has_pois(existing)
+    ):
         poi_corridor.put_memory_corridor(existing)
         return existing
 
@@ -579,6 +620,13 @@ def _ensure_search_corridor_from_projected(
         "builtAt": time.time(),
         "pois": combined,
     }
+    # Never overwrite a warm corridor with an empty rebuild; don't persist empty.
+    if not combined:
+        warm = poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
+        if poi_corridor.corridor_has_pois(warm):
+            poi_corridor.put_memory_corridor(warm)  # type: ignore[arg-type]
+            return warm  # type: ignore[return-value]
+        return data
     try:
         poi_corridor.save_corridor_cache(data)
     except OSError:
@@ -699,20 +747,21 @@ def ensure_search_corridor(
     fp = poi_corridor.track_fingerprint(track)
     if not force_refresh:
         mem = poi_corridor.get_memory_corridor(fp)
-        if mem and (mem.get("pois") or []):
-            return mem
+        if poi_corridor.corridor_has_pois(mem):
+            return mem  # type: ignore[return-value]
         disk = poi_corridor.load_corridor_cache(fp)
-        if disk and (disk.get("pois") or []):
-            poi_corridor.put_memory_corridor(disk)
-            return disk
+        if poi_corridor.corridor_has_pois(disk):
+            poi_corridor.put_memory_corridor(disk)  # type: ignore[arg-type]
+            return disk  # type: ignore[return-value]
         # Local hydrate from analysis — instant vs Overpass; safe for Search.
         hydrated = hydrate_corridor_from_analysis(track)
-        if hydrated and (hydrated.get("pois") or []):
-            return hydrated
+        if poi_corridor.corridor_has_pois(hydrated):
+            return hydrated  # type: ignore[return-value]
         if not build_if_missing:
             return {**empty, "fingerprint": fp}
 
-    # Build via fetch_route_pois (writes both analysis + search caches)
+    # Build via fetch_route_pois (writes both analysis + search caches).
+    # Empty analysis poison is deleted inside fetch_route_pois so this rebuilds.
     pad = poi_corridor.corridor_pad_m()
     bundle = fetch_route_pois(track, force_refresh=force_refresh, max_off_route_m=pad)
     mem = poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
@@ -811,24 +860,28 @@ def fetch_viewport_pois(
     if len(track) >= 2:
         fp = poi_corridor.track_fingerprint(track)
         corridor = poi_corridor.get_memory_corridor(fp) or poi_corridor.load_corridor_cache(fp)
-        if corridor and (corridor.get("pois") or []):
-            poi_corridor.put_memory_corridor(corridor)
+        if poi_corridor.corridor_has_pois(corridor):
+            poi_corridor.put_memory_corridor(corridor)  # type: ignore[arg-type]
         else:
+            # Drop empty in-memory shells so they can't mask a rebuild.
+            if corridor is not None and fp in poi_corridor._MEMORY:
+                poi_corridor._MEMORY.pop(fp, None)
+            corridor = None
             # Prod cold: Search corridor missing but analysis POIs exist from route open.
             # Hydrate locally (~40ms) — never wait on Overpass for the hot path.
             hydrated = hydrate_corridor_from_analysis(track)
-            if hydrated and (hydrated.get("pois") or []):
+            if poi_corridor.corridor_has_pois(hydrated):
                 corridor = hydrated
                 hydrated_from_analysis = True
     t_cache_ms = (time.perf_counter() - t_cache0) * 1000.0
 
     viewport = (south, west, north, east)
-    if corridor and corridor.get("pois") is not None:
-        cbox = corridor.get("bbox") or [0, 0, 0, 0]
+    if poi_corridor.corridor_has_pois(corridor):
+        cbox = corridor.get("bbox") or [0, 0, 0, 0]  # type: ignore[union-attr]
         corridor_box = (float(cbox[0]), float(cbox[1]), float(cbox[2]), float(cbox[3]))
         if poi_corridor.bbox_intersects(viewport, corridor_box):
             result = poi_corridor.query_viewport(
-                corridor,
+                corridor,  # type: ignore[arg-type]
                 south=south,
                 west=west,
                 north=north,
@@ -855,12 +908,10 @@ def fetch_viewport_pois(
                 timings["totalMs"],
                 timings.get("spatialFilterMs"),
             )
-            # Warm/hydrated corridor answered (including true empty group in viewport).
-            # Only fall through when the corridor itself is empty/broken.
-            if (result.get("candidateCount") or 0) > 0 or len(corridor.get("pois") or []) > 0:
-                return result
-            # Empty corridor blob — fall through to quick Overpass fill below.
-            log.info("search cache=corridor-empty group=%s — trying viewport Overpass fill", g)
+            # Warm/hydrated corridor answered (including true empty *group* in viewport).
+            return result
+        # Viewport outside corridor bbox — fall through to Overpass fill.
+        log.info("search cache=corridor-outside group=%s — trying viewport Overpass fill", g)
 
     # --- Cold path: viewport outside corridor or no corridor yet ---
     if not allow_overpass:
@@ -900,7 +951,15 @@ def fetch_viewport_pois(
         try:
             with open(path, "r", encoding="utf-8") as f:
                 elements = json.load(f)
-            cache_status = "hit"
+            if isinstance(elements, list) and elements:
+                cache_status = "hit"
+            else:
+                # Empty tile cache is poison from a failed fill — drop and refetch.
+                elements = []
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
         except (OSError, json.JSONDecodeError):
             elements = []
 
@@ -917,8 +976,10 @@ def fetch_viewport_pois(
                 max_mirrors=1,
             )
             overpass_ms = (time.perf_counter() - t_op0) * 1000
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(elements, f)
+            # Only persist non-empty fills — empty [] would block retries forever.
+            if elements:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(elements, f)
         except Exception as exc:  # noqa: BLE001
             error = str(exc)
             overpass_ms = (time.perf_counter() - t_op0) * 1000

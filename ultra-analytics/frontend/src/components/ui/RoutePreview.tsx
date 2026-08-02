@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import Icon from "./Icon";
+import { lodStyleFromViewSpan, type ThumbLodStyle, type ThumbLodTier } from "./routePreviewLod";
 
 interface Props {
   points?: number[][];
@@ -16,6 +17,17 @@ interface Props {
   reveal?: boolean | "hold" | "play";
   /** Fires once the map plate is ready (or unavailable) so parents can start intro. */
   onReady?: () => void;
+  /**
+   * Trips shelf thumbs: quieter plate, Apple-style start/finish dots (no planning markers).
+   * LOD follows bbox span (geographic zoom), not route length km.
+   */
+  variant?: "detail" | "thumb";
+  /** Country count hint for thumb LOD (secondary; from ultra.countryCodes). */
+  countryCount?: number;
+  /**
+   * @deprecated Ignored — LOD uses bbox span only. Kept so callers need not change.
+   */
+  distanceKm?: number;
   /** Planning markers: climbs, services, remote gaps. */
   markers?: {
     id?: string;
@@ -26,6 +38,31 @@ interface Props {
   }[];
   selectedId?: string | null;
   onSelectMarker?: (id: string) => void;
+}
+
+function decimateClient(points: number[][], target: number): number[][] {
+  const n = points.length;
+  if (n <= target || target <= 0) return points;
+  const step = n / target;
+  const out: number[][] = [];
+  for (let i = 0; i < n; i += step) {
+    out.push(points[Math.min(n - 1, Math.floor(i))]);
+  }
+  const last = points[n - 1];
+  if (out.length && (out[out.length - 1][0] !== last[0] || out[out.length - 1][1] !== last[1])) {
+    out.push(last);
+  }
+  return out;
+}
+
+function spanKmApprox(points: number[][]): number {
+  if (points.length < 2) return 0;
+  const b = bboxOf(points);
+  const midLat = (b.minLat + b.maxLat) / 2;
+  const cos = Math.max(Math.cos((midLat * Math.PI) / 180), 0.3);
+  const latKm = (b.maxLat - b.minLat) * 111;
+  const lonKm = (b.maxLon - b.minLon) * 111 * cos;
+  return Math.hypot(latKm, lonKm);
 }
 
 /** Total route stroke time (ms); segments share it sequentially. */
@@ -41,6 +78,11 @@ const W = 640;
 const H = 400;
 /** Small edge breathing — geographic framing carries the 70–80% fill. */
 const PAD = 14;
+/**
+ * Thumb cards (~148–168px): pad so start/finish dots stay inside the plate
+ * (overflow:hidden) while remaining readable after SVG scale-down.
+ */
+const PAD_THUMB = 36;
 /** Route bounding box should occupy this fraction of the map viewport. */
 const TARGET_FILL = 0.76;
 
@@ -49,9 +91,19 @@ const SEA = "#e4e7e4";
 const LAND = "#f4f1ea";
 const BORDER = "#8a8378";
 const ROUTE = "#1a1a18";
+/** Apple Maps–style endpoint discs: saturated core + softer halo. */
+const DOT_START = "#1db954";
+const DOT_START_SOFT = "#34c759";
+const DOT_FINISH = "#e53935";
+const DOT_FINISH_SOFT = "#ff5252";
+/** White ring + thin dark rim for contrast on land/sea. */
+const DOT_RING = "#ffffff";
+const DOT_RIM = "rgba(26, 26, 24, 0.22)";
 
 let countriesCache: CountriesFC | null = null;
 let countriesPromise: Promise<CountriesFC> | null = null;
+let countriesFineCache: CountriesFC | null = null;
+let countriesFinePromise: Promise<CountriesFC | null> | null = null;
 
 function loadCountries(): Promise<CountriesFC> {
   if (countriesCache) return Promise.resolve(countriesCache);
@@ -62,6 +114,24 @@ function loadCountries(): Promise<CountriesFC> {
     });
   }
   return countriesPromise;
+}
+
+/** Higher-res atlas for short/local thumbs — denser coasts when zoomed in. */
+function loadCountriesFine(): Promise<CountriesFC | null> {
+  if (countriesFineCache) return Promise.resolve(countriesFineCache);
+  if (!countriesFinePromise) {
+    countriesFinePromise = import("../../data/countriesFine.json")
+      .then((m) => {
+        countriesFineCache = m.default as CountriesFC;
+        return countriesFineCache;
+      })
+      .catch(() => {
+        // Failed chunk must not leave thumbs stuck on a rejected promise.
+        countriesFinePromise = null;
+        return null;
+      });
+  }
+  return countriesFinePromise;
 }
 
 function validPts(points: number[][] | undefined): number[][] {
@@ -136,42 +206,156 @@ function projectFactory(b: BBox, w: number, h: number, pad: number) {
   };
 }
 
+/** Douglas–Peucker on projected rings — stronger on outline, none on fine. */
+function simplifyRingPx(
+  ring: number[][],
+  project: (lat: number, lon: number) => readonly [number, number],
+  tolPx: number,
+): { x: number; y: number }[] {
+  const pts = ring.map((c) => {
+    const [x, y] = project(c[1], c[0]);
+    return { x, y };
+  });
+  if (pts.length < 3 || tolPx <= 0) return pts;
+  const keep = new Uint8Array(pts.length);
+  keep[0] = 1;
+  keep[pts.length - 1] = 1;
+  const stack: [number, number][] = [[0, pts.length - 1]];
+  const tol2 = tolPx * tolPx;
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    const ax = pts[a].x;
+    const ay = pts[a].y;
+    const bx = pts[b].x;
+    const by = pts[b].y;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy || 1;
+    let maxD = 0;
+    let maxI = a;
+    for (let i = a + 1; i < b; i++) {
+      const t = ((pts[i].x - ax) * dx + (pts[i].y - ay) * dy) / len2;
+      const px = ax + t * dx;
+      const py = ay + t * dy;
+      const d = (pts[i].x - px) ** 2 + (pts[i].y - py) ** 2;
+      if (d > maxD) {
+        maxD = d;
+        maxI = i;
+      }
+    }
+    if (maxD > tol2) {
+      keep[maxI] = 1;
+      stack.push([a, maxI], [maxI, b]);
+    }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
 function ringToPath(
   ring: number[][],
   project: (lat: number, lon: number) => readonly [number, number],
+  digits = 1,
+  simplifyTolPx = 0,
 ): string {
   if (!ring.length) return "";
-  return ring
-    .map((c, i) => {
-      const [lon, lat] = c;
-      const [x, y] = project(lat, lon);
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
+  const pts =
+    simplifyTolPx > 0
+      ? simplifyRingPx(ring, project, simplifyTolPx)
+      : ring.map((c) => {
+          const [x, y] = project(c[1], c[0]);
+          return { x, y };
+        });
+  return pts
+    .map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(digits)} ${p.y.toFixed(digits)}`)
     .join(" ");
+}
+
+function intersects(a: BBox, b: BBox): boolean {
+  return !(a.maxLon < b.minLon || a.minLon > b.maxLon || a.maxLat < b.minLat || a.minLat > b.maxLat);
+}
+
+/** Expand selection bbox so fine LOD keeps neighboring coast fragments. */
+function inflateBBox(b: BBox, factor: number): BBox {
+  const latPad = ((b.maxLat - b.minLat) * (factor - 1)) / 2;
+  const lonPad = ((b.maxLon - b.minLon) * (factor - 1)) / 2;
+  return {
+    minLat: b.minLat - latPad,
+    maxLat: b.maxLat + latPad,
+    minLon: b.minLon - lonPad,
+    maxLon: b.maxLon + lonPad,
+  };
+}
+
+/** Fast bbox from a GeoJSON ring ([lon,lat]…). */
+function ringBBox(ring: number[][]): BBox | null {
+  if (!ring.length) return null;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  for (const c of ring) {
+    const lon = c[0];
+    const lat = c[1];
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+  }
+  if (!Number.isFinite(minLat)) return null;
+  return { minLat, maxLat, minLon, maxLon };
+}
+
+/**
+ * Per-polygon parts that actually hit the view.
+ * Critical: whole-feature bbox for RU/US/FR/NO spans the globe (overseas /
+ * antimeridian), so feature-level intersects() alone pulled megabytes of SVG
+ * into short-trip thumbs and left cards stuck on skeletons.
+ */
+function polysInView(
+  geom: { type: string; coordinates: unknown },
+  selectBox: BBox,
+): number[][][][] {
+  const out: number[][][][] = [];
+  if (geom.type === "Polygon") {
+    const rings = geom.coordinates as number[][][];
+    const bb = ringBBox(rings[0] || []);
+    if (bb && intersects(bb, selectBox)) out.push(rings);
+  } else if (geom.type === "MultiPolygon") {
+    for (const poly of geom.coordinates as number[][][][]) {
+      const bb = ringBBox(poly[0] || []);
+      if (bb && intersects(bb, selectBox)) out.push(poly);
+    }
+  }
+  return out;
 }
 
 /** One path per polygon (exterior + holes) for evenodd fill. */
 function geomToLandPaths(
   geom: { type: string; coordinates: unknown },
   project: (lat: number, lon: number) => readonly [number, number],
+  digits = 1,
+  simplifyTolPx = 0,
+  selectBox?: BBox,
 ): string[] {
   const paths: string[] = [];
   const polyToPath = (rings: number[][][]) => {
     const parts = rings
       .map((ring) => {
-        const d = ringToPath(ring, project);
+        const d = ringToPath(ring, project, digits, simplifyTolPx);
         return d ? `${d} Z` : "";
       })
       .filter(Boolean);
     if (parts.length) paths.push(parts.join(" "));
   };
-  if (geom.type === "Polygon") {
-    polyToPath(geom.coordinates as number[][][]);
-  } else if (geom.type === "MultiPolygon") {
-    for (const poly of geom.coordinates as number[][][][]) {
-      polyToPath(poly);
-    }
-  }
+  const polys = selectBox
+    ? polysInView(geom, selectBox)
+    : geom.type === "Polygon"
+      ? [geom.coordinates as number[][][]]
+      : geom.type === "MultiPolygon"
+        ? (geom.coordinates as number[][][][])
+        : [];
+  for (const poly of polys) polyToPath(poly);
   return paths;
 }
 
@@ -179,38 +363,49 @@ function geomToLandPaths(
 function geomToBorderPaths(
   geom: { type: string; coordinates: unknown },
   project: (lat: number, lon: number) => readonly [number, number],
+  digits = 1,
+  simplifyTolPx = 0,
+  selectBox?: BBox,
 ): string[] {
   const paths: string[] = [];
-  if (geom.type === "Polygon") {
-    const rings = geom.coordinates as number[][][];
-    const d = ringToPath(rings[0] || [], project);
+  const polys = selectBox
+    ? polysInView(geom, selectBox)
+    : geom.type === "Polygon"
+      ? [geom.coordinates as number[][][]]
+      : geom.type === "MultiPolygon"
+        ? (geom.coordinates as number[][][][])
+        : [];
+  for (const poly of polys) {
+    const d = ringToPath(poly[0] || [], project, digits, simplifyTolPx);
     if (d) paths.push(`${d} Z`);
-  } else if (geom.type === "MultiPolygon") {
-    for (const poly of geom.coordinates as number[][][][]) {
-      const d = ringToPath(poly[0] || [], project);
-      if (d) paths.push(`${d} Z`);
-    }
   }
   return paths;
 }
 
-function intersects(a: BBox, b: BBox): boolean {
-  return !(a.maxLon < b.minLon || a.minLon > b.maxLon || a.maxLat < b.minLat || a.minLat > b.maxLat);
-}
-
 function featureBBox(geom: { type: string; coordinates: unknown }): BBox | null {
-  const coords: number[][] = [];
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  let n = 0;
   const walk = (c: unknown) => {
     if (!Array.isArray(c)) return;
     if (typeof c[0] === "number" && typeof c[1] === "number") {
-      coords.push([c[1] as number, c[0] as number]);
+      const lon = c[0] as number;
+      const lat = c[1] as number;
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      n += 1;
       return;
     }
     for (const x of c) walk(x);
   };
   walk(geom.coordinates);
-  if (coords.length < 2) return null;
-  return bboxOf(coords);
+  if (n < 2) return null;
+  return { minLat, maxLat, minLon, maxLon };
 }
 
 function pathFromLatLon(
@@ -225,17 +420,158 @@ function pathFromLatLon(
     .join(" ");
 }
 
+/** Apple Maps–style disc radii in viewBox space (640×400). */
+type DotGeom = { coreR: number; ringR: number; haloR: number; rimW: number };
+
+function dotGeom(thumb: boolean): DotGeom {
+  // Thumb: ~9–11px outer on a 148px card after 640→css scale — matches prior flag visibility.
+  if (thumb) return { coreR: 15, ringR: 19.5, haloR: 27, rimW: 1.15 };
+  return { coreR: 6.5, ringR: 8.6, haloR: 12, rimW: 0.75 };
+}
+
+/** Projected-space merge: one combined disc when start≈finish (loops). */
+function endpointsOverlap(
+  start: readonly [number, number],
+  end: readonly [number, number],
+  g: DotGeom,
+): boolean {
+  const dx = start[0] - end[0];
+  const dy = start[1] - end[1];
+  const merge = g.haloR * 1.05;
+  return dx * dx + dy * dy <= merge * merge;
+}
+
+/** Soft halo → white ring → saturated core → bright center (Apple Maps location). */
+function EndpointDot({
+  x,
+  y,
+  g,
+  core,
+  soft,
+  className,
+}: {
+  x: number;
+  y: number;
+  g: DotGeom;
+  core: string;
+  soft: string;
+  className: string;
+}) {
+  return (
+    <g className={className}>
+      <circle cx={x} cy={y} r={g.haloR} fill={soft} opacity={0.32} />
+      <circle cx={x} cy={y} r={g.ringR} fill={DOT_RING} />
+      <circle
+        cx={x}
+        cy={y}
+        r={g.ringR}
+        fill="none"
+        stroke={DOT_RIM}
+        strokeWidth={g.rimW}
+      />
+      <circle cx={x} cy={y} r={g.coreR} fill={core} />
+      <circle
+        cx={x}
+        cy={y - g.coreR * 0.18}
+        r={g.coreR * 0.42}
+        fill={soft}
+        opacity={0.55}
+      />
+    </g>
+  );
+}
+
+/** Loop terminus: left green / right red semicircles with shared halo + ring. */
+function CombinedLoopDot({
+  x,
+  y,
+  g,
+}: {
+  x: number;
+  y: number;
+  g: DotGeom;
+}) {
+  const r = g.coreR;
+  const top = y - r;
+  const bot = y + r;
+  // Vertical split — clean semicircles readable at thumb size.
+  const green = `M${x} ${top} A${r} ${r} 0 0 0 ${x} ${bot} Z`;
+  const red = `M${x} ${top} A${r} ${r} 0 0 1 ${x} ${bot} Z`;
+  return (
+    <g className="route-preview__endpoint route-preview__endpoint--loop">
+      <circle cx={x} cy={y} r={g.haloR} fill={DOT_START_SOFT} opacity={0.18} />
+      <circle cx={x} cy={y} r={g.haloR} fill={DOT_FINISH_SOFT} opacity={0.18} />
+      <circle cx={x} cy={y} r={g.ringR} fill={DOT_RING} />
+      <circle
+        cx={x}
+        cy={y}
+        r={g.ringR}
+        fill="none"
+        stroke={DOT_RIM}
+        strokeWidth={g.rimW}
+      />
+      <path d={green} fill={DOT_START} />
+      <path d={red} fill={DOT_FINISH} />
+      <line
+        x1={x}
+        y1={top}
+        x2={x}
+        y2={bot}
+        stroke={DOT_RING}
+        strokeWidth={Math.max(0.9, g.rimW * 0.85)}
+        strokeLinecap="round"
+        opacity={0.9}
+      />
+      <circle
+        cx={x}
+        cy={y - r * 0.18}
+        r={r * 0.38}
+        fill="#ffffff"
+        opacity={0.28}
+      />
+    </g>
+  );
+}
+
 export default function RoutePreview({
   points,
   segments,
   className = "",
   reveal = false,
   onReady,
+  variant = "detail",
+  countryCount = 1,
+  distanceKm: _distanceKm = 0,
   markers,
   selectedId,
   onSelectMarker,
 }: Props) {
+  void _distanceKm; // deprecated — LOD is bbox-span only
+  const thumb = variant === "thumb";
   const [countries, setCountries] = useState<CountriesFC | null>(countriesCache);
+  const [countriesFine, setCountriesFine] = useState<CountriesFC | null>(countriesFineCache);
+
+  const segs = useMemo(() => {
+    const fromSegs = (segments || []).map(validPts).filter((s) => s.length >= 2);
+    if (fromSegs.length) return fromSegs;
+    const flat = validPts(points);
+    return flat.length >= 2 ? [flat] : [];
+  }, [points, segments]);
+
+  const allPtsRaw = useMemo(() => segs.flat(), [segs]);
+  const viewSpanKm = useMemo(
+    () => (allPtsRaw.length >= 2 ? spanKmApprox(allPtsRaw) : 0),
+    [allPtsRaw],
+  );
+
+  const lodStyle = useMemo((): ThumbLodStyle | null => {
+    if (!thumb || allPtsRaw.length < 2) return null;
+    return lodStyleFromViewSpan(viewSpanKm, countryCount);
+  }, [thumb, viewSpanKm, countryCount, allPtsRaw.length]);
+
+  const thumbLod: ThumbLodTier | null = lodStyle?.tier ?? null;
+  const localDetail = !thumb && allPtsRaw.length >= 2 && viewSpanKm < 750;
+  const needsFineAtlas = Boolean(lodStyle?.useFineAtlas) || localDetail;
 
   useEffect(() => {
     let cancelled = false;
@@ -247,50 +583,82 @@ export default function RoutePreview({
     };
   }, []);
 
-  const segs = useMemo(() => {
-    const fromSegs = (segments || []).map(validPts).filter((s) => s.length >= 2);
-    if (fromSegs.length) return fromSegs;
-    const flat = validPts(points);
-    return flat.length >= 2 ? [flat] : [];
-  }, [points, segments]);
+  useEffect(() => {
+    if (!needsFineAtlas) return;
+    let cancelled = false;
+    void loadCountriesFine().then((data) => {
+      if (!cancelled && data) setCountriesFine(data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsFineAtlas]);
 
-  const allPts = useMemo(() => segs.flat(), [segs]);
+  const outlineLod = thumbLod === "outline";
+  const activeAtlas =
+    needsFineAtlas && countriesFine
+      ? countriesFine
+      : countries;
+
+  const segsLod = useMemo(() => {
+    if (!thumb || !lodStyle) return segs;
+    const target = lodStyle.routePts;
+    return segs.map((s) => decimateClient(s, Math.max(8, Math.floor(target / Math.max(segs.length, 1)))));
+  }, [segs, thumb, lodStyle]);
+
+  const allPts = useMemo(() => segsLod.flat(), [segsLod]);
 
   const plate = useMemo(() => {
-    if (allPts.length < 2 || !countries) return null;
-    const usableAspect = (W - PAD * 2) / (H - PAD * 2);
-    const routeBox = frameRoute(bboxOf(allPts), usableAspect);
-    const project = projectFactory(routeBox, W, H, PAD);
+    if (allPts.length < 2 || !activeAtlas) return null;
+    const pad = thumb ? PAD_THUMB : PAD;
+    const usableAspect = (W - pad * 2) / (H - pad * 2);
+    const local = !thumb && viewSpanKm < 750;
+    const fill = lodStyle ? lodStyle.fill : local ? 0.62 : TARGET_FILL;
+    const digits = lodStyle?.digits ?? (local ? 2 : 1);
+    const usingFine = Boolean(activeAtlas === countriesFine);
+    // Fine atlas coasts are dense — keep a floor on thumb simplify so SVG stays paint-able.
+    const baseSimplify = lodStyle?.simplify ?? (local ? 0 : 0.4);
+    const simplify = thumb && usingFine ? Math.max(baseSimplify, 0.85) : baseSimplify;
+    const routeBox = frameRoute(bboxOf(allPts), usableAspect, fill);
+    const selectBox =
+      (lodStyle?.useFineAtlas ?? false) || local ? inflateBBox(routeBox, 1.35) : routeBox;
+    const project = projectFactory(routeBox, W, H, pad);
     const lands: string[] = [];
     const borders: string[] = [];
-    for (const f of countries.features) {
+    for (const f of activeAtlas.features) {
       const fb = featureBBox(f.geometry);
-      if (!fb || !intersects(fb, routeBox)) continue;
-      lands.push(...geomToLandPaths(f.geometry, project));
-      borders.push(...geomToBorderPaths(f.geometry, project));
+      // Globe-spanning MultiPolygons (RU/US/…) always intersect via feature bbox —
+      // still enter and let polysInView drop non-local parts.
+      const globeSpanning = fb != null && (fb.maxLon - fb.minLon > 80 || fb.maxLat - fb.minLat > 50);
+      if (!fb || (!intersects(fb, selectBox) && !globeSpanning)) continue;
+      // Always fill land — LOD only changes stroke density / polyline decimation, never palette.
+      lands.push(...geomToLandPaths(f.geometry, project, digits, simplify, selectBox));
+      borders.push(...geomToBorderPaths(f.geometry, project, digits, simplify, selectBox));
     }
-    const routePaths = segs.map((s) => pathFromLatLon(s, project));
-    const start = project(segs[0][0][0], segs[0][0][1]);
-    const lastSeg = segs[segs.length - 1];
+    const routePaths = segsLod.map((s) => pathFromLatLon(s, project));
+    const start = project(segsLod[0][0][0], segsLod[0][0][1]);
+    const lastSeg = segsLod[segsLod.length - 1];
     const end = project(lastSeg[lastSeg.length - 1][0], lastSeg[lastSeg.length - 1][1]);
-    const dots = (markers || [])
-      .filter((m) => Number.isFinite(m.lat) && Number.isFinite(m.lon))
-      .slice(0, 160)
-      .map((m) => {
-        const [x, y] = project(m.lat, m.lon);
-        return {
-          x,
-          y,
-          id: m.id,
-          kind: m.kind || "poi",
-          status: m.status || "unreviewed",
-          selected: m.id != null && m.id === selectedId,
-        };
-      });
+    const dots = thumb
+      ? []
+      : (markers || [])
+          .filter((m) => Number.isFinite(m.lat) && Number.isFinite(m.lon))
+          .slice(0, 160)
+          .map((m) => {
+            const [x, y] = project(m.lat, m.lon);
+            return {
+              x,
+              y,
+              id: m.id,
+              kind: m.kind || "poi",
+              status: m.status || "unreviewed",
+              selected: m.id != null && m.id === selectedId,
+            };
+          });
     return { lands, borders, routePaths, start, end, dots };
-  }, [allPts, segs, countries, markers, selectedId]);
+  }, [allPts, segsLod, activeAtlas, markers, selectedId, thumb, lodStyle, viewSpanKm]);
 
-  const loadingMap = allPts.length >= 2 && !countries;
+  const loadingMap = allPts.length >= 2 && !activeAtlas;
   const mapSettled = !loadingMap;
 
   useEffect(() => {
@@ -300,16 +668,37 @@ export default function RoutePreview({
 
   if (loadingMap) {
     return (
-      <div className={`route-preview route-preview--empty ${className}`.trim()} aria-busy="true">
+      <div
+        className={`route-preview route-preview--empty${thumb ? " route-preview--thumb" : ""} ${className}`.trim()}
+        aria-busy="true"
+      >
         <div className="route-preview__placeholder">
-          <div className="skeleton skeleton--line" style={{ width: "40%" }} aria-hidden />
-          <p className="route-preview__hint">Drawing map…</p>
+          {thumb ? (
+            <div className="skeleton skeleton--block" aria-hidden />
+          ) : (
+            <>
+              <div className="skeleton skeleton--line" style={{ width: "40%" }} aria-hidden />
+              <p className="route-preview__hint">Drawing map…</p>
+            </>
+          )}
         </div>
       </div>
     );
   }
 
   if (!plate) {
+    if (thumb) {
+      return (
+        <div
+          className={`route-preview route-preview--empty route-preview--thumb ${className}`.trim()}
+          aria-hidden
+        >
+          <div className="route-preview__placeholder">
+            <Icon name="route" size={18} />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={`route-preview route-preview--empty ${className}`.trim()} aria-label="Route preview unavailable">
         <div className="route-preview__placeholder">
@@ -328,10 +717,15 @@ export default function RoutePreview({
   const revealHold = reveal === "hold";
   const revealPlay = reveal === "play" || reveal === true;
 
+  const borderW = lodStyle ? lodStyle.borderW : 1.2;
+  const routeW = lodStyle ? lodStyle.routeW : 2.15;
+  const lodClass = thumbLod ? ` route-preview--${thumbLod}` : "";
+
   return (
     <div
-      className={`route-preview${revealHold ? " route-preview--reveal-hold" : ""}${revealPlay ? " route-preview--reveal" : ""}${className ? ` ${className}` : ""}`}
-      aria-label="Route preview"
+      className={`route-preview${thumb ? " route-preview--thumb" : ""}${lodClass}${outlineLod ? " route-preview--outline" : ""}${revealHold ? " route-preview--reveal-hold" : ""}${revealPlay ? " route-preview--reveal" : ""}${className ? ` ${className}` : ""}`}
+      aria-label={thumb ? undefined : "Route preview"}
+      aria-hidden={thumb || undefined}
     >
       <svg viewBox={`0 0 ${W} ${H}`} className="route-preview__svg" role="img">
         <rect width={W} height={H} fill={SEA} />
@@ -344,7 +738,7 @@ export default function RoutePreview({
             d={d}
             fill="none"
             stroke={BORDER}
-            strokeWidth="1.2"
+            strokeWidth={borderW}
             strokeLinejoin="round"
             vectorEffect="non-scaling-stroke"
           />
@@ -356,7 +750,7 @@ export default function RoutePreview({
             className="route-preview__route"
             fill="none"
             stroke={ROUTE}
-            strokeWidth="2.15"
+            strokeWidth={routeW}
             strokeLinejoin="round"
             strokeLinecap="round"
             vectorEffect="non-scaling-stroke"
@@ -399,22 +793,38 @@ export default function RoutePreview({
             />
           );
         })}
-        <circle
-          className="route-preview__endpoint"
-          cx={plate.start[0]}
-          cy={plate.start[1]}
-          r="3.6"
-          fill={ROUTE}
-        />
-        <circle
-          className="route-preview__endpoint"
-          cx={plate.end[0]}
-          cy={plate.end[1]}
-          r="3.6"
-          fill="none"
-          stroke={ROUTE}
-          strokeWidth="1.7"
-        />
+        {/* Start / finish dots — Apple Maps discs; loop → half green / half red. */}
+        {(() => {
+          const g = dotGeom(thumb);
+          const start = plate.start;
+          const end = plate.end;
+          if (endpointsOverlap(start, end, g)) {
+            // Midpoint so a loop mark sits on the shared terminus.
+            const x = (start[0] + end[0]) / 2;
+            const y = (start[1] + end[1]) / 2;
+            return <CombinedLoopDot x={x} y={y} g={g} />;
+          }
+          return (
+            <>
+              <EndpointDot
+                x={start[0]}
+                y={start[1]}
+                g={g}
+                core={DOT_START}
+                soft={DOT_START_SOFT}
+                className="route-preview__endpoint route-preview__endpoint--start"
+              />
+              <EndpointDot
+                x={end[0]}
+                y={end[1]}
+                g={g}
+                core={DOT_FINISH}
+                soft={DOT_FINISH_SOFT}
+                className="route-preview__endpoint route-preview__endpoint--finish"
+              />
+            </>
+          );
+        })()}
       </svg>
     </div>
   );

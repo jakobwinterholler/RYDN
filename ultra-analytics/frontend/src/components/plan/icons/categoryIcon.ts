@@ -41,10 +41,12 @@ export function iconForCategory(category?: string | null, group?: string | null)
 }
 
 export function iconForMarker(m: PlanMarker): PlanIconId {
-  if (m.kind === "climb" || m.kind === "decision") return "climb";
+  // Climb kind is never plotted on Plan/Ride; do not reuse mountain for decisions.
+  if (m.kind === "climb") return "pin";
+  if (m.kind === "decision") return "pin";
   if (m.kind === "remote") return "remote";
   if (m.kind === "stage") return "stage";
-  // Sleep QA always uses the bed emoji sprite — category subtypes stay in the sheet.
+  // Sleep QA always uses the bed glyph sprite — category subtypes stay in the sheet.
   if (m.kind === "sleep" || m.group === "sleep") return "sleepSpot";
   if (m.status === "rejected") return iconForCategory(m.category, m.group);
   return iconForCategory(m.category, m.group);

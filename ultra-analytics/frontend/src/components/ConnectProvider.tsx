@@ -40,7 +40,7 @@ export default function ConnectProvider({ provider, onSkip }: Props) {
             <code className="setup-copy__uri">{domain}</code>
             {redirect && (
               <>
-                <p className="setup-copy__hint">Ultra will send this redirect_uri:</p>
+                <p className="setup-copy__hint">RYDN will send this redirect_uri:</p>
                 <code className="setup-copy__uri">{redirect}</code>
               </>
             )}

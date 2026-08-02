@@ -9,6 +9,7 @@ import {
   preloadRoutePois,
   searchRouteViewportPois,
 } from "../api";
+import ProGate from "./account/ProGate";
 import type {
   CriticalDecision,
   PlannedRouteDetail,
@@ -22,9 +23,9 @@ import { fmtDuration } from "./ui/format";
 import Icon from "./ui/Icon";
 import RydnLoader from "./ui/RydnLoader";
 import ScoreLine from "./ui/ScoreLine";
-import PlanMap, { type PlanMapBBox } from "./plan/PlanMap";
+import PlanMap, { type PlanMapBBox, type PlanMapViewApi } from "./plan/PlanMap";
 import StreetView from "./plan/StreetView";
-import { RydnPlanIcon, iconForCategory } from "./plan/icons";
+import { RydnPlanIcon, iconForCategory, iconForQuickAction } from "./plan/icons";
 import {
   DEFAULT_LAYERS,
   QA_NEAREST_N,
@@ -42,7 +43,9 @@ import {
 } from "./plan/planLayers";
 import {
   bboxSpanTooLarge,
+  isDegeneratePlanSearchBBox,
   isZoomInSearchError,
+  normalizePlanSearchBBox,
   resolvePlanSearchChip,
 } from "./plan/planSearchUi";
 import {
@@ -148,6 +151,7 @@ interface Props {
   routeId: string;
   onBack: () => void;
   onDeleted?: () => void;
+  onOpenAccount?: () => void;
 }
 
 type Mode = "plan" | "ride";
@@ -230,7 +234,7 @@ const CHECKS: {
 
 function recommendWhy(stop: RecommendedStop): string {
   const parts: string[] = [];
-  if (stop.qualityStars >= 5) parts.push("Top reliability for ultra resupply");
+  if (stop.qualityStars >= 5) parts.push("Top reliability for multi-day resupply");
   else if (stop.qualityStars >= 4) parts.push("Strong reliability on this stretch");
   else parts.push(`${stop.qualityLabel} option where coverage is thin`);
   if (stop.is24h) parts.push("open around the clock");
@@ -270,10 +274,11 @@ type PeekPayload =
   | { kind: "remote"; gap: RouteRemoteGap }
   | { kind: "decision"; decision: CriticalDecision };
 
-export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
+export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }: Props) {
   const [route, setRoute] = useState<PlannedRouteDetail | null>(null);
   const [analysis, setAnalysis] = useState<RouteAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showExportGate, setShowExportGate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [analyzing, setAnalyzing] = useState(true);
   const [name, setName] = useState("");
@@ -318,6 +323,9 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   const searchAbortRef = useRef<AbortController | null>(null);
   /** In-flight corridor preload — Search may wait briefly so cold path hits cache. */
   const preloadPromiseRef = useRef<Promise<{ ok: boolean; poiCount?: number }> | null>(null);
+  /** Live MapLibre camera — Search reads this so desktop resize can't leave a stale bbox. */
+  const planMapViewRef = useRef<PlanMapViewApi | null>(null);
+  const mapBboxRef = useRef<PlanMapBBox | null>(null);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -722,18 +730,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       });
     }
 
-    for (const c of analysis.climbs) {
-      if (c.startLat != null && c.startLon != null) {
-        push({
-          id: c.id,
-          lat: c.startLat,
-          lon: c.startLon,
-          kind: "climb",
-          layer: "system",
-          name: c.name,
-        });
-      }
-    }
+    // Climbs stay in analysis / briefing — not plotted on the Plan/Ride map.
     for (const g of analysis.remoteGaps) {
       if (g.midLat != null && g.midLon != null) {
         push({
@@ -772,20 +769,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         });
       }
     }
-    for (const d of decisions) {
-      if (d.lat != null && d.lon != null) {
-        push({
-          id: d.id,
-          lat: d.lat,
-          lon: d.lon,
-          kind: "decision",
-          layer: "system",
-          name: d.title,
-        });
-      }
-    }
+    // Critical decisions (incl. major_climb / overnight-before-climb) stay in the
+    // briefing sheet only. Every decision glyph was the mountain/climb icon, so
+    // plotting any of them looked like a climb pin on Plan/Ride.
     return out;
-  }, [analysis, recommended, decisions, searchResults, verifiedStops]);
+  }, [analysis, recommended, searchResults, verifiedStops]);
 
   const nearestRef = useMemo(() => {
     if (mode === "ride" && route) {
@@ -944,8 +932,10 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     bbox: PlanMapBBox,
     userMoved: boolean,
   ) => {
+    const norm = normalizePlanSearchBBox(bbox);
+    mapBboxRef.current = norm;
     setMapCenter(center);
-    setMapBbox(bbox);
+    setMapBbox(norm);
     // Chip appears only after the user moves the map (and a category is selected).
     if (userMoved && mode === "plan" && !searchingArea) setSearchPrompted(true);
   };
@@ -959,10 +949,17 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   });
 
   const searchThisArea = async () => {
-    if (!mapBbox || !route || searchingArea || !qa) return;
-    const bbox = mapBbox;
+    if (!route || searchingArea || !qa) return;
+    // Prefer live map bounds — React state can lag desktop layout resize / camera ease.
+    const live = planMapViewRef.current?.getBBox() ?? null;
+    const bbox = live || mapBboxRef.current || mapBbox;
+    if (!bbox || isDegeneratePlanSearchBBox(bbox)) return;
+    const norm = normalizePlanSearchBBox(bbox);
+    if (isDegeneratePlanSearchBBox(norm)) return;
+    mapBboxRef.current = norm;
+    setMapBbox(norm);
     // Too zoomed out — never hit the API; exclusive zoomIn chip only.
-    if (bboxSpanTooLarge(bbox)) {
+    if (bboxSpanTooLarge(norm)) {
       setSearchPrompted(true);
       return;
     }
@@ -972,7 +969,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     const ac = new AbortController();
     searchAbortRef.current = ac;
 
-    const SEARCH_BATCH = searchLimitForQa(qa, bbox);
+    const SEARCH_BATCH = searchLimitForQa(qa, norm);
     const activeQa = qa;
     const verifiedIds = verifiedIdSet([
       ...verifiedStops,
@@ -998,6 +995,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
     let hardError = false;
     let thrown = false;
     let searchOk = false;
+    let zoomInOnly = false;
     const tClient = typeof performance !== "undefined" ? performance.now() : Date.now();
     let timeoutId: number | null = null;
 
@@ -1021,7 +1019,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       }, SEARCH_TIMEOUT_MS);
 
       // Single request — corridor cache / analysis hydrate makes tiling unnecessary.
-      const res = await searchRouteViewportPois(route.id, bbox, {
+      const res = await searchRouteViewportPois(route.id, norm, {
         group,
         limit: SEARCH_BATCH,
         exclude,
@@ -1040,8 +1038,10 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
         setSearchResults(replaceSearchResults(collected.slice(0, SEARCH_BATCH), verifiedIds));
         setSearchStatus(searchStatusForQa(activeQa, 2));
       }
-      if (mapped.length === 0 && res.error && !isZoomInSearchError(res.error)) {
-        hardError = true;
+      if (mapped.length === 0 && res.error) {
+        // Zoom-in is a client chip state — never toast "No stops" for it.
+        if (isZoomInSearchError(res.error)) zoomInOnly = true;
+        else hardError = true;
       }
       const clientMs =
         (typeof performance !== "undefined" ? performance.now() : Date.now()) - tClient;
@@ -1067,6 +1067,14 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
       }
       // Always clear spinner for this generation; superseded searches leave the new one running.
       if (gen !== searchGenRef.current) {
+        if (searchAbortRef.current === ac) searchAbortRef.current = null;
+        return;
+      }
+
+      if (zoomInOnly) {
+        setSearchingArea(false);
+        setSearchStatus(null);
+        setSearchPrompted(true);
         if (searchAbortRef.current === ac) searchAbortRef.current = null;
         return;
       }
@@ -1100,6 +1108,20 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   };
 
   if (error && !route) {
+    const needsPro =
+      /pro|race pass/i.test(error) || error.toLowerCase().includes("upgrade");
+    if (needsPro) {
+      return (
+        <div className="page-enter">
+          <ProGate
+            feature="planning"
+            intent="import"
+            onBack={onBack}
+            onOpenAccount={onOpenAccount}
+          />
+        </div>
+      );
+    }
     return (
       <div className="ultra-page">
         <header className="ultra-page__nav">
@@ -1128,7 +1150,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
   return (
     <div className={`plan-workspace${mode === "ride" ? " plan-workspace--ride" : ""}`}>
       <header className="plan-workspace__top">
-        <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to Ultras">
+        <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to Planning">
           <Icon name="chevronLeft" size={20} />
         </button>
         <div className="plan-workspace__top-actions">
@@ -1167,6 +1189,7 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
             searching={searchingArea}
             onSelectMarker={onSelectMarker}
             onViewChange={onViewChange}
+            viewApiRef={planMapViewRef}
           />
         )}
         {mode === "plan" && analyzing && !analysis && (
@@ -1245,7 +1268,11 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               aria-pressed={overflowOpen}
               onClick={() => setOverflowOpen((o) => !o)}
             >
-              ···
+              <span className="plan-map-fab__more" aria-hidden>
+                <i />
+                <i />
+                <i />
+              </span>
             </button>
           </div>
         )}
@@ -1293,20 +1320,29 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
           <nav className="plan-qa" aria-label="Quick actions">
             {QUICK_ACTIONS.map((a) => {
               const busy = searchingArea && qa === a.id;
+              const on = qa === a.id;
               return (
                 <button
                   key={a.id}
                   type="button"
-                  className={`plan-qa__btn${qa === a.id ? " is-on" : ""}${busy ? " is-loading" : ""}`}
+                  className={`plan-qa__btn plan-qa__btn--${a.id}${on ? " is-on" : ""}${busy ? " is-loading" : ""}`}
                   onClick={() => toggleQa(a.id)}
-                  aria-pressed={qa === a.id}
+                  aria-pressed={on}
                   aria-busy={busy || undefined}
                   title={busy ? searchStatus || a.label : a.label}
                 >
                   <span className="plan-qa__icon" aria-hidden>
-                    {busy ? <span className="plan-qa__spinner" /> : a.emoji}
+                    {busy ? (
+                      <span className="plan-qa__spinner" />
+                    ) : (
+                      <RydnPlanIcon
+                        id={iconForQuickAction(a.id)}
+                        size={24}
+                        variant={on ? "selected" : "outlined"}
+                      />
+                    )}
                   </span>
-                  <span>{a.label}</span>
+                  <span className="plan-qa__label">{a.label}</span>
                 </button>
               );
             })}
@@ -1327,8 +1363,20 @@ export default function RoutePage({ routeId, onBack, onDeleted }: Props) {
               setSelectedId(id);
               setFocusIds([id]);
             }}
+            onProRequired={() => setShowExportGate(true)}
           />
         )}
+
+        {showExportGate ? (
+          <div className="pro-gate-overlay" role="dialog" aria-modal="true" aria-label="GPX export is Pro">
+            <ProGate
+              feature="gpxExport"
+              intent="subscribe"
+              onBack={() => setShowExportGate(false)}
+              onOpenAccount={onOpenAccount}
+            />
+          </div>
+        ) : null}
 
         {/* Compact stop sheet — Plan only (Ride cards carry the timeline). */}
         {mode === "plan" && (selectedStop || peek) && (

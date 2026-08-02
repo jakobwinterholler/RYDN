@@ -91,6 +91,16 @@ export interface AuthConfig {
   setup?: SetupStatus;
 }
 
+/** guest = unauthenticated; free/pro = logged-in accounts (from /api/auth/me). */
+export type SubscriptionTier = "guest" | "free" | "pro";
+
+export interface UserBilling {
+  stripeStatus?: string | null;
+  hasStripeCustomer?: boolean;
+  redeemPro?: boolean;
+  racePassCredits?: number;
+}
+
 export interface User {
   id: string;
   provider: "google" | "local" | null; // auth identity provider
@@ -100,6 +110,34 @@ export interface User {
   onboardedAt: number | null;
   /** User-set body weight (kg) for Avg W/kg. Null = unset (may fall back to Strava). */
   weightKg?: number | null;
+  /** Source of truth from backend user record — never invent Pro on the client. */
+  subscriptionTier?: SubscriptionTier;
+  subscriptionSource?: string | null;
+  billing?: UserBilling;
+  /** Unused one-route Race Pass credits. */
+  racePassCredits?: number;
+}
+
+export interface BillingPricing {
+  currency: string;
+  monthlyCents: number;
+  yearlyCents: number;
+  racePassCents?: number;
+  monthlyLabel: string;
+  yearlyLabel: string;
+  racePassLabel?: string;
+}
+
+export interface BillingStatus {
+  configured: boolean;
+  publishableKey: string | null;
+  hasStripeCustomer: boolean;
+  stripeStatus: string | null;
+  subscriptionTier: SubscriptionTier;
+  subscriptionSource: string | null;
+  pricing?: BillingPricing;
+  racePassCredits?: number;
+  racePassConfigured?: boolean;
 }
 
 // A ride provider (where rides come from) — separate from auth.
@@ -153,6 +191,7 @@ export interface Ultra {
   updatedAt: number;
   name: string;
   year: number | null;
+  /** Trip taxonomy: race | bikepacking | ultra (long ride). Legacy `tour` maps to ultra in UI. */
   kind: string;
   status: RideStatus;
   area?: RideArea;
@@ -171,6 +210,8 @@ export interface Ultra {
   rating?: number | null;
   coverUrl?: string | null;
   logoUrl?: string | null;
+  /** Lightweight stitched polyline for Trips shelf thumbs (~60–100 pts). */
+  previewPoints?: number[][];
   distanceKm: number;
   elevationGainM: number;
   /** Ultra elapsed: first ride start → last ride end (includes overnight gaps). */
@@ -264,6 +305,8 @@ export interface PlannedRouteSummary {
   verificationProgress?: { done: number; total: number };
   objectType: "route";
   hasAnalysis?: boolean;
+  /** Present when a Race Pass unlocked this route for Free users. */
+  proUnlock?: { source?: string; at?: number; checkoutSessionId?: string | null } | null;
 }
 
 export interface RoutePreparation {

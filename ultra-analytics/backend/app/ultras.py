@@ -26,6 +26,47 @@ from .paths import users_dir
 
 _USERS_DIR = users_dir()
 
+# Trip kind taxonomy (cabinet / Trips filters). Free-string stored; normalize on write.
+ULTRA_KINDS = ("race", "bikepacking", "tour", "ultra")
+# Cabinet card thumbs — keep payload small (~60–100 pts).
+PREVIEW_MAX_POINTS = 80
+PREVIEW_PER_RIDE = 48
+
+
+def normalize_ultra_kind(raw: Any) -> str:
+    """Map API / legacy values onto race | bikepacking | tour | ultra."""
+    k = str(raw or "").strip().lower()
+    if k == "race":
+        return "race"
+    if k in ("bikepacking", "bikepack"):
+        return "bikepacking"
+    if k in ("tour", "tours"):
+        return "tour"
+    if k in ("training", "long", "longride", "long_ride", "ultra", ""):
+        return "ultra"
+    return "ultra"
+
+
+def build_preview_points(uid: str, activity_ids: List[str]) -> List[List[float]]:
+    """Lightweight stitched polyline for Trips shelf thumbs — never a full GPS dump."""
+    from . import store as ride_store
+    from .util.geo import decimate_points
+
+    if not activity_ids:
+        return []
+    flat: List[List[float]] = []
+    for aid in activity_ids:
+        pts = ride_store.get_route_points(uid, aid, max_points=PREVIEW_PER_RIDE)
+        for p in pts:
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                try:
+                    flat.append([float(p[0]), float(p[1])])
+                except (TypeError, ValueError):
+                    continue
+    if len(flat) < 2:
+        return []
+    return decimate_points(flat, PREVIEW_MAX_POINTS)
+
 
 def _ultras_dir(uid: str) -> str:
     return os.path.join(_USERS_DIR, uid, "ultras")
@@ -294,8 +335,8 @@ def recompute_ultra(uid: str, ultra_id: str, rides: Optional[List[dict]] = None)
     """Prune missing members and refresh all derived Ultra fields.
 
     Recalculates distance, elevation, elapsed, moving time, day count, year,
-    date range, and (unless manually overridden) countries. Route preview is
-    derived live in ``ultra_detail`` from remaining members — never stored stale.
+    date range, countries (unless manual), and a lightweight ``previewPoints``
+    polyline for Trips shelf thumbs. Full detail route stays live in ``ultra_detail``.
     """
     from . import store as ride_store
 
@@ -328,6 +369,14 @@ def recompute_ultra(uid: str, ultra_id: str, rides: Optional[List[dict]] = None)
         if not detected:
             ultra["country"] = None
 
+    ultra["kind"] = normalize_ultra_kind(ultra.get("kind"))
+    built_preview = build_preview_points(uid, clean_ids)
+    prev_preview = ultra.get("previewPoints")
+    # Keep a prior good thumb if GPS temporarily unavailable (old trips).
+    if len(built_preview) >= 2 or not (
+        isinstance(prev_preview, list) and len(prev_preview) >= 2
+    ):
+        ultra["previewPoints"] = built_preview
     ultra["updatedAt"] = time.time()
     saved = _save(uid, ultra)
     invalidate_ultra_analysis(uid, ultra_id)
@@ -489,8 +538,9 @@ def create_ultra(
         "updatedAt": time.time(),
         "name": clean_ultra_name(name),
         "year": year,
-        "kind": kind,  # ultra | race | bikepacking | training
+        "kind": normalize_ultra_kind(kind),  # race | bikepacking | tour | ultra
         "status": normalize_status(status, analyzed=status in ("completed", "reviewed")),
+        "previewPoints": [],
         "activityIds": list(activity_ids or []),
         "activityOrderManual": bool(activity_order_manual),
         "country": country,
@@ -559,6 +609,8 @@ def update_ultra(uid: str, ultra_id: str, patch: Dict[str, Any]) -> Optional[dic
     for key, value in patch.items():
         if key in allowed:
             ultra[key] = value
+    if "kind" in patch:
+        ultra["kind"] = normalize_ultra_kind(patch.get("kind"))
     if "name" in patch and isinstance(patch.get("name"), str):
         ultra["name"] = clean_ultra_name(patch["name"])
     if "result" in patch or "finishPlace" in patch:
@@ -592,6 +644,11 @@ def update_ultra(uid: str, ultra_id: str, patch: Dict[str, Any]) -> Optional[dic
     saved = _save(uid, ultra)
     if "activityIds" in patch:
         invalidate_ultra_analysis(uid, ultra_id)
+        # Membership change — refresh shelf preview polyline.
+        ultra = get_ultra(uid, ultra_id) or ultra
+        ultra["previewPoints"] = build_preview_points(uid, list(ultra.get("activityIds") or []))
+        ultra["updatedAt"] = time.time()
+        return _save(uid, ultra)
     return saved
 
 
@@ -685,6 +742,7 @@ def ultra_from_activities(uid: str, name: str, activities: List[dict], **meta: A
         logo_url=meta.get("logoUrl"),
     )
     apply_activity_totals(ultra, activities)
+    ultra["previewPoints"] = build_preview_points(uid, activity_ids)
     return _save(uid, ultra)
 
 
@@ -902,58 +960,243 @@ def ultra_detail(uid: str, ultra_id: str, rides: List[dict]) -> Optional[dict]:
     }
 
 
-def suggest_ultra_groups(rides: List[dict], claimed: set[str]) -> List[dict]:
-    """Heuristic only — never creates Ultras. Software suggests; humans decide.
+# Overnight staging suggestions — geo thresholds (km).
+_OVERNIGHT_LINK_KM = 30.0  # Day N finish → Day N+1 start
+_RELOCATED_MIN_KM = 12.0  # Day N start vs Day N+1 start (must have moved)
+_STAGE_PROGRESS_MIN_KM = 10.0  # start→end of a day must show travel
+_SAME_CLUSTER_KM = 10.0  # same place / no new progression
+_MAX_STAGE_GAP_DAYS = 2  # rest day between stages is ok
+_MAX_GROUP_SUGGESTIONS = 5
 
-    Groups Library source days that look related (shared name stem before
-    " - Day" / " Day " patterns, or identical name prefix).
+
+def _suggestion_day_key(iso: object) -> Optional[str]:
+    if not iso:
+        return None
+    s = str(iso).strip()
+    return s[:10] if len(s) >= 10 else None
+
+
+def _suggestion_day_ordinal(iso: object) -> Optional[int]:
+    """YYYY-MM-DD → ordinal; None if unusable."""
+    key = _suggestion_day_key(iso)
+    if not key:
+        return None
+    try:
+        y, m, d = int(key[0:4]), int(key[5:7]), int(key[8:10])
+        from datetime import date
+
+        return date(y, m, d).toordinal()
+    except (ValueError, TypeError):
+        return None
+
+
+def _ride_endpoints(
+    uid: str, ride_id: str
+) -> Optional[tuple[tuple[float, float], tuple[float, float]]]:
+    """Return ((start_lat, start_lon), (end_lat, end_lon)) from a lightweight track."""
+    from . import store as ride_store
+
+    pts = ride_store.get_route_points(uid, ride_id, max_points=48)
+    if len(pts) < 2:
+        return None
+    try:
+        s_lat, s_lon = float(pts[0][0]), float(pts[0][1])
+        e_lat, e_lon = float(pts[-1][0]), float(pts[-1][1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return ((s_lat, s_lon), (e_lat, e_lon))
+
+
+def _km_between(a: tuple[float, float], b: tuple[float, float]) -> float:
+    from .util.geo import haversine_m
+
+    return haversine_m(a[0], a[1], b[0], b[1]) / 1000.0
+
+
+def _overnight_stage_link(
+    prev: dict, nxt: dict
+) -> bool:
+    """True when prev→nxt reads as a logical overnight touring link.
+
+    Requires: finish near next start, overnight relocation away from prev start,
+    and next day either returns toward prev start or continues to a new place —
+    not same-garage loops or camp day-trips that don't progress.
     """
+    start_a = prev["start"]
+    end_a = prev["end"]
+    start_b = nxt["start"]
+    end_b = nxt["end"]
+
+    # Chain hinge: Day N finishes where Day N+1 begins.
+    if _km_between(end_a, start_b) > _OVERNIGHT_LINK_KM:
+        return False
+    # Relocated overnight — next start is not Day N's garage/start.
+    if _km_between(start_a, start_b) < _RELOCATED_MIN_KM:
+        return False
+    # Each day must itself be a stage (point-to-point), not a tiny dither.
+    if _km_between(start_a, end_a) < _STAGE_PROGRESS_MIN_KM:
+        return False
+    if _km_between(start_b, end_b) < _STAGE_PROGRESS_MIN_KM:
+        return False
+
+    # Day N+1 either heads back toward Day N start, or onward to a new place.
+    returns_toward_start = _km_between(end_b, start_a) <= _OVERNIGHT_LINK_KM
+    onward_new_place = (
+        _km_between(end_b, start_a) >= _RELOCATED_MIN_KM
+        and _km_between(end_b, end_a) >= _RELOCATED_MIN_KM
+    )
+    if not (returns_toward_start or onward_new_place):
+        return False
+    # Reject day-trips that merely return to the overnight camp (end≈start_b/end_a)
+    # without returning home or reaching a new place.
+    if (not returns_toward_start) and _km_between(end_b, end_a) <= _SAME_CLUSTER_KM:
+        return False
+    return True
+
+
+def _stage_dates_ok(prev: dict, nxt: dict) -> bool:
+    a = prev.get("day_ord")
+    b = nxt.get("day_ord")
+    if a is None or b is None:
+        return False
+    gap = b - a
+    return 1 <= gap <= _MAX_STAGE_GAP_DAYS
+
+
+def _suggestion_label(group: List[dict]) -> str:
     import re
 
-    buckets: dict[str, List[dict]] = {}
-    for r in rides:
-        rid = r.get("id")
-        if not rid or rid in claimed:
-            continue
-        name = (r.get("name") or "").strip()
+    names = [(g.get("name") or "").strip() for g in group]
+    stems: List[str] = []
+    for name in names:
         if not name:
             continue
         stem = re.split(r"\s+[—–\-]\s+Day\s*\d+", name, flags=re.I)[0]
         stem = re.split(r"\s+Day\s*\d+\b", stem, flags=re.I)[0].strip()
-        if len(stem) < 4:
-            continue
-        key = stem.lower()
-        buckets.setdefault(key, []).append(r)
+        if len(stem) >= 4:
+            stems.append(stem)
+    if stems and len({s.lower() for s in stems}) == 1:
+        return stems[0]
+    first = names[0] if names else ""
+    if first:
+        return first.split(" - ")[0].split(" — ")[0].strip() or first
+    return "Multi-day trip"
 
-    out: List[dict] = []
-    for key, group in buckets.items():
-        if len(group) < 2:
+
+def suggest_ultra_groups(
+    rides: List[dict], claimed: set[str], uid: Optional[str] = None
+) -> List[dict]:
+    """Heuristic only — never creates Ultras. Software suggests; humans decide.
+
+    Suggests multi-day / bikepacking groups only when rides form a logical
+    overnight chain: Day N finish ≈ Day N+1 start (relocated from Day N start),
+    and Day N+1 continues onward or back toward Day N start — not same-garage
+    training loops that merely share a name stem.
+    """
+    if not uid:
+        return []
+
+    candidates: List[dict] = []
+    for r in rides:
+        rid = r.get("id")
+        if not rid or rid in claimed:
             continue
-        group = sorted(group, key=lambda x: x.get("date") or "")
-        out.append(
+        day_ord = _suggestion_day_ordinal(r.get("date"))
+        if day_ord is None:
+            continue
+        ends = _ride_endpoints(uid, rid)
+        if not ends:
+            continue
+        start, end = ends
+        candidates.append(
             {
-                "label": group[0].get("name", "").split(" - ")[0].split(" — ")[0].strip()
-                or key,
-                "activityIds": [g["id"] for g in group],
-                "count": len(group),
-                "message": "These source days look like they belong to the same Ultra.",
+                "id": rid,
+                "name": (r.get("name") or "").strip(),
+                "date": r.get("date"),
+                "day_ord": day_ord,
+                "start": start,
+                "end": end,
             }
         )
-    out.sort(key=lambda g: -g["count"])
-    return out[:5]
+
+    candidates.sort(key=lambda c: (c["day_ord"], c.get("date") or "", c["id"]))
+
+    used: set[str] = set()
+    chains: List[List[dict]] = []
+    for start in candidates:
+        if start["id"] in used:
+            continue
+        chain = [start]
+        while True:
+            last = chain[-1]
+            best: Optional[dict] = None
+            best_link_km: Optional[float] = None
+            for nxt in candidates:
+                if nxt["id"] in used or any(nxt["id"] == c["id"] for c in chain):
+                    continue
+                if not _stage_dates_ok(last, nxt):
+                    continue
+                if not _overnight_stage_link(last, nxt):
+                    continue
+                link_km = _km_between(last["end"], nxt["start"])
+                if best is None or link_km < (best_link_km or 1e9):
+                    best = nxt
+                    best_link_km = link_km
+            if best is None:
+                break
+            chain.append(best)
+        if len(chain) >= 2:
+            for c in chain:
+                used.add(c["id"])
+            chains.append(chain)
+
+    out: List[dict] = []
+    for group in chains:
+        out.append(
+            {
+                "label": _suggestion_label(group),
+                "activityIds": [g["id"] for g in group],
+                "count": len(group),
+                "message": "These rides look like connected overnight stages.",
+            }
+        )
+    out.sort(key=lambda g: (-g["count"], g["label"]))
+    return out[:_MAX_GROUP_SUGGESTIONS]
+
+
+def _ensure_preview_points(uid: str, ultra: dict) -> dict:
+    """Attach ``previewPoints`` for shelf thumbs without a full recompute when possible."""
+    pts = ultra.get("previewPoints")
+    if isinstance(pts, list) and len(pts) >= 2:
+        return ultra
+    ids = list(ultra.get("activityIds") or [])
+    built = build_preview_points(uid, ids) if ids else []
+    ultra["previewPoints"] = built
+    # Always persist a successful build; skip writing empty so a later sync can retry.
+    if len(built) < 2:
+        return ultra
+    try:
+        ultra["updatedAt"] = time.time()
+        return _save(uid, ultra)
+    except OSError:
+        return ultra
 
 
 def cabinet_payload(uid: str, rides: List[dict]) -> dict:
     """Ultras are only those the rider created. Everything else stays in Library.
 
     Never auto-creates Ultras. Optional suggestions are hints only.
+    Shelf thumbs use ``previewPoints`` (~80 pts) — never N× getUltra.
     """
     rides_by_id = {r["id"] for r in rides}
     for u in list_ultras(uid):
         ids = list(u.get("activityIds") or [])
         needs_totals = u.get("rideElapsedTimeS") is None or u.get("movingTimeS") is None
+        needs_preview = not (isinstance(u.get("previewPoints"), list) and len(u.get("previewPoints") or []) >= 2)
         if needs_totals or any(aid not in rides_by_id for aid in ids):
             recompute_ultra(uid, u["id"], rides=rides)
+        elif needs_preview:
+            _ensure_preview_points(uid, u)
 
     ultras = list_ultras(uid)
     claimed = claimed_activity_ids(uid)
@@ -973,5 +1216,5 @@ def cabinet_payload(uid: str, rides: List[dict]) -> dict:
         "completedUltras": completed_ultras,
         "ungroupedRides": library,
         "plannedRoutes": [],  # filled by get_cabinet — keep key stable for older callers
-        "suggestions": suggest_ultra_groups(library, claimed),
+        "suggestions": suggest_ultra_groups(library, claimed, uid=uid),
     }

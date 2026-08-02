@@ -1,10 +1,48 @@
-/** Bold 24×24 silhouettes for sunlight-readable map markers. */
+/** 24×24 plan glyphs — open strokes + solid silhouettes for dock & map. */
 
 import type { PlanIconId } from "./types";
 
-/** Stroke paths (viewBox 0 0 24 24). Thick round caps — reads at a glance. */
+/**
+ * Draw mode for selected/filled + map sprites:
+ * - solid: single closed silhouette (evenodd holes OK) — Water/Shop/Sleep
+ * - stroke: open line language for secondary icons
+ *
+ * Primary dock icons (Water / Shops / Sleep) are solid so selected weight matches.
+ */
+export type PlanGlyphMode = "solid" | "stroke";
+
+export const PLAN_ICON_MODE: Record<PlanIconId, PlanGlyphMode> = {
+  waterFountain: "solid",
+  naturalWater: "stroke",
+  supermarket: "solid",
+  shop24h: "solid",
+  gasStation: "stroke",
+  bikeShop: "stroke",
+  mechanic: "stroke",
+  pharmacy: "solid",
+  cafe: "stroke",
+  restaurant: "stroke",
+  hotel: "stroke",
+  camping: "stroke",
+  shelter: "stroke",
+  trainStation: "stroke",
+  hospital: "stroke",
+  atm: "stroke",
+  verified: "solid",
+  rejected: "stroke",
+  sleepSpot: "solid",
+  resupply: "stroke",
+  emergency: "stroke",
+  toilet: "stroke",
+  climb: "solid",
+  remote: "stroke",
+  stage: "stroke",
+  pin: "stroke",
+};
+
+/** Paths (viewBox 0 0 24 24). Bold, simple — outdoor glanceable at ~22–28px. */
 export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
-  /** Material water_drop — plump filled teardrop ≈ 💧 */
+  /** Plump filled teardrop — clear solid silhouette when selected. */
   waterFountain: [
     "M12 2.1C7.4 6.15 5 9.55 5 12.55 5 16.9 8.35 20 12 20s7-3.1 7-7.45c0-3-2.4-6.4-7-10.45z",
   ],
@@ -13,9 +51,12 @@ export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
     "M4.5 18c1.8-1.2 3.2-1.2 5 0s3.2 1.2 5 0 3.2-1.2 5 0",
     "M12 4.5v6",
   ],
-  /** Material shopping_cart — handle + basket + wheels ≈ 🛒 */
+  /**
+   * Shopping bag — one evenodd path (body + open handle).
+   * Wide tote silhouette; handle hole reads at dock + map size.
+   */
   supermarket: [
-    "M1.5 3.2v2.1h1.85l3.35 7.05-1.25 2.25c-.2.35-.3.75-.3 1.15 0 1.25 1.05 2.25 2.35 2.25H19.5v-2.1H8.05c-.2 0-.35-.15-.35-.35l.05-.2.8-1.45h6.85c.85 0 1.6-.45 2-1.15l3.3-5.95c.1-.2.15-.4.15-.6 0-.6-.5-1.1-1.1-1.1H5.55l-.85-1.85H1.5zm14.8 15.1c-1.15 0-2.05.9-2.05 2.05S15.15 22.4 16.3 22.4s2.05-.9 2.05-2.05-.9-2.05-2.05-2.05zM7.2 18.3c-1.15 0-2.05.9-2.05 2.05S6.05 22.4 7.2 22.4s2.05-.9 2.05-2.05S8.35 18.3 7.2 18.3z",
+    "M5.3 8.3h13.4l-1.25 12.7a1.85 1.85 0 01-1.8 1.5H8.35a1.85 1.85 0 01-1.8-1.5L5.3 8.3zm3.55 0V5.85a3.15 3.15 0 016.3 0V8.3h-1.65V5.85a1.5 1.5 0 00-3 0V8.3H8.85z",
   ],
   /** Crescent moon — 24h */
   shop24h: [
@@ -92,11 +133,11 @@ export const PLAN_ICON_PATHS: Record<PlanIconId, string[]> = {
     "M8.5 8.5l7 7M15.5 8.5l-7 7",
   ],
   /**
-   * Material hotel — headboard wall + mattress + pillow bump ≈ 🛏️
-   * (single compound path; unmistakable at marker size)
+   * Classic bed — headboard | pillow | mattress (open gaps, aligned stack).
+   * Single evenodd path like the tote; bold mass for outdoor dock/map size.
    */
   sleepSpot: [
-    "M7 12.2c1.7 0 3.1-1.4 3.1-3.1S8.7 6 7 6s-3.1 1.4-3.1 3.1 1.4 3.1 3.1 3.1zM19.5 7.2h-8.2v6.5H3.2V5.5H1.5V20h2.1v-2.6h17.2V20h2.1v-8.3c0-2.2-1.8-4.5-3.4-4.5z",
+    "M3.5 5h3.6v15H3.5zM9.2 8.7h11.3v3.5H9.2zM9.2 13.6h12.3v6.4H9.2z",
   ],
   resupply: [
     "M5 8.5h14l-1.2 10.2a1.5 1.5 0 01-1.5 1.3H7.7a1.5 1.5 0 01-1.5-1.3L5 8.5z",

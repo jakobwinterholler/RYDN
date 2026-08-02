@@ -10,6 +10,8 @@ import RydnLoader from "./ui/RydnLoader";
 import ScoreLine, { fmtElapsed } from "./ui/ScoreLine";
 import UltraElevProfile from "./ui/UltraElevProfile";
 import { cleanDayTitle, cleanUltraTitle } from "./ui/titles";
+import { normalizeUltraKind, type UltraKind } from "../trips/kind";
+import TripKindControl from "./ui/TripKindControl";
 
 /** Opening choreography: hold pre-draw → play after map paints (each Ultra mount). */
 type IntroReveal = "hold" | "play" | false;
@@ -124,8 +126,8 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
     const n = block.length;
     const ok = window.confirm(
       n > 1
-        ? `Remove this day (${n} ride recordings) from the Ultra? The rides stay in your Library.`
-        : "Remove this day from the Ultra? The ride stays in your Library.",
+        ? `Remove this day (${n} ride recordings) from this trip? The rides stay in your Library.`
+        : "Remove this day from this trip? The ride stays in your Library.",
     );
     if (!ok) return;
     const drop = new Set(block);
@@ -159,7 +161,7 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
   if (!detail) {
     return (
       <div className="app-loading">
-        <RydnLoader label="Opening Ultra…" />
+        <RydnLoader label="Opening trip…" />
       </div>
     );
   }
@@ -176,7 +178,7 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
   return (
     <div className="ultra-page">
       <header className="ultra-page__nav">
-        <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to Ultras">
+        <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to Trips">
           <Icon name="chevronLeft" size={22} />
         </button>
         <button type="button" className="btn btn--ghost ultra-page__edit" onClick={() => setEditOpen(true)}>
@@ -284,7 +286,7 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
         </div>
 
         <button type="button" className="ultra-analytics-link" onClick={onOpenAnalytics}>
-          <span>See Ultra Analytics</span>
+          <span>See trip analytics</span>
           <Icon name="chevronRight" size={18} />
         </button>
       </div>
@@ -301,7 +303,7 @@ export default function UltraPage({ ultraId, onBack, onOpenRide, onOpenAnalytics
         {days.length === 0 ? (
           <div className="empty empty--compact">
             <p className="empty__body">
-              This Ultra has no days yet. Open Library, select related source rides, and add them here —
+              This trip has no days yet. Open Library, select related source rides, and add them here —
               then Overview and Analytics unlock.
             </p>
             <button type="button" className="btn btn--primary" onClick={() => setAddOpen(true)}>
@@ -460,7 +462,7 @@ function DayRow({
             >
               <Icon name="chevronRight" size={18} className="icon--rotate-90" />
             </button>
-            <button type="button" className="icon-btn icon-btn--danger" disabled={busy} onClick={onRemove} aria-label="Remove from Ultra">
+            <button type="button" className="icon-btn icon-btn--danger" disabled={busy} onClick={onRemove} aria-label="Remove from trip">
               <Icon name="minus" size={18} />
             </button>
           </div>
@@ -501,12 +503,18 @@ function EditUltraSheet({
 }) {
   const [name, setName] = useState(cleanUltraTitle(ultra.name));
   const [result, setResult] = useState((ultra.result || ultra.finishPlace || "").trim());
+  const [kind, setKind] = useState<UltraKind>(() => normalizeUltraKind(ultra.kind));
   const [countries, setCountries] = useState((ultra.countryCodes || []).join(", "));
   const [countriesTouched, setCountriesTouched] = useState(false);
   const [dateStart, setDateStart] = useState(ultra.dateStart || "");
   const [dateEnd, setDateEnd] = useState(ultra.dateEnd || "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const onKindChange = (next: UltraKind) => {
+    setKind(next);
+    if (next !== "race") setResult("");
+  };
 
   const submit = async () => {
     if (!name.trim()) return;
@@ -515,9 +523,10 @@ function EditUltraSheet({
     try {
       const body: Parameters<typeof patchUltra>[1] = {
         name: cleanUltraTitle(name.trim()),
-        result: result.trim() || null,
+        result: kind === "race" ? result.trim() || null : null,
         dateStart: dateStart || null,
         dateEnd: dateEnd || null,
+        kind,
       };
       if (countriesTouched) {
         body.countryCodes = parseCountryCodes(countries);
@@ -533,7 +542,7 @@ function EditUltraSheet({
 
   const remove = async () => {
     const ok = window.confirm(
-      "Delete this Ultra? Source days stay in your Library — only the collection is removed.",
+      "Delete this trip? Source days stay in your Library — only the collection is removed.",
     );
     if (!ok) return;
     setBusy(true);
@@ -560,7 +569,7 @@ function EditUltraSheet({
             Cancel
           </button>
           <h2 id="edit-ultra-title" className="sheet__title">
-            Edit Ultra
+            Edit trip
           </h2>
           <button
             type="button"
@@ -572,32 +581,35 @@ function EditUltraSheet({
           </button>
         </header>
 
-        <div className="sheet__body">
-          <p className="modal__lead">
-            Year {ultra.year ?? "—"} comes from your rides. Change only what software cannot know.
-          </p>
-
+        <div className="sheet__body edit-trip">
           <label className="field">
-            <span>Ultra name</span>
+            <span>Name</span>
             <input value={name} onChange={(e) => setName(e.target.value)} autoFocus enterKeyHint="done" />
           </label>
 
-          <label className="field">
-            <span>Result</span>
-            <input
-              value={result}
-              onChange={(e) => setResult(e.target.value)}
-              placeholder="14th · Winner · DNF"
-              list="ultra-result-suggestions"
-            />
-            <datalist id="ultra-result-suggestions">
-              <option value="Winner" />
-              <option value="2nd" />
-              <option value="3rd" />
-              <option value="DNF" />
-              <option value="DNS" />
-            </datalist>
-          </label>
+          <div className="field">
+            <span>Type</span>
+            <TripKindControl value={kind} onChange={onKindChange} />
+          </div>
+
+          {kind === "race" && (
+            <label className="field">
+              <span>Result</span>
+              <input
+                value={result}
+                onChange={(e) => setResult(e.target.value)}
+                placeholder="14th · Winner · DNF"
+                list="ultra-result-suggestions"
+              />
+              <datalist id="ultra-result-suggestions">
+                <option value="Winner" />
+                <option value="2nd" />
+                <option value="3rd" />
+                <option value="DNF" />
+                <option value="DNS" />
+              </datalist>
+            </label>
+          )}
 
           <label className="field">
             <span>Countries</span>
@@ -622,18 +634,19 @@ function EditUltraSheet({
               <input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)} />
             </label>
           </div>
-          <p className="field__hint">Dates update automatically when you add or remove rides.</p>
+          <p className="field__hint">
+            Year {ultra.year ?? "—"} and dates update from your rides when you add or remove days.
+          </p>
 
           {error && <div className="modal__error">{error}</div>}
 
           <button
             type="button"
-            className="btn btn--ghost"
-            style={{ color: "var(--danger)", marginTop: 24 }}
+            className="btn btn--ghost edit-trip__delete"
             disabled={busy}
             onClick={() => void remove()}
           >
-            Delete Ultra
+            Delete trip
           </button>
         </div>
 
@@ -719,7 +732,7 @@ function AddRidesSheet({
         </header>
 
         <div className="sheet__body">
-          <p className="modal__lead">Library days within this Ultra’s dates — tap to add.</p>
+          <p className="modal__lead">Library days within this trip’s dates — tap to add.</p>
 
           <label className="field field--search">
             <Icon name="search" size={18} />
@@ -758,7 +771,7 @@ function AddRidesSheet({
 
           <div className="add-rides__filters">
             <button type="button" className={`chip${showAll ? "" : " is-on"}`} onClick={() => setShowAll(false)}>
-              Ultra dates
+              Trip dates
             </button>
             <button type="button" className={`chip${showAll ? " is-on" : ""}`} onClick={() => setShowAll(true)}>
               All Library

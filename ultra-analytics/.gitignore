@@ -1,6 +1,8 @@
 backend/.venv/
 backend/sample_data/
 backend/data/
+founder/data/
+founder/.run/
 backend/.env
 .env
 !.env.example

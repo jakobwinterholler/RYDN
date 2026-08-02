@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { User } from "../../types";
 import shellHeaderMark from "../../assets/shell-header-mark.png";
 
-export type ShellSpace = "ultras" | "library" | "you";
+export type ShellSpace = "planning" | "trips" | "library" | "you";
 
 interface Props {
   user: User;
@@ -11,7 +11,7 @@ interface Props {
   children: ReactNode;
 }
 
-/** App chrome — Ultras · Library · You. Clarity: where am I / what can I do. */
+/** App chrome — Planning · Trips · Library. Account via top-right avatar. */
 export default function AppShell({ user, space, onSpace, children }: Props) {
   const initial = (user.name || "Y").charAt(0).toUpperCase();
 
@@ -33,11 +33,19 @@ export default function AppShell({ user, space, onSpace, children }: Props) {
         <nav className="shell__nav shell__nav--desktop" aria-label="Primary">
           <button
             type="button"
-            className={`shell__tab${space === "ultras" ? " is-active" : ""}`}
-            onClick={() => onSpace("ultras")}
-            aria-current={space === "ultras" ? "page" : undefined}
+            className={`shell__tab${space === "planning" ? " is-active" : ""}`}
+            onClick={() => onSpace("planning")}
+            aria-current={space === "planning" ? "page" : undefined}
           >
-            Ultras
+            Planning
+          </button>
+          <button
+            type="button"
+            className={`shell__tab${space === "trips" ? " is-active" : ""}`}
+            onClick={() => onSpace("trips")}
+            aria-current={space === "trips" ? "page" : undefined}
+          >
+            Trips
           </button>
           <button
             type="button"
@@ -53,15 +61,16 @@ export default function AppShell({ user, space, onSpace, children }: Props) {
           type="button"
           className={`shell__you${space === "you" ? " is-active" : ""}`}
           onClick={() => onSpace("you")}
-          aria-label="You"
+          aria-label="Account"
           aria-current={space === "you" ? "page" : undefined}
+          title="Account"
         >
           {user.avatar ? (
             <img src={user.avatar} alt="" className="shell__avatar" referrerPolicy="no-referrer" />
           ) : (
             <span className="shell__initial">{initial}</span>
           )}
-          <span className="shell__you-label">You</span>
+          <span className="shell__you-label">Account</span>
         </button>
       </header>
 
@@ -70,11 +79,19 @@ export default function AppShell({ user, space, onSpace, children }: Props) {
       <nav className="shell__nav shell__nav--mobile" aria-label="Primary">
         <button
           type="button"
-          className={`shell__tab${space === "ultras" ? " is-active" : ""}`}
-          onClick={() => onSpace("ultras")}
-          aria-current={space === "ultras" ? "page" : undefined}
+          className={`shell__tab${space === "planning" ? " is-active" : ""}`}
+          onClick={() => onSpace("planning")}
+          aria-current={space === "planning" ? "page" : undefined}
         >
-          Ultras
+          Planning
+        </button>
+        <button
+          type="button"
+          className={`shell__tab${space === "trips" ? " is-active" : ""}`}
+          onClick={() => onSpace("trips")}
+          aria-current={space === "trips" ? "page" : undefined}
+        >
+          Trips
         </button>
         <button
           type="button"
@@ -83,14 +100,6 @@ export default function AppShell({ user, space, onSpace, children }: Props) {
           aria-current={space === "library" ? "page" : undefined}
         >
           Library
-        </button>
-        <button
-          type="button"
-          className={`shell__tab${space === "you" ? " is-active" : ""}`}
-          onClick={() => onSpace("you")}
-          aria-current={space === "you" ? "page" : undefined}
-        >
-          You
         </button>
       </nav>
     </div>

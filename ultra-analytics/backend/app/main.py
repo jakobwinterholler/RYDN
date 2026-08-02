@@ -25,6 +25,7 @@ from . import routes_store
 from .analysis.report import ANALYSIS_SCHEMA, build_report
 from .auth import current_user
 from .auth import router as auth_router
+from .billing.router import router as billing_router
 from .config import get_config
 from .maps import router as maps_router
 from .middleware_security import SecurityHeadersMiddleware
@@ -32,6 +33,10 @@ from .parsing.base import UnsupportedFormat, build_race, parse_upload
 from .paths import data_root, frontend_dist
 from .providers.router import analyze_provider_ride, ensure_map_polylines
 from .providers.router import router as providers_router
+from .subscription.codes import ensure_seed_codes
+from .subscription.deps import require_can_import_route, require_route_planning_access
+from .subscription.race_pass import apply_pass_after_import, has_global_pro
+from .subscription.router import router as subscription_router
 from .util.http_errors import MSG_ANALYSIS, MSG_IMPORT_CORRUPT, MSG_ULTRA_ANALYSIS
 from .util.logging_util import log_event, log_exception, sanitize_client_payload
 
@@ -57,8 +62,19 @@ async def lifespan(app: FastAPI):
 
     configure_logging()
     os.makedirs(data_root(), exist_ok=True)
+    ensure_seed_codes()
     validate_startup()
     cfg = get_config()
+    from .billing.bootstrap import bootstrap_stripe
+    from .billing.config import billing_configured as _billing_ready
+
+    billing_boot: dict | None = None
+    if os.environ.get("STRIPE_SECRET_KEY", "").strip():
+        try:
+            billing_boot = bootstrap_stripe()
+        except Exception as e:  # noqa: BLE001
+            log_exception("billing.bootstrap.startup_failed", e)
+            billing_boot = {"ok": False, "reason": str(e)}
     log_event(
         "app.startup",
         env=cfg.env,
@@ -70,6 +86,8 @@ async def lifespan(app: FastAPI):
         google=cfg.google_enabled,
         google_maps=cfg.google_maps_enabled,
         strava=cfg.strava_enabled,
+        billingConfigured=_billing_ready(),
+        billingBootstrap=(billing_boot or {}).get("ok"),
     )
     yield
     log_event("app.shutdown")
@@ -90,6 +108,8 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(auth_router)
+app.include_router(subscription_router)
+app.include_router(billing_router)
 app.include_router(providers_router)
 app.include_router(maps_router)
 
@@ -97,6 +117,8 @@ app.include_router(maps_router)
 @app.get("/health")
 @app.get("/api/health")
 def health() -> dict:
+    from .billing.config import billing_configured
+
     cfg = get_config()
     return {
         "status": "ok",
@@ -105,6 +127,7 @@ def health() -> dict:
         "env": cfg.env,
         "secureCookies": cfg.cookie_secure,
         "oauthDebug": cfg.oauth_debug,
+        "billingConfigured": billing_configured(),
     }
 
 
@@ -134,20 +157,28 @@ def get_cabinet(user: dict = Depends(current_user)) -> JSONResponse:
     rides = store.list_rides(user["id"])
     payload = ultra_store.cabinet_payload(user["id"], rides)
     # Routes are a separate object type — never mixed into ungroupedRides.
-    payload["plannedRoutes"] = routes_store.list_routes(user["id"])
+    routes = routes_store.list_routes(user["id"])
+    if not has_global_pro(user):
+        # Free: only Race Pass–unlocked planned routes.
+        routes = [r for r in routes if r.get("proUnlock")]
+    payload["plannedRoutes"] = routes
     return JSONResponse(payload)
 
 
 @app.get("/api/routes")
 def list_routes(user: dict = Depends(current_user)) -> JSONResponse:
-    return JSONResponse(routes_store.list_routes(user["id"]))
+    routes = routes_store.list_routes(user["id"])
+    if has_global_pro(user):
+        return JSONResponse(routes)
+    # Free: only Race Pass–unlocked planned routes.
+    return JSONResponse([r for r in routes if r.get("proUnlock")])
 
 
 @app.post("/api/routes/import")
 async def import_planned_route(
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_can_import_route),
 ) -> JSONResponse:
     """Import a GPX as a Planned Route — never creates a Ride."""
     filename = file.filename or "route.gpx"
@@ -173,6 +204,14 @@ async def import_planned_route(
             filename=filename,
             name=(name or "").strip() or None,
         )
+        if summary.get("id"):
+            try:
+                apply_pass_after_import(user["id"], summary["id"])
+                full = routes_store.get_route(user["id"], summary["id"])
+                if full:
+                    summary = routes_store._summary(full)  # noqa: SLF001
+            except ValueError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or MSG_IMPORT_CORRUPT)
     except Exception as exc:  # noqa: BLE001
@@ -191,7 +230,7 @@ async def import_planned_route(
 async def import_planned_route_stream(
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_can_import_route),
 ) -> StreamingResponse:
     """SSE progress for Planned Route import — same work as /api/routes/import."""
     import json as _json
@@ -252,6 +291,11 @@ async def import_planned_route_stream(
                 name=display_name,
                 on_progress=on_progress,
             )
+            if summary.get("id"):
+                apply_pass_after_import(uid, summary["id"])
+                full = routes_store.get_route(uid, summary["id"])
+                if full:
+                    summary = routes_store._summary(full)  # noqa: SLF001
             log_event("routes.imported", user_id=uid, route_id=summary.get("id"))
             emit({"type": "done", "summary": summary, "pct": 100, "label": "Route imported successfully"})
         except ValueError as exc:
@@ -286,7 +330,7 @@ async def import_planned_route_stream(
 
 
 @app.get("/api/routes/{route_id}")
-def get_route(route_id: str, user: dict = Depends(current_user)) -> JSONResponse:
+def get_route(route_id: str, user: dict = Depends(require_route_planning_access)) -> JSONResponse:
     detail = routes_store.get_route_detail(user["id"], route_id)
     if not detail:
         raise HTTPException(status_code=404, detail="Route not found.")
@@ -295,9 +339,9 @@ def get_route(route_id: str, user: dict = Depends(current_user)) -> JSONResponse
 
 @app.get("/api/routes/{route_id}/export.gpx")
 def export_planned_route_gpx(
-    route_id: str, user: dict = Depends(current_user)
+    route_id: str, user: dict = Depends(require_route_planning_access)
 ) -> Response:
-    """Download planned-route GPX: course + verified water/shop waypoints only.
+    """Download planned-route GPX: course + verified water/shop/hotel waypoints only.
 
     Excludes sleep, cafés, bike shops, and unverified POIs. Auth required;
     other users' routes 404.
@@ -329,7 +373,7 @@ def get_route_analysis(
     route_id: str,
     refresh: bool = False,
     targetStageKm: float = 250.0,
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_route_planning_access),
 ) -> JSONResponse:
     """Planning intelligence — climbs, services, sleep, remote gaps, stages."""
     analysis = routes_store.get_route_analysis(
@@ -353,7 +397,7 @@ def get_route_viewport_pois(
     group: str = "all",
     limit: int = 15,
     exclude: str = "",
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_route_planning_access),
 ) -> JSONResponse:
     """Viewport POI search — corridor cache first (instant), Overpass only as fill.
 
@@ -371,9 +415,13 @@ def get_route_viewport_pois(
     detail = routes_store.get_route_detail(user["id"], route_id)
     if not detail:
         raise HTTPException(status_code=404, detail="Route not found.")
-    if south >= north or west >= east:
-        raise HTTPException(status_code=400, detail="Invalid bounding box.")
     from .analysis.route_pois import fetch_viewport_pois, ensure_search_corridor
+    from .analysis.poi_corridor import normalize_viewport_bbox
+
+    try:
+        south, west, north, east = normalize_viewport_bbox(south, west, north, east)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid bounding box.") from exc
 
     exclude_ids = [x.strip() for x in (exclude or "").split(",") if x.strip()]
     # Also skip permanently verified stops so Search-again never reloads them.
@@ -417,7 +465,7 @@ def get_route_viewport_pois(
 @app.post("/api/routes/{route_id}/pois/preload")
 def preload_route_pois(
     route_id: str,
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_route_planning_access),
 ) -> JSONResponse:
     """Ensure Search corridor cache is warm (call on route open / import)."""
     import time as _time
@@ -448,7 +496,7 @@ def preload_route_pois(
 async def patch_route(
     route_id: str,
     payload: dict = Body(...),
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_route_planning_access),
 ) -> JSONResponse:
     updated = routes_store.update_route(user["id"], route_id, payload)
     if not updated:
@@ -457,7 +505,7 @@ async def patch_route(
 
 
 @app.delete("/api/routes/{route_id}")
-def delete_route(route_id: str, user: dict = Depends(current_user)) -> JSONResponse:
+def delete_route(route_id: str, user: dict = Depends(require_route_planning_access)) -> JSONResponse:
     if not routes_store.delete_route(user["id"], route_id):
         raise HTTPException(status_code=404, detail="Route not found.")
     return JSONResponse({"ok": True})

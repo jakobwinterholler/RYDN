@@ -1,4 +1,4 @@
-"""Planned-route GPX export — verified water/shop only, emoji names, Garmin syms."""
+"""Planned-route GPX export — verified water/shop/hotel, plain names, Garmin syms."""
 
 from __future__ import annotations
 
@@ -11,8 +11,10 @@ from unittest import mock
 
 from app import routes_store
 from app.parsing.route_gpx_export import (
+    NAME_HOTEL,
     NAME_SHOP,
     NAME_WATER,
+    SYM_HOTEL,
     SYM_SHOP,
     SYM_WATER,
     build_export_gpx,
@@ -50,7 +52,7 @@ def _stop(**kwargs):
 
 
 class FilterExportWaypointsTests(unittest.TestCase):
-    def test_includes_verified_water_and_shop_only(self) -> None:
+    def test_includes_verified_water_shop_and_hotel(self) -> None:
         stops = [
             _stop(id="w1", category="Drinking water", group="water"),
             _stop(id="w2", category="Water tap", group="water", lat=42.32, lon=3.22),
@@ -78,8 +80,8 @@ class FilterExportWaypointsTests(unittest.TestCase):
                 lon=3.25,
                 distanceAlongKm=4,
             ),
+            _stop(id="sleep", category="Hotel", group="sleep", lat=42.36, lon=3.26, distanceAlongKm=5),
             # Exclusions
-            _stop(id="sleep", category="Hotel", group="sleep", lat=42.36, lon=3.26),
             _stop(id="cafe", category="Café", group="dining", lat=42.37, lon=3.27),
             _stop(id="bike", category="Bike shop", group="service", lat=42.38, lon=3.28),
             _stop(
@@ -104,15 +106,24 @@ class FilterExportWaypointsTests(unittest.TestCase):
                 lat=42.41,
                 lon=3.31,
             ),
+            _stop(
+                id="sleep_unv",
+                category="Hotel",
+                group="sleep",
+                reviewStatus="unreviewed",
+                lat=42.42,
+                lon=3.32,
+            ),
         ]
         out = filter_export_waypoints(stops)
         ids = {s["id"] for s in out}
-        self.assertEqual(ids, {"w1", "w2", "m1", "m2", "m3"})
+        self.assertEqual(ids, {"w1", "w2", "m1", "m2", "m3", "sleep"})
         kinds = {s["id"]: s["_exportKind"] for s in out}
         self.assertEqual(kinds["w1"], "water")
         self.assertEqual(kinds["m1"], "shop")
+        self.assertEqual(kinds["sleep"], "hotel")
 
-    def test_emoji_names_and_syms_in_gpx(self) -> None:
+    def test_plain_names_and_syms_in_gpx(self) -> None:
         waypoints = filter_export_waypoints(
             [
                 _stop(id="w1"),
@@ -122,6 +133,14 @@ class FilterExportWaypointsTests(unittest.TestCase):
                     group="resupply",
                     lat=42.33,
                     lon=3.23,
+                ),
+                _stop(
+                    id="h1",
+                    category="Hotel",
+                    group="sleep",
+                    lat=42.36,
+                    lon=3.26,
+                    distanceAlongKm=5,
                 ),
             ]
         )
@@ -134,17 +153,22 @@ class FilterExportWaypointsTests(unittest.TestCase):
         self.assertIn("http://www.topografix.com/GPX/1/1", xml)
         root = ET.fromstring(xml.encode("utf-8"))
         wpts = root.findall("g:wpt", NS)
-        self.assertEqual(len(wpts), 2)
+        self.assertEqual(len(wpts), 3)
         names = {w.findtext("g:name", default="", namespaces=NS) for w in wpts}
         syms = {w.findtext("g:sym", default="", namespaces=NS) for w in wpts}
-        self.assertEqual(names, {NAME_WATER, NAME_SHOP})
-        self.assertEqual(syms, {SYM_WATER, SYM_SHOP})
+        types = {w.findtext("g:type", default="", namespaces=NS) for w in wpts}
+        self.assertEqual(names, {NAME_WATER, NAME_SHOP, NAME_HOTEL})
+        self.assertEqual(syms, {SYM_WATER, SYM_SHOP, SYM_HOTEL})
+        self.assertEqual(types, {"Water", "Shop", "Hotel"})
         self.assertEqual(SYM_WATER, "Drinking Water")
         self.assertEqual(SYM_SHOP, "Shopping Center")
-        # Names are emoji-only (no POI title text).
+        self.assertEqual(SYM_HOTEL, "Lodging")
+        # Plain labels only (no emojis / POI titles).
         for n in names:
             self.assertNotIn("Fountain", n)
             self.assertNotIn("Supermarket", n)
+            self.assertTrue(n.isascii())
+            self.assertFalse(any(ord(ch) > 127 for ch in n))
         trkpts = root.findall(".//g:trkpt", NS)
         self.assertEqual(len(trkpts), 2)
 
@@ -270,9 +294,9 @@ class RouteStoreExportTests(unittest.TestCase):
         self.assertTrue(filename.endswith(".gpx"))
         root = ET.fromstring(body)
         wpts = root.findall("g:wpt", NS)
-        self.assertEqual(len(wpts), 2)
+        self.assertEqual(len(wpts), 3)
         names = sorted(w.findtext("g:name", default="", namespaces=NS) for w in wpts)
-        self.assertEqual(names, sorted([NAME_WATER, NAME_SHOP]))
+        self.assertEqual(names, sorted([NAME_WATER, NAME_SHOP, NAME_HOTEL]))
         syms = {
             w.findtext("g:name", default="", namespaces=NS): w.findtext(
                 "g:sym", default="", namespaces=NS
@@ -281,6 +305,7 @@ class RouteStoreExportTests(unittest.TestCase):
         }
         self.assertEqual(syms[NAME_WATER], SYM_WATER)
         self.assertEqual(syms[NAME_SHOP], SYM_SHOP)
+        self.assertEqual(syms[NAME_HOTEL], SYM_HOTEL)
         trkpts = root.findall(".//g:trkpt", NS)
         self.assertGreaterEqual(len(trkpts), 3)
 
@@ -305,7 +330,10 @@ class ExportEndpointTests(unittest.TestCase):
 
         self.app = app
         self.current_user = current_user
-        app.dependency_overrides[current_user] = lambda: {"id": self.uid}
+        app.dependency_overrides[current_user] = lambda: {
+            "id": self.uid,
+            "subscriptionTier": "pro",
+        }
         self.addCleanup(app.dependency_overrides.clear)
         self.client = TestClient(app)
 

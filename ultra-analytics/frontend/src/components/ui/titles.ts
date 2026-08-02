@@ -1,7 +1,7 @@
-/** Keep Ultra titles short — Day/Place noise belongs elsewhere. */
+/** Keep trip titles short — Day/Place noise belongs elsewhere. */
 export function cleanUltraTitle(name: string): string {
   let s = (name || "").trim();
-  if (!s) return "Untitled Ultra";
+  if (!s) return "Untitled trip";
   s = s.split(/\s+[—–\-]\s+Day\s*\d+/i)[0];
   s = s.split(/\s+Day\s*\d+\b/i)[0];
   s = s.split(/\s*[—–\-]\s*\(?\s*Place\b/i)[0];
@@ -9,10 +9,10 @@ export function cleanUltraTitle(name: string): string {
   s = s.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "");
   s = s.replace(/[✅❌⭐️]/g, "");
   s = s.replace(/\s{2,}/g, " ").replace(/^[\s\-—–|&]+|[\s\-—–|&]+$/g, "");
-  return s || "Untitled Ultra";
+  return s || "Untitled trip";
 }
 
-/** Strip Strava ``(1/2)`` recording-part markers from Ultra day titles. */
+/** Strip Strava ``(1/2)`` recording-part markers from trip day titles. */
 export function cleanDayTitle(name: string): string {
   let s = (name || "").trim();
   if (!s) return "";

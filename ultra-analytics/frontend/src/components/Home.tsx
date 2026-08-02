@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ImportProgressStats, ImportProgressUpdate, RideKind } from "../api";
+import type { ImportProgressStats, ImportProgressUpdate, RedeemResult, RideKind } from "../api";
 import {
   connectProviderUrl,
   createUltra,
@@ -18,6 +18,11 @@ import type {
   UltraSuggestion,
   User,
 } from "../types";
+import { canImportPlannedRoute, tierFromUser, tierLabel } from "../subscription/features";
+import { hasSeenOnboarding } from "../onboarding/persistence";
+import type { OnboardingDest } from "../onboarding/steps";
+import ProGate from "./account/ProGate";
+import Onboarding from "./onboarding/Onboarding";
 import AppShell, { type ShellSpace } from "./shell/AppShell";
 import RideCard from "./RideCard";
 import UltraCard from "./UltraCard";
@@ -40,6 +45,23 @@ import {
   sortLibraryRides,
   type LibrarySortId,
 } from "../library/sort";
+import {
+  countUltrasByKind,
+  filterUltrasByKind,
+  TRIPS_FILTER_OPTIONS,
+  type TripsFilterId,
+  type UltraKind,
+} from "../trips/kind";
+import {
+  DEFAULT_TRIPS_SORT,
+  groupTripsByYear,
+  loadTripsSort,
+  saveTripsSort,
+  sortTrips,
+  TRIPS_SORT_OPTIONS,
+  type TripsSortId,
+} from "../trips/sort";
+import TripKindControl from "./ui/TripKindControl";
 
 interface Props {
   user: User;
@@ -47,16 +69,18 @@ interface Props {
   space?: ShellSpace;
   onSpace?: (s: ShellSpace) => void;
   onOpenRide: (id: string) => void;
-  onOpenUltra: (id: string) => void;
+  onOpenUltra: (id: string, from?: "planning" | "trips") => void;
   onOpenRoute: (id: string) => void;
   onSignOut: () => void;
   onRefreshProviders: () => Promise<void>;
   onUpdateProfile: (patch: { weightKg?: number | null }) => Promise<User>;
+  onRedeemCode: (code: string) => Promise<RedeemResult>;
+  onRefreshUser?: () => Promise<void>;
   bootError?: string | null;
   onDismissBootError?: () => void;
 }
 
-/** P0 shell: Ultras · Library · You. */
+/** P0 shell: Planning · Trips · Library (Account via avatar). */
 export default function Home({
   user,
   providers,
@@ -68,6 +92,8 @@ export default function Home({
   onSignOut,
   onRefreshProviders,
   onUpdateProfile,
+  onRedeemCode,
+  onRefreshUser,
   bootError,
   onDismissBootError,
 }: Props) {
@@ -76,14 +102,31 @@ export default function Home({
   const [notice, setNotice] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
+  const [showProGate, setShowProGate] = useState(false);
+  /** Once per login session; cleared on logout. Redeem RYDN-ONBOARD can reopen. */
+  const [showOnboarding, setShowOnboarding] = useState(() => !hasSeenOnboarding());
+  /** Desktop: centered modal; phone: fullscreen sheet (already polished). */
+  const [proGateWide, setProGateWide] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 721px)").matches,
+  );
   const [showGroup, setShowGroup] = useState(false);
+  const canImportPlanned = canImportPlannedRoute(user);
   const [groupSeed, setGroupSeed] = useState<{
     activityIds?: string[];
     name?: string;
   } | null>(null);
-  const [spaceLocal, setSpaceLocal] = useState<ShellSpace>("ultras");
+  const [spaceLocal, setSpaceLocal] = useState<ShellSpace>("planning");
   const space = spaceProp ?? spaceLocal;
   const setSpace = onSpaceProp ?? setSpaceLocal;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 721px)");
+    const onChange = () => setProGateWide(mq.matches);
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   const connectedProvider = providers.find((p) => p.connected);
   const connectable = providers.find((p) => p.enabled && !p.connected);
@@ -121,9 +164,36 @@ export default function Home({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Stripe return — Race Pass credit may land via webhook slightly after redirect.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const billing = params.get("billing");
+    if (!billing) return;
+    if (billing === "cancel") {
+      setNotice("Checkout canceled — no charge.");
+    } else if (billing === "race_pass_success") {
+      setNotice("Race Pass ready — pick a GPX to unlock that route.");
+      setSpace("planning");
+      setShowUpload(true);
+      void (async () => {
+        for (let i = 0; i < 5; i++) {
+          await onRefreshUser?.();
+          await new Promise((r) => setTimeout(r, 800));
+        }
+      })();
+    } else if (billing === "success") {
+      setNotice("Pro is active — Planning unlocked.");
+      setSpace("you");
+      void onRefreshUser?.();
+    }
+    params.delete("billing");
+    const next = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${next ? `?${next}` : ""}`);
+  }, [onRefreshUser, setSpace]);
+
   const onDeleteRide = async (id: string) => {
     const ok = window.confirm(
-      "Remove this day from your Library? It will also leave any Ultra that includes it.",
+      "Remove this day from your Library? It will also leave any trip that includes it.",
     );
     if (!ok) return;
     setCabinet((c) =>
@@ -197,17 +267,30 @@ export default function Home({
         </div>
       )}
 
-      {!loading && space === "ultras" && (
-        <UltrasSpace
+      {!loading && space === "planning" && (
+        <PlanningSpace
           upcoming={planningUltras}
-          completed={completedUltras}
           routes={plannedRoutes}
-          libraryCount={ungrouped.length}
-          onOpenUltra={onOpenUltra}
+          canImportPlanned={canImportPlanned}
+          onOpenUltra={(id) => onOpenUltra(id, "planning")}
           onOpenRoute={onOpenRoute}
+          onImportRoute={() => {
+            if (!canImportPlanned) {
+              setShowProGate(true);
+              return;
+            }
+            setShowUpload(true);
+          }}
+        />
+      )}
+
+      {!loading && space === "trips" && (
+        <TripsSpace
+          completed={completedUltras}
+          libraryCount={ungrouped.length}
+          onOpenUltra={(id) => onOpenUltra(id, "trips")}
           onGoLibrary={() => setSpace("library")}
           onGroup={() => openGroup()}
-          onImportRoute={() => setShowUpload(true)}
         />
       )}
 
@@ -236,12 +319,53 @@ export default function Home({
           onUpload={() => setShowUpload(true)}
           onSignOut={onSignOut}
           onUpdateProfile={onUpdateProfile}
+          onRedeemCode={onRedeemCode}
+          onRefreshUser={onRefreshUser}
+          onShowOnboarding={() => setShowOnboarding(true)}
         />
       )}
 
+      {showProGate && (
+        <FocusLock
+          open
+          onClose={() => setShowProGate(false)}
+          labelledBy="pro-gate-title"
+          /* Phone sheet stays; desktop uses centered modal card. */
+          variant={proGateWide ? "modal" : "sheet"}
+          className={proGateWide ? "pro-gate-modal" : "pro-gate-sheet"}
+        >
+          <h2 id="pro-gate-title" className="visually-hidden">
+            Unlock Planning
+          </h2>
+          <ProGate
+            feature="planning"
+            intent="import"
+            onBack={() => setShowProGate(false)}
+            onOpenAccount={() => {
+              setShowProGate(false);
+              setSpace("you");
+            }}
+          />
+        </FocusLock>
+      )}
+
+      <Onboarding
+        open={showOnboarding}
+        onClose={() => setShowOnboarding(false)}
+        onFinish={(dest: OnboardingDest) => {
+          setShowOnboarding(false);
+          setSpace(dest);
+        }}
+      />
+
       {showUpload && (
         <UploadModal
+          allowPlanning={canImportPlanned}
           onClose={() => setShowUpload(false)}
+          onProRequired={() => {
+            setShowUpload(false);
+            setShowProGate(true);
+          }}
           onImportedRide={(id) => {
             setShowUpload(false);
             setNotice("Imported as completed ride — in Library.");
@@ -251,8 +375,8 @@ export default function Home({
           onImportedRoute={(id) => {
             setShowUpload(false);
             setNotice("Imported as planned route — in Planning.");
-            setSpace("ultras");
-            void refresh().then(() => onOpenRoute(id));
+            setSpace("planning");
+            void Promise.all([refresh(), onRefreshUser?.()]).then(() => onOpenRoute(id));
           }}
         />
       )}
@@ -268,8 +392,8 @@ export default function Home({
           onCreated={async () => {
             setShowGroup(false);
             setGroupSeed(null);
-            setSpace("ultras");
-            setNotice("Ultra saved to your cabinet.");
+            setSpace("trips");
+            setNotice("Trip saved to your cabinet.");
             await refresh();
           }}
         />
@@ -278,128 +402,213 @@ export default function Home({
   );
 }
 
-function UltrasSpace({
+function PlanningSpace({
   upcoming,
-  completed,
   routes,
-  libraryCount,
   onOpenUltra,
   onOpenRoute,
-  onGoLibrary,
-  onGroup,
   onImportRoute,
+  canImportPlanned = true,
 }: {
   upcoming: Ultra[];
-  completed: Ultra[];
   routes: PlannedRouteSummary[];
-  libraryCount: number;
   onOpenUltra: (id: string) => void;
   onOpenRoute: (id: string) => void;
-  onGoLibrary: () => void;
-  onGroup: () => void;
   onImportRoute: () => void;
+  canImportPlanned?: boolean;
 }) {
-  const empty = upcoming.length === 0 && completed.length === 0 && routes.length === 0;
+  const empty = upcoming.length === 0 && routes.length === 0;
+  const lock = !canImportPlanned ? (
+    <span className="btn__lock" aria-hidden>
+      Pro
+    </span>
+  ) : null;
 
   return (
     <div className="space">
       <header className="space__head">
-        <h1 className="space__title">Ultras</h1>
-        <p className="space__sub">Plan upcoming expeditions, then keep finished ones in the cabinet.</p>
+        <h1 className="space__title">Planning</h1>
         <div className="space__actions">
           <button type="button" className="btn btn--secondary" onClick={onImportRoute}>
-            Import GPX
+            Import GPX{lock}
           </button>
         </div>
       </header>
 
       {empty ? (
+        <p className="space__hint">Import a planned route GPX to start building your resupply plan.</p>
+      ) : (
+        <section className="space__section">
+          {routes.length > 0 && (
+            <div className="route-list">
+              {routes.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className="route-card"
+                  onClick={() => onOpenRoute(r.id)}
+                >
+                  <div className="route-card__eyebrow">Planned route</div>
+                  <div className="route-card__title">{r.name}</div>
+                  <ScoreLine
+                    className="route-card__score"
+                    distanceKm={r.distanceKm}
+                    elevationGainM={r.elevationGainM}
+                    durationS={0}
+                    hideDuration
+                  />
+                  <div className="route-card__meta">
+                    {r.verificationProgress
+                      ? `${r.verificationProgress.done}/${r.verificationProgress.total} verified`
+                      : "Verify"}
+                    {r.status === "ready" ? " · Ready" : ""}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {upcoming.length > 0 && (
+            <div className="ultra-grid" style={{ marginTop: routes.length ? 16 : 0 }}>
+              {upcoming.map((u) => (
+                <UltraCard key={u.id} ultra={u} onOpen={onOpenUltra} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function TripsSpace({
+  completed,
+  libraryCount,
+  onOpenUltra,
+  onGoLibrary,
+  onGroup,
+}: {
+  completed: Ultra[];
+  libraryCount: number;
+  onOpenUltra: (id: string) => void;
+  onGoLibrary: () => void;
+  onGroup: () => void;
+}) {
+  const [filter, setFilter] = useState<TripsFilterId>("all");
+  const [sortId, setSortId] = useState<TripsSortId>(() => loadTripsSort() || DEFAULT_TRIPS_SORT);
+
+  const counts = useMemo(() => countUltrasByKind(completed), [completed]);
+  const filtered = useMemo(() => filterUltrasByKind(completed, filter), [completed, filter]);
+  const sorted = useMemo(() => sortTrips(filtered, sortId), [filtered, sortId]);
+  const yearGroups = useMemo(
+    () => (sortId === "year" && sorted.length >= 4 ? groupTripsByYear(sorted) : null),
+    [sorted, sortId],
+  );
+
+  const onSortChange = (id: TripsSortId) => {
+    setSortId(id);
+    saveTripsSort(id);
+  };
+
+  return (
+    <div className="space">
+      <header className="space__head">
+        <h1 className="space__title">Multi-day trips</h1>
+        <p className="space__sub">Finished races, long rides, and bikepacks — your cabinet of multi-day trips.</p>
+        <div className="space__actions">
+          {libraryCount > 0 && (
+            <button type="button" className="btn btn--secondary" onClick={onGroup}>
+              Group into trip
+            </button>
+          )}
+        </div>
+      </header>
+
+      {completed.length === 0 ? (
         <div className="empty">
           <RydnMark size={28} className="empty__mark" />
-          <h2 className="empty__title">No Ultras yet</h2>
+          <h2 className="empty__title">No trips yet</h2>
           <p className="empty__body">
-            Import a planned route GPX to start planning, or sync completed rides in Library and group them
-            into an Ultra.
+            Sync completed rides in Library, then group related days into a multi-day trip.
           </p>
           <div className="empty__actions">
-            <button type="button" className="btn btn--primary" onClick={onImportRoute}>
-              Import planned route
-            </button>
-            <button type="button" className="btn btn--secondary" onClick={onGoLibrary}>
+            <button type="button" className="btn btn--primary" onClick={onGoLibrary}>
               Open Library
             </button>
             {libraryCount > 0 && (
-              <button type="button" className="btn btn--tertiary" onClick={onGroup}>
-                Group into Ultra
+              <button type="button" className="btn btn--secondary" onClick={onGroup}>
+                Group into trip
               </button>
             )}
           </div>
         </div>
       ) : (
-        <>
-          {(routes.length > 0 || upcoming.length > 0) && (
-            <section className="space__section">
-              <div className="space__section-head">
-                <h2 className="space__label">Planning</h2>
-              </div>
-              {routes.length > 0 && (
-                <div className="route-list">
-                  {routes.map((r) => (
-                    <button
-                      key={r.id}
-                      type="button"
-                      className="route-card"
-                      onClick={() => onOpenRoute(r.id)}
-                    >
-                      <div className="route-card__eyebrow">Planned route</div>
-                      <div className="route-card__title">{r.name}</div>
-                      <ScoreLine
-                        className="route-card__score"
-                        distanceKm={r.distanceKm}
-                        elevationGainM={r.elevationGainM}
-                        durationS={0}
-                        hideDuration
-                      />
-                      <div className="route-card__meta">
-                        {r.verificationProgress
-                          ? `${r.verificationProgress.done}/${r.verificationProgress.total} verified`
-                          : "Verify"}
-                        {r.status === "ready" ? " · Ready" : ""}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {upcoming.length > 0 && (
-                <div className="ultra-grid" style={{ marginTop: routes.length ? 16 : 0 }}>
-                  {upcoming.map((u) => (
-                    <UltraCard key={u.id} ultra={u} onOpen={onOpenUltra} />
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-
-          <section className="space__section">
-            <div className="space__section-head">
-              <h2 className="space__label">Completed</h2>
-              {libraryCount > 0 && (
-                <button type="button" className="btn btn--ghost" onClick={onGroup}>
-                  Group into Ultra
-                </button>
-              )}
+        <section className="space__section">
+          <div className="trips-toolbar">
+            <div className="trips-seg" role="tablist" aria-label="Filter trips">
+              {TRIPS_FILTER_OPTIONS.map((opt) => {
+                const n = counts[opt.id];
+                const hideEmpty = opt.id !== "all" && n === 0 && completed.length > 0;
+                if (hideEmpty && filter !== opt.id) return null;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={filter === opt.id}
+                    className={`trips-seg__btn${filter === opt.id ? " active" : ""}`}
+                    onClick={() => setFilter(opt.id)}
+                  >
+                    {opt.label}
+                    <span className="trips-seg__count">{n}</span>
+                  </button>
+                );
+              })}
             </div>
-            {completed.length === 0 ? (
-              <p className="space__hint">Finished Ultras will live here in your cabinet.</p>
-            ) : (
-              <div className="ultra-grid">
-                {completed.map((u) => (
-                  <UltraCard key={u.id} ultra={u} onOpen={onOpenUltra} />
+            <label className="library-sort trips-sort">
+              <span className="library-sort__label">Sort</span>
+              <select
+                className="library-sort__select"
+                value={sortId}
+                onChange={(e) => onSortChange(e.target.value as TripsSortId)}
+                aria-label="Sort trips"
+              >
+                {TRIPS_SORT_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
                 ))}
-              </div>
-            )}
-          </section>
-        </>
+              </select>
+            </label>
+          </div>
+
+          {sorted.length === 0 ? (
+            <div className="empty empty--inline">
+              <p className="empty__body">No trips in this filter.</p>
+            </div>
+          ) : (
+            // Remount on filter/sort so IntersectionObservers re-attach for newly ordered cards.
+            <div key={`${filter}-${sortId}`}>
+              {yearGroups
+                ? yearGroups.map((g) => (
+                    <div key={g.year ?? "other"} className="trips-year">
+                      <h2 className="trips-year__label">{g.year ?? "Other"}</h2>
+                      <div className="ultra-grid">
+                        {g.items.map((u) => (
+                          <UltraCard key={u.id} ultra={u} onOpen={onOpenUltra} showShelfExtras />
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                : (
+                    <div className="ultra-grid">
+                      {sorted.map((u) => (
+                        <UltraCard key={u.id} ultra={u} onOpen={onOpenUltra} showShelfExtras />
+                      ))}
+                    </div>
+                  )}
+            </div>
+          )}
+        </section>
       )}
     </div>
   );
@@ -447,7 +656,7 @@ function LibrarySpace({
     <div className="space">
       <header className="space__head">
         <h1 className="space__title">Library</h1>
-        <p className="space__sub">Source days from Strava or uploads — group them into an Ultra.</p>
+        <p className="space__sub">Source days from Strava or uploads — group them into a trip.</p>
         <div className="space__actions">
           {connectedProvider && (
             <button type="button" className="btn btn--strava" onClick={onSync} disabled={syncing}>
@@ -467,7 +676,7 @@ function LibrarySpace({
           )}
           {days.length > 0 && (
             <button type="button" className="btn btn--secondary" onClick={onGroup}>
-              Group into Ultra
+              Group into trip
             </button>
           )}
           <button type="button" className="btn btn--tertiary" onClick={onUpload}>
@@ -498,7 +707,7 @@ function LibrarySpace({
           <h2 className="empty__title">Library is empty</h2>
           <p className="empty__body">
             Nothing to group yet. Sync Strava or upload a FIT / TCX / GPX file — source days appear here first,
-            then you create Ultras from them.
+            then you create multi-day trips from them.
           </p>
           <div className="empty__actions">
             {connectable && (
@@ -549,6 +758,9 @@ function YouSpace({
   onUpload,
   onSignOut,
   onUpdateProfile,
+  onRedeemCode,
+  onRefreshUser,
+  onShowOnboarding,
 }: {
   user: User;
   providers: Provider[];
@@ -557,6 +769,9 @@ function YouSpace({
   onUpload: () => void;
   onSignOut: () => void;
   onUpdateProfile: (patch: { weightKg?: number | null }) => Promise<User>;
+  onRedeemCode: (code: string) => Promise<RedeemResult>;
+  onRefreshUser?: () => Promise<void>;
+  onShowOnboarding: () => void;
 }) {
   const connected = providers.find((p) => p.connected);
   const connectable = providers.find((p) => p.enabled && !p.connected);
@@ -566,10 +781,146 @@ function YouSpace({
   const [weightBusy, setWeightBusy] = useState(false);
   const [weightError, setWeightError] = useState<string | null>(null);
   const [weightNotice, setWeightNotice] = useState<string | null>(null);
+  const [redeemDraft, setRedeemDraft] = useState("");
+  const [redeemBusy, setRedeemBusy] = useState(false);
+  const [redeemError, setRedeemError] = useState<string | null>(null);
+  const [redeemNotice, setRedeemNotice] = useState<string | null>(null);
+  const [billingBusy, setBillingBusy] = useState(false);
+  const [billingError, setBillingError] = useState<string | null>(null);
+  const [billingConfigured, setBillingConfigured] = useState<boolean | null>(null);
+  const [pricing, setPricing] = useState<{
+    monthlyLabel: string;
+    yearlyLabel: string;
+    racePassLabel?: string;
+  } | null>(null);
+  const tierKey = tierFromUser(user);
+  const tier = tierLabel(tierKey);
+  const isPro = tierKey === "pro";
+  const hasStripeCustomer = Boolean(user.billing?.hasStripeCustomer);
+  const racePassCredits = user.racePassCredits ?? user.billing?.racePassCredits ?? 0;
 
   useEffect(() => {
     setWeightDraft(savedWeight);
   }, [savedWeight]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { getBillingStatus } = await import("../api");
+        const s = await getBillingStatus();
+        if (!cancelled) {
+          setBillingConfigured(s.configured);
+          if (s.pricing) {
+            setPricing({
+              monthlyLabel: s.pricing.monthlyLabel,
+              yearlyLabel: s.pricing.yearlyLabel,
+              racePassLabel: s.pricing.racePassLabel,
+            });
+          }
+        }
+      } catch {
+        if (!cancelled) setBillingConfigured(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const billing = params.get("billing");
+    if (billing !== "success" && billing !== "race_pass_success") return;
+    if (billing === "success") {
+      setRedeemNotice("You’re on Pro. Planning, Verify, Ride mode, and GPX export are unlocked.");
+    } else {
+      setRedeemNotice("Race Pass ready — import one planned GPX to unlock that route.");
+    }
+    params.delete("billing");
+    const next = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${next ? `?${next}` : ""}`);
+    // Webhook may land slightly after redirect — refresh a few times.
+    void (async () => {
+      for (let i = 0; i < 5; i++) {
+        await onRefreshUser?.();
+        await new Promise((r) => setTimeout(r, 800));
+      }
+    })();
+  }, [onRefreshUser]);
+
+  const redeem = async () => {
+    const code = redeemDraft.trim();
+    if (!code) {
+      setRedeemError("Enter a redeem code.");
+      return;
+    }
+    setRedeemBusy(true);
+    setRedeemError(null);
+    setRedeemNotice(null);
+    try {
+      const result = await onRedeemCode(code);
+      setRedeemDraft("");
+      if (result.redeemAction === "onboarding") {
+        setRedeemNotice("Opening a quick tour of RYDN…");
+        onShowOnboarding();
+      } else if (tierFromUser(result) === "free") {
+        setRedeemNotice("Account set to Free.");
+      } else {
+        setRedeemNotice("Pro unlocked. Planning, Verify, Ride mode, and GPX export are available.");
+      }
+    } catch (e) {
+      setRedeemError((e as Error).message);
+    } finally {
+      setRedeemBusy(false);
+    }
+  };
+
+  const startCheckout = async (interval: "month" | "year" = "month") => {
+    setBillingBusy(true);
+    setBillingError(null);
+    try {
+      const { createBillingCheckoutSession } = await import("../api");
+      const { url } = await createBillingCheckoutSession(interval);
+      window.location.href = url;
+    } catch (e) {
+      setBillingError((e as Error).message);
+      setBillingBusy(false);
+    }
+  };
+
+  const openPortal = async () => {
+    setBillingBusy(true);
+    setBillingError(null);
+    try {
+      const { createBillingPortalSession } = await import("../api");
+      const { url } = await createBillingPortalSession();
+      window.location.href = url;
+    } catch (e) {
+      setBillingError((e as Error).message);
+      setBillingBusy(false);
+    }
+  };
+
+  const retryBillingSetup = async () => {
+    setBillingBusy(true);
+    setBillingError(null);
+    try {
+      const { bootstrapBilling, getBillingStatus } = await import("../api");
+      await bootstrapBilling();
+      const s = await getBillingStatus();
+      setBillingConfigured(s.configured);
+      if (s.configured) {
+        setRedeemNotice("Billing is ready. You can upgrade to Pro.");
+      } else {
+        setBillingError("Still not ready — add STRIPE_SECRET_KEY in Railway, then retry.");
+      }
+    } catch (e) {
+      setBillingError((e as Error).message);
+    } finally {
+      setBillingBusy(false);
+    }
+  };
 
   const saveWeight = async () => {
     setWeightBusy(true);
@@ -616,14 +967,170 @@ function YouSpace({
   return (
     <div className="space space--narrow">
       <header className="space__head">
-        <h1 className="space__title">You</h1>
-        <p className="space__sub">Account and connections.</p>
+        <h1 className="space__title">Account</h1>
+        <p className="space__sub">Profile, subscription, and connections.</p>
       </header>
 
       <div className="you-card">
-        <div className="you-card__name">{user.name}</div>
-        <div className="you-card__email">{user.email}</div>
+        <div className="you-card__name">{user.name || "Rider"}</div>
+        <div className="you-card__email">{user.email || "No email on file"}</div>
+        <div className="you-card__tier">
+          <span className="you-card__tier-label">Current plan</span>
+          <span className={`you-tier you-tier--${tierKey}`}>{tier}</span>
+        </div>
       </div>
+
+      <section className="you-section you-section--subscription" aria-labelledby="you-subscription-heading">
+        <h2 id="you-subscription-heading" className="space__label">
+          Subscription
+        </h2>
+        <div className="you-plan">
+          <div className="you-plan__title">
+            {tier} plan
+            <span className={`you-tier you-tier--${tierKey}`}>{tier}</span>
+          </div>
+          <p className="you-plan__meta">
+            {isPro
+              ? "Planning, Verify, Ride mode, and GPX export unlocked on every route."
+              : "Library, Analytics, Certificates, and Trips included. Subscribe to Pro for unlimited Planning."}
+          </p>
+        </div>
+        {billingError ? <p className="you-weight__error">{billingError}</p> : null}
+        {redeemNotice ? <p className="space__hint">{redeemNotice}</p> : null}
+        <div className="you-billing-actions">
+          {!isPro && billingConfigured ? (
+            <>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={billingBusy}
+                onClick={() => void startCheckout("month")}
+              >
+                {billingBusy ? "Opening…" : `Pro · ${pricing?.monthlyLabel ?? "8,99 €"} / month`}
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                disabled={billingBusy}
+                onClick={() => void startCheckout("year")}
+              >
+                {billingBusy
+                  ? "Opening…"
+                  : `Pro · ${pricing?.yearlyLabel ?? "59,99 €"} / year · best value`}
+              </button>
+            </>
+          ) : null}
+          {billingConfigured === false ? (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              disabled={billingBusy}
+              onClick={() => void retryBillingSetup()}
+            >
+              {billingBusy ? "Setting up…" : "Retry billing setup"}
+            </button>
+          ) : null}
+          {hasStripeCustomer ? (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              disabled={billingBusy}
+              onClick={() => void openPortal()}
+            >
+              Manage billing
+            </button>
+          ) : null}
+        </div>
+        {!isPro && billingConfigured ? (
+          <div className="you-race-pass">
+            <h3 className="you-race-pass__title">Race Pass</h3>
+            <p className="you-race-pass__meta">
+              One-time purchase — unlock a single planned GPX (not a subscription).
+              {racePassCredits > 0
+                ? racePassCredits === 1
+                  ? " You have 1 pass ready to use."
+                  : ` You have ${racePassCredits} passes ready.`
+                : ""}
+            </p>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              disabled={billingBusy}
+              onClick={() => {
+                void (async () => {
+                  setBillingBusy(true);
+                  setBillingError(null);
+                  try {
+                    const { createRacePassCheckout } = await import("../api");
+                    const { url } = await createRacePassCheckout();
+                    window.location.href = url;
+                  } catch (e) {
+                    setBillingError((e as Error).message);
+                    setBillingBusy(false);
+                  }
+                })();
+              }}
+            >
+              {billingBusy
+                ? "Opening…"
+                : `Buy Race Pass · ${pricing?.racePassLabel ?? "4,99 €"}`}
+            </button>
+          </div>
+        ) : null}
+        <form
+          className="you-redeem"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void redeem();
+          }}
+        >
+          <label className="field" htmlFor="you-redeem-code">
+            <span>Redeem code</span>
+            <div className="you-redeem__row">
+              <input
+                id="you-redeem-code"
+                type="text"
+                name="redeemCode"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="e.g. RYDN-ONBOARD"
+                value={redeemDraft}
+                onChange={(e) => {
+                  setRedeemDraft(e.target.value);
+                  setRedeemError(null);
+                  setRedeemNotice(null);
+                }}
+                disabled={redeemBusy}
+                aria-describedby="you-redeem-hint"
+              />
+              <button
+                type="submit"
+                className="btn btn--ghost"
+                disabled={redeemBusy || !redeemDraft.trim()}
+              >
+                {redeemBusy ? "Redeeming…" : "Redeem"}
+              </button>
+            </div>
+          </label>
+          <p id="you-redeem-hint" className="field__hint">
+            {billingConfigured
+              ? "Have a code? Redeem it here. Or upgrade with Apple Pay, Google Pay, or card."
+              : "Valid codes unlock Pro. Card checkout appears here once billing is configured."}
+          </p>
+          {redeemError ? <p className="you-weight__error">{redeemError}</p> : null}
+        </form>
+      </section>
+
+      <section className="you-section">
+        <h2 className="space__label">Profile</h2>
+        <div className="you-row">
+          <div>
+            <div className="you-row__title">Email</div>
+            <div className="you-row__meta">{user.email || "—"}</div>
+          </div>
+        </div>
+      </section>
 
       <section className="you-section">
         <h2 className="space__label">Body weight</h2>
@@ -719,8 +1226,21 @@ function YouSpace({
       </section>
 
       <section className="you-section">
+        <h2 className="space__label">Privacy</h2>
+        <p className="space__hint">Privacy controls will live here. Coming soon.</p>
+      </section>
+
+      <section className="you-section">
+        <h2 className="space__label">Danger zone</h2>
+        <button type="button" className="btn btn--ghost" disabled title="Coming soon">
+          Delete account
+        </button>
+        <p className="space__hint">Account deletion is not available yet.</p>
+      </section>
+
+      <section className="you-section">
         <button type="button" className="btn btn--ghost" onClick={onSignOut}>
-          Sign out
+          Log out
         </button>
       </section>
     </div>
@@ -742,9 +1262,15 @@ function GroupUltraModal({
 
   const [name, setName] = useState(cleanUltraTitle(seed?.name?.trim() || ""));
   const [result, setResult] = useState("");
+  const [kind, setKind] = useState<UltraKind>("ultra");
   const [selected, setSelected] = useState<string[]>(seedIds);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const onKindChange = (next: UltraKind) => {
+    setKind(next);
+    if (next !== "race") setResult("");
+  };
 
   const toggle = (id: string) => {
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -773,10 +1299,11 @@ function GroupUltraModal({
         name: cleanUltraTitle(name.trim()),
         activityIds: selected,
         year: inferredYear ? Number(inferredYear) : undefined,
-        result: result.trim() || undefined,
+        result: kind === "race" ? result.trim() || undefined : undefined,
         dateStart: days[0] || undefined,
         dateEnd: days[days.length - 1] || undefined,
         status: "reviewed",
+        kind,
       });
       await onCreated();
     } catch (e) {
@@ -792,7 +1319,7 @@ function GroupUltraModal({
             Cancel
           </button>
           <h2 id="group-ultra-title" className="sheet__title">
-            Create Ultra
+            Create trip
           </h2>
           <button
             type="button"
@@ -804,13 +1331,9 @@ function GroupUltraModal({
           </button>
         </header>
 
-        <div className="sheet__body">
-          <p className="modal__lead">
-            Choose source days and a name. Year{inferredYear ? ` (${inferredYear})` : ""}, countries, and dates come
-            from the rides.
-          </p>
+        <div className="sheet__body edit-trip">
           <label className="field">
-            <span>Ultra name</span>
+            <span>Name</span>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -818,22 +1341,32 @@ function GroupUltraModal({
               autoFocus
             />
           </label>
-          <label className="field">
-            <span>Result</span>
-            <input
-              value={result}
-              onChange={(e) => setResult(e.target.value)}
-              placeholder="14th · Winner · DNF"
-              list="create-result-suggestions"
-            />
-            <datalist id="create-result-suggestions">
-              <option value="Winner" />
-              <option value="2nd" />
-              <option value="3rd" />
-              <option value="DNF" />
-              <option value="DNS" />
-            </datalist>
-          </label>
+          <div className="field">
+            <span>Type</span>
+            <TripKindControl value={kind} onChange={onKindChange} />
+          </div>
+          {kind === "race" && (
+            <label className="field">
+              <span>Result</span>
+              <input
+                value={result}
+                onChange={(e) => setResult(e.target.value)}
+                placeholder="14th · Winner · DNF"
+                list="create-result-suggestions"
+              />
+              <datalist id="create-result-suggestions">
+                <option value="Winner" />
+                <option value="2nd" />
+                <option value="3rd" />
+                <option value="DNF" />
+                <option value="DNS" />
+              </datalist>
+            </label>
+          )}
+          <p className="field__hint">
+            Pick the source days below. Year{inferredYear ? ` (${inferredYear})` : ""}, countries, and dates come from
+            the rides.
+          </p>
           <div className="group-list">
             {rides.length === 0 && <div className="space-loading">No source days in Library.</div>}
             {rides.map((r) => (
@@ -863,7 +1396,7 @@ function GroupUltraModal({
             disabled={busy || !name.trim() || selected.length === 0}
             onClick={() => void submit()}
           >
-            {busy ? "Saving…" : `Create Ultra (${selected.length})`}
+            {busy ? "Saving…" : `Create trip (${selected.length})`}
           </button>
         </footer>
     </FocusLock>
@@ -958,20 +1491,28 @@ function ImportLiveStats({ stats }: { stats: ImportProgressStats }) {
 }
 
 function UploadModal({
+  allowPlanning,
   onClose,
+  onProRequired,
   onImportedRide,
   onImportedRoute,
 }: {
+  allowPlanning: boolean;
   onClose: () => void;
+  onProRequired: () => void;
   onImportedRide: (id: string) => void;
   onImportedRoute: (id: string) => void;
 }) {
-  const [purpose, setPurpose] = useState<ImportPurpose>(() => loadImportPurpose());
+  const [purpose, setPurpose] = useState<ImportPurpose>(() => {
+    const saved = loadImportPurpose();
+    return saved === "planned" && !allowPlanning ? "completed" : saved;
+  });
   const [kind, setKind] = useState<RideKind>("training");
   const [drag, setDrag] = useState(false);
   const [phase, setPhase] = useState<ImportPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [hint, setHint] = useState<string | null>(null);
+  const [hintNeedsUnlock, setHintNeedsUnlock] = useState(false);
   const [label, setLabel] = useState("Preparing…");
   const [pct, setPct] = useState(0);
   const [stats, setStats] = useState<ImportProgressStats>({});
@@ -1003,10 +1544,15 @@ function UploadModal({
 
   const choosePurpose = (next: ImportPurpose) => {
     if (busy) return;
+    if (next === "planned" && !allowPlanning) {
+      onProRequired();
+      return;
+    }
     setPurpose(next);
     saveImportPurpose(next);
     setError(null);
     setHint(null);
+    setHintNeedsUnlock(false);
     setPhase("idle");
   };
 
@@ -1031,6 +1577,7 @@ function UploadModal({
     setPhase("working");
     setError(null);
     setHint(null);
+    setHintNeedsUnlock(false);
     setStats({});
     setPct(purpose === "planned" ? 2 : 8);
     setLabel(purpose === "planned" ? "Uploading GPX" : "Uploading files");
@@ -1042,6 +1589,10 @@ function UploadModal({
 
     try {
       if (purpose === "planned") {
+        if (!allowPlanning) {
+          onProRequired();
+          return;
+        }
         const gpx = files.find((f) => (f.name || "").toLowerCase().endsWith(".gpx"));
         if (!gpx) {
           throw new Error("Planned routes need a GPX file.");
@@ -1056,6 +1607,14 @@ function UploadModal({
       if (files.length === 1 && (files[0].name || "").toLowerCase().endsWith(".gpx")) {
         const timed = await fileHasGpxTimestamps(files[0]);
         if (!timed) {
+          if (!allowPlanning) {
+            setPhase("idle");
+            setHint(
+              "This GPX has no timestamps, so it cannot be a completed ride. Unlock Planned Route with Pro or a Race Pass.",
+            );
+            setHintNeedsUnlock(true);
+            return;
+          }
           setPhase("idle");
           setPurpose("planned");
           saveImportPurpose("planned");
@@ -1126,11 +1685,17 @@ function UploadModal({
       <div className="kind-toggle" role="group" aria-label="Import as">
         <button
           type="button"
-          className={purpose === "planned" ? "active" : ""}
+          className={`${purpose === "planned" ? "active" : ""}${!allowPlanning ? " kind-toggle__btn--locked" : ""}`}
           onClick={() => choosePurpose("planned")}
           disabled={busy}
+          aria-label={!allowPlanning ? "Planned Route — needs Pro or Race Pass" : "Planned Route"}
         >
           Planned Route
+          {!allowPlanning ? (
+            <span className="kind-toggle__lock" aria-hidden>
+              Pro
+            </span>
+          ) : null}
         </button>
         <button
           type="button"
@@ -1166,7 +1731,7 @@ function UploadModal({
               onClick={() => setKind("race")}
               disabled={busy}
             >
-              Ultra race
+              Race
             </button>
           </div>
         </>
@@ -1260,7 +1825,21 @@ function UploadModal({
         </div>
       )}
 
-      {hint && <div className="modal__hint">{hint}</div>}
+      {hint ? (
+        <div className="modal__hint">
+          <p>{hint}</p>
+          {hintNeedsUnlock ? (
+            <button
+              type="button"
+              className="btn btn--primary"
+              style={{ marginTop: 10 }}
+              onClick={onProRequired}
+            >
+              Unlock with Race Pass or Pro
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {error && phase === "error" && (
         <div className="import-error">
           <div className="modal__error">{error}</div>

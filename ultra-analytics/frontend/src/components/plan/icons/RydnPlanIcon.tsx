@@ -1,7 +1,7 @@
 /** React SVG icons for Quick Actions + sheets — same family as map sprites. */
 
 import type { PlanIconId, PlanIconVariant } from "./types";
-import { PLAN_ICON_PATHS } from "./glyphs";
+import { PLAN_ICON_MODE, PLAN_ICON_PATHS } from "./glyphs";
 
 interface Props {
   id: PlanIconId;
@@ -19,8 +19,15 @@ export default function RydnPlanIcon({
   title,
 }: Props) {
   const paths = PLAN_ICON_PATHS[id] || PLAN_ICON_PATHS.pin;
-  const stroke = variant === "filled" ? 1.9 : variant === "selected" ? 2.05 : 1.55;
-  const filled = variant === "filled" || variant === "selected";
+  const mode = PLAN_ICON_MODE[id] || "stroke";
+  const selected = variant === "selected";
+  const filled = variant === "filled" || selected;
+  const solid = mode === "solid";
+
+  // Solid primary icons (Water/Shop/Sleep): fill on selected — evenodd for bag handle.
+  // Stroke secondary icons: never fill; bold weight outdoors.
+  const useFill = filled && solid;
+  const stroke = variant === "outlined" ? (solid ? 1.7 : 1.85) : selected ? 2.1 : 2;
 
   return (
     <svg
@@ -28,16 +35,10 @@ export default function RydnPlanIcon({
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill={
-        filled &&
-        (id === "waterFountain" ||
-          id === "verified" ||
-          id === "supermarket" ||
-          id === "sleepSpot")
-          ? "currentColor"
-          : "none"
-      }
-      stroke="currentColor"
+      fill={useFill ? "currentColor" : "none"}
+      fillRule="evenodd"
+      clipRule="evenodd"
+      stroke={useFill ? "none" : "currentColor"}
       strokeWidth={stroke}
       strokeLinecap="round"
       strokeLinejoin="round"

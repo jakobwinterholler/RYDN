@@ -12,11 +12,11 @@ import { getRide } from "./api";
 import { useAuth } from "./auth/useAuth";
 import type { Report } from "./types";
 
-type HomeSpace = "ultras" | "library" | "you";
+type HomeSpace = "planning" | "trips" | "library" | "you";
 
 type Screen =
   | { kind: "home"; space?: HomeSpace }
-  | { kind: "ultra"; ultraId: string }
+  | { kind: "ultra"; ultraId: string; backSpace?: "planning" | "trips" }
   | { kind: "ultraAnalytics"; ultraId: string }
   | { kind: "route"; routeId: string }
   | {
@@ -26,10 +26,17 @@ type Screen =
       backTo?: "ultra" | "ultraAnalytics" | "home";
     };
 
+function normalizeHomeSpace(raw: string | null | undefined): HomeSpace | null {
+  if (raw === "planning" || raw === "trips" || raw === "library" || raw === "you") return raw;
+  // Legacy ?space=ultras bookmarks → Trips (completed multi-day cabinet).
+  if (raw === "ultras") return "trips";
+  return null;
+}
+
 function screenToPath(screen: Screen): string {
   switch (screen.kind) {
     case "home": {
-      if (screen.space && screen.space !== "ultras") {
+      if (screen.space && screen.space !== "planning") {
         return `/?space=${screen.space}`;
       }
       return "/";
@@ -78,11 +85,9 @@ function pathToScreen(pathname: string, search = ""): Screen {
     }
     return { kind: "ride", rideId: parts[1], backTo: "home" };
   }
-  const space = params.get("space");
-  if (space === "library" || space === "you" || space === "ultras") {
-    return { kind: "home", space };
-  }
-  return { kind: "home", space: "ultras" };
+  const space = normalizeHomeSpace(params.get("space"));
+  if (space) return { kind: "home", space };
+  return { kind: "home", space: "planning" };
 }
 
 function backFromRide(screen: Extract<Screen, { kind: "ride" }>): Screen {
@@ -98,7 +103,7 @@ function backFromRide(screen: Extract<Screen, { kind: "ride" }>): Screen {
 
 function rideBackLabel(screen: Extract<Screen, { kind: "ride" }>): string {
   if (screen.backTo === "ultraAnalytics") return "Analytics";
-  if (screen.backUltraId) return "Ultra";
+  if (screen.backUltraId) return "Trip";
   return "Library";
 }
 
@@ -191,7 +196,7 @@ export default function App() {
   useEffect(() => {
     const titles: Record<Screen["kind"], string> = {
       home: "RYDN",
-      ultra: "Ultra · RYDN",
+      ultra: "Trip · RYDN",
       ultraAnalytics: "Analytics · RYDN",
       route: "Route · RYDN",
       ride: "Day · RYDN",
@@ -246,24 +251,27 @@ export default function App() {
   }
 
   if (screen.kind === "route") {
+    // Pro subscription or Race Pass unlock is enforced by the API per route.
     return (
       <div className="page-enter">
         <RoutePage
           routeId={screen.routeId}
-          onBack={() => navigate({ kind: "home", space: "ultras" })}
-          onDeleted={() => navigate({ kind: "home", space: "ultras" }, { replace: true })}
+          onBack={() => navigate({ kind: "home", space: "planning" })}
+          onDeleted={() => navigate({ kind: "home", space: "planning" }, { replace: true })}
+          onOpenAccount={() => navigate({ kind: "home", space: "you" })}
         />
       </div>
     );
   }
 
   if (screen.kind === "ultra") {
+    const ultraBack = screen.backSpace ?? "trips";
     return (
       <div className="page-enter">
         <UltraPage
           ultraId={screen.ultraId}
-          onBack={() => navigate({ kind: "home", space: "ultras" })}
-          onDeleted={() => navigate({ kind: "home", space: "ultras" }, { replace: true })}
+          onBack={() => navigate({ kind: "home", space: ultraBack })}
+          onDeleted={() => navigate({ kind: "home", space: ultraBack }, { replace: true })}
           onOpenRide={(id) =>
             navigate({
               kind: "ride",
@@ -334,14 +342,22 @@ export default function App() {
       <Home
         user={auth.user}
         providers={auth.providers}
-        space={screen.space || "ultras"}
+        space={screen.space || "planning"}
         onSpace={(space) => navigate({ kind: "home", space }, { replace: true })}
         onOpenRide={(id) => navigate({ kind: "ride", rideId: id, backTo: "home" })}
-        onOpenUltra={(id) => navigate({ kind: "ultra", ultraId: id })}
+        onOpenUltra={(id, from) =>
+          navigate({
+            kind: "ultra",
+            ultraId: id,
+            backSpace: from === "planning" ? "planning" : "trips",
+          })
+        }
         onOpenRoute={(id) => navigate({ kind: "route", routeId: id })}
         onSignOut={auth.signOut}
         onRefreshProviders={auth.refreshProviders}
         onUpdateProfile={auth.updateUserProfile}
+        onRedeemCode={auth.redeemCode}
+        onRefreshUser={auth.refreshUser}
         bootError={bootError}
         onDismissBootError={() => setBootError(null)}
       />

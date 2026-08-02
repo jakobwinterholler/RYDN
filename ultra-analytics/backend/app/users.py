@@ -34,9 +34,21 @@ def _path(uid: str) -> str:
 def _normalize(user: dict) -> dict:
     """Keep older records readable as the shape evolves. Auth identity and ride
     providers are separate concerns — connections live under user['providers']."""
+    from .subscription.tiers import normalize_persisted_tier
+
     user.setdefault("providers", {})
     user.setdefault("onboardedAt", None)
     user.setdefault("weightKg", None)
+    # Logged-in default is free; guest is unauthenticated (no user record).
+    user["subscriptionTier"] = normalize_persisted_tier(user.get("subscriptionTier"))
+    user.setdefault("subscriptionSource", None)
+    user.setdefault("subscriptionUpdatedAt", None)
+    user.setdefault("stripeCustomerId", None)
+    user.setdefault("stripeSubscriptionId", None)
+    user.setdefault("stripeStatus", None)
+    user.setdefault("redeemPro", False)
+    user.setdefault("appleActive", False)
+    user.setdefault("racePassCredits", 0)
     # migrate any legacy embedded Strava connection into the providers map
     legacy = user.pop("strava", None)
     if legacy and "strava" not in user["providers"]:
@@ -112,6 +124,9 @@ def upsert_google_user(sub: str, email: str, name: str, picture: str) -> dict:
             "avatar": picture,
             "createdAt": time.time(),
             "onboardedAt": None,
+            "subscriptionTier": "free",
+            "subscriptionSource": "default",
+            "subscriptionUpdatedAt": None,
             "providers": {},
         }
     else:
@@ -134,10 +149,40 @@ def get_or_create_dev_user() -> dict:
             "avatar": None,
             "createdAt": time.time(),
             "onboardedAt": None,
+            "subscriptionTier": "free",
+            "subscriptionSource": "default",
+            "subscriptionUpdatedAt": None,
             "providers": {},
         }
         save_user(user)
     return user
+
+
+def list_users() -> list[dict]:
+    """Load all user records (small installs). Used for Stripe customer lookup."""
+    _ensure_dir()
+    out: list[dict] = []
+    try:
+        names = os.listdir(_USERS_DIR)
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        uid = name[: -len(".json")]
+        user = get_user(uid)
+        if user:
+            out.append(user)
+    return out
+
+
+def find_user_id_by_stripe_customer(customer_id: str) -> Optional[str]:
+    if not customer_id:
+        return None
+    for user in list_users():
+        if user.get("stripeCustomerId") == customer_id:
+            return str(user["id"])
+    return None
 
 
 def public_user(user: dict) -> dict:
@@ -148,6 +193,9 @@ def public_user(user: dict) -> dict:
         weight_out = float(weight) if weight is not None else None
     except (TypeError, ValueError):
         weight_out = None
+    from .subscription.service import get_tier
+
+    stripe_status = user.get("stripeStatus")
     return {
         "id": user["id"],
         "provider": user.get("provider"),  # the auth provider (google/local)
@@ -156,6 +204,18 @@ def public_user(user: dict) -> dict:
         "avatar": user.get("avatar"),
         "onboardedAt": user.get("onboardedAt"),
         "weightKg": weight_out,
+        "subscriptionTier": get_tier(user),
+        "subscriptionSource": user.get("subscriptionSource"),
+        "billing": {
+            "stripeStatus": stripe_status,
+            "hasStripeCustomer": bool(
+                isinstance(user.get("stripeCustomerId"), str)
+                and str(user.get("stripeCustomerId")).startswith("cus_")
+            ),
+            "redeemPro": bool(user.get("redeemPro")),
+            "racePassCredits": int(user.get("racePassCredits") or 0),
+        },
+        "racePassCredits": int(user.get("racePassCredits") or 0),
     }
 
 

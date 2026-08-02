@@ -34,6 +34,7 @@ type Props = {
   selectedId: string | null;
   onRideKmChange: (km: number) => void;
   onSelectStop: (id: string) => void;
+  onProRequired?: () => void;
 };
 
 function ElevProfileChart({
@@ -89,24 +90,38 @@ function ElevProfileChart({
   const mx = PAD + t * (PROFILE_W - 2 * PAD);
   const elev = elevationAtKm(pairProfile, markerKm) ?? pts[pts.length - 1].e;
 
+  const markLeft = (mx / PROFILE_W) * 100;
+  const markTop = (sy(elev) / PROFILE_H) * 100;
+
   return (
     <div className="ride-elev" role="img" aria-label={`Elevation at km ${markerKm.toFixed(0)}`}>
-      <svg
-        className="ride-elev__svg"
-        viewBox={`0 0 ${PROFILE_W} ${PROFILE_H}`}
-        preserveAspectRatio="none"
-      >
-        <path d={area} className="ride-elev__fill" />
-        <path d={line.trim()} className="ride-elev__line" fill="none" />
-        <line
-          x1={mx}
-          y1={PAD}
-          x2={mx}
-          y2={PROFILE_H - PAD}
-          className="ride-elev__marker"
-        />
-        <circle cx={mx} cy={sy(elev)} r="3.5" className="ride-elev__dot" />
-      </svg>
+      <div className="ride-elev__frame">
+        {/*
+          Paths stretch with preserveAspectRatio=none; the progress mark is HTML so
+          it stays a perfect circle under that non-uniform scale.
+        */}
+        <svg
+          className="ride-elev__svg"
+          viewBox={`0 0 ${PROFILE_W} ${PROFILE_H}`}
+          preserveAspectRatio="none"
+        >
+          <path d={area} className="ride-elev__fill" />
+          <path d={line.trim()} className="ride-elev__line" fill="none" />
+          <line
+            x1={mx}
+            y1={PAD}
+            x2={mx}
+            y2={PROFILE_H - PAD}
+            className="ride-elev__marker"
+          />
+        </svg>
+        <div className="ride-elev__marks" aria-hidden>
+          <span
+            className="ride-elev__dot-mark"
+            style={{ left: `${markLeft}%`, top: `${markTop}%` }}
+          />
+        </div>
+      </div>
       <div className="ride-elev__scale" aria-hidden>
         <span>0</span>
         <span>{Math.round(maxD)} km</span>
@@ -125,6 +140,7 @@ export default function RidePanel({
   selectedId,
   onRideKmChange,
   onSelectStop,
+  onProRequired,
 }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
@@ -140,7 +156,13 @@ export default function RidePanel({
       const fallback = `${(routeName || "route").replace(/[^\w\-]+/g, "_") || "route"}.gpx`;
       await downloadRouteGpx(routeId, fallback);
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : "Could not export GPX.");
+      const msg = err instanceof Error ? err.message : "Could not export GPX.";
+      if (/pro|race pass|upgrade|forbidden|403/i.test(msg) && onProRequired) {
+        onProRequired();
+        setExportError(null);
+      } else {
+        setExportError(msg);
+      }
     } finally {
       setExporting(false);
     }
@@ -308,7 +330,7 @@ export default function RidePanel({
                   onClick={() => focusStop(s.id)}
                 >
                   <span className="ride-stop-card__icon" aria-hidden>
-                    <RydnPlanIcon id={iconForCategory(s.category, s.group)} size={22} />
+                    <RydnPlanIcon id={iconForCategory(s.category, s.group)} size={24} />
                   </span>
                   <span className="ride-stop-card__body">
                     <span className="ride-stop-card__cat">{s.category}</span>
@@ -337,7 +359,7 @@ export default function RidePanel({
             {exporting ? "Exporting…" : "Export for GPS"}
           </button>
           <p className="ride-panel__export-hint">
-            GPX with your route plus verified water and shops
+            GPX with your route plus verified water, shops, and hotels
           </p>
           {exportError ? (
             <p className="ride-panel__export-error" role="alert">

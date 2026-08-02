@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
+from ..util.usage_meter import record as record_usage
 from .route_plan import point_at_km
 
 
@@ -80,7 +81,9 @@ def fetch_route_weather(
             res = client.get(url)
             res.raise_for_status()
             data = res.json()
+        record_usage("open_meteo.forecast", ok=True)
     except Exception as exc:  # noqa: BLE001
+        record_usage("open_meteo.forecast", ok=False)
         return {"status": "error", "message": str(exc), "days": []}
 
     daily = data.get("daily") or {}

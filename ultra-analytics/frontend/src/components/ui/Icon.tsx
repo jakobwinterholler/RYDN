@@ -64,10 +64,15 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M6 4.5h9.5l-2 3.2 2 3.3H6" />
     </>
   ),
+  /**
+   * Bikepacking — bold A-frame tent only (ground + roof + door).
+   * Tuned for ~13–16px card labels: thick silhouette, no bedroll/pole clutter.
+   */
   tent: (
     <>
-      <path d="M3.5 18.5L12 4.5l8.5 14H3.5z" />
-      <path d="M12 4.5v14" />
+      <path d="M3 19.5h18" />
+      <path d="M5 19.5L12 4.5l7 15" />
+      <path d="M9.75 19.5V13h4.5v6.5" />
     </>
   ),
   hotel: (

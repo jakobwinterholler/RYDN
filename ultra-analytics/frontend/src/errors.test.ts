@@ -17,7 +17,7 @@ describe("userMessageFromDetail", () => {
   });
 
   it("maps conflict", () => {
-    expect(userMessageFromDetail(null, 409, "fallback")).toMatch(/another Ultra/i);
+    expect(userMessageFromDetail(null, 409, "fallback")).toMatch(/another trip/i);
   });
 });
 

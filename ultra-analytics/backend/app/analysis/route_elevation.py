@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import httpx
 
 from ..util.geo import haversine_m
+from ..util.usage_meter import record as record_usage
 
 _OPEN_METEO = "https://api.open-meteo.com/v1/elevation"
 _OPEN_TOPO = "https://api.opentopodata.org/v1/srtm30m"
@@ -75,13 +76,17 @@ def _fetch_open_meteo(coords: List[Tuple[float, float]]) -> Optional[List[Option
             res = client.get(_OPEN_METEO, params={"latitude": lats, "longitude": lons})
             data = res.json() if res.status_code == 200 else {}
             if data.get("error") or res.status_code in (429, 503):
+                record_usage("open_meteo.elevation", ok=False)
                 time.sleep(2.5 * (attempt + 1))
                 continue
             res.raise_for_status()
             elev = data.get("elevation")
             if not isinstance(elev, list) or len(elev) != len(coords):
+                record_usage("open_meteo.elevation", ok=False)
                 return None
+            record_usage("open_meteo.elevation", ok=True)
             return [float(v) if isinstance(v, (int, float)) else None for v in elev]
+    record_usage("open_meteo.elevation", ok=False)
     return None
 
 
@@ -92,19 +97,24 @@ def _fetch_opentopo(coords: List[Tuple[float, float]]) -> Optional[List[Optional
         for attempt in range(4):
             res = client.get(_OPEN_TOPO, params={"locations": locs})
             if res.status_code in (429, 503):
+                record_usage("opentopodata", ok=False)
                 time.sleep(2.5 * (attempt + 1))
                 continue
             if res.status_code != 200:
+                record_usage("opentopodata", ok=False)
                 return None
             data = res.json() or {}
             results = data.get("results") or []
             if len(results) != len(coords):
+                record_usage("opentopodata", ok=False)
                 return None
             out: List[Optional[float]] = []
             for row in results:
                 v = row.get("elevation") if isinstance(row, dict) else None
                 out.append(float(v) if isinstance(v, (int, float)) else None)
+            record_usage("opentopodata", ok=True)
             return out
+    record_usage("opentopodata", ok=False)
     return None
 
 

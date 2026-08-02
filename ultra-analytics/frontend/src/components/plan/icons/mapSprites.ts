@@ -1,33 +1,40 @@
-/** Canvas sprite factory for MapLibre symbol layers — RYDN glanceable collectibles. */
+/** Canvas sprite factory for MapLibre — RYDN premium POI markers (no emoji). */
 
 import type { Map as MapLibreMap } from "maplibre-gl";
-import { PLAN_ICON_PATHS } from "./glyphs";
+import { PLAN_ICON_MODE, PLAN_ICON_PATHS } from "./glyphs";
 import type { PlanIconId } from "./types";
 
-const PAPER = "#f7f6f3";
-const INK = "#1a1a18";
-const CHECK = "#1f7a4c";
+/** Bright face for outdoor sun readability (not pale-on-map). */
+const PAPER = "#ffffff";
+const PAPER_SOFT = "#f4f3ef";
+const INK = "#141412";
+const SAGE = "#2f5d50";
+const CHECK = "#2f5d50";
 
-/** System color-emoji stack — real 💧🛒🛏️, not path-drawn Material glyphs. */
-const EMOJI_FONT =
-  '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
-
-/** Bed with VS16 so platforms render the emoji presentation (🛏️). */
-const EMOJI_BED = "\u{1F6CF}\u{FE0F}";
-const EMOJI_WATER = "\u{1F4A7}";
-const EMOJI_CART = "\u{1F6D2}";
-
+/**
+ * Stronger category rings — edge against map tiles in bright sun.
+ */
 export type SpriteTone = "ink" | "sage" | "reject" | "muted" | "water" | "fuel" | "sleep";
 
-/** Solid category fills — never paper-grey discs (those read as placeholders). */
-const TONE_FILL: Record<SpriteTone, string> = {
-  ink: "#2a2a28",
-  sage: "#2f5d50",
-  reject: "#9a3412",
-  muted: "#6b6b64",
-  water: "#2f6fad",
-  fuel: "#8a6428",
-  sleep: "#5c4a6e",
+const TONE_RING: Record<SpriteTone, string> = {
+  ink: "#2e2e2a",
+  sage: SAGE,
+  reject: "#8f3d3d",
+  muted: "#7a7a72",
+  water: "#3d6a7c",
+  fuel: "#7a6240",
+  sleep: "#4f4a58",
+};
+
+/** Quiet category wash on bright white — still readable outdoors. */
+const TONE_WASH: Record<SpriteTone, string> = {
+  ink: "#f2f1ec",
+  sage: "#e8f0ec",
+  reject: "#f3e8e8",
+  muted: "#efeee9",
+  water: "#e6eef2",
+  fuel: "#f1ebe3",
+  sleep: "#eceaf0",
 };
 
 function toneForIcon(id: PlanIconId): SpriteTone {
@@ -37,43 +44,6 @@ function toneForIcon(id: PlanIconId): SpriteTone {
   if (id === "verified" || id === "climb" || id === "supermarket" || id === "resupply") return "sage";
   if (id === "rejected" || id === "remote" || id === "emergency") return "reject";
   return "ink";
-}
-
-/** Real emoji for Planning primary categories — null falls back to path glyphs. */
-function emojiForIcon(id: PlanIconId): string | null {
-  switch (id) {
-    case "waterFountain":
-    case "naturalWater":
-      return EMOJI_WATER;
-    case "supermarket":
-    case "shop24h":
-    case "resupply":
-    case "gasStation":
-      return EMOJI_CART;
-    case "sleepSpot":
-    case "hotel":
-    case "camping":
-    case "shelter":
-      return EMOJI_BED;
-    default:
-      return null;
-  }
-}
-
-function drawEmoji(
-  ctx: CanvasRenderingContext2D,
-  emoji: string,
-  cx: number,
-  cy: number,
-  fontPx: number,
-) {
-  ctx.save();
-  ctx.font = `${fontPx}px ${EMOJI_FONT}`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  // Color emoji fonts ignore fillStyle; slight +y centers Apple emoji in the disc.
-  ctx.fillText(emoji, cx, cy + fontPx * 0.04);
-  ctx.restore();
 }
 
 function drawGlyph(
@@ -86,6 +56,7 @@ function drawGlyph(
   weight: number,
 ) {
   const paths = PLAN_ICON_PATHS[iconId] || PLAN_ICON_PATHS.resupply;
+  const mode = PLAN_ICON_MODE[iconId] || "stroke";
   ctx.save();
   ctx.translate(cx - 12 * scale, cy - 12 * scale);
   ctx.scale(scale, scale);
@@ -94,34 +65,28 @@ function drawGlyph(
   ctx.lineWidth = weight;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  // 2-value art: filled silhouette + thick outline for sunlight
-  const fillIds: PlanIconId[] = [
-    "waterFountain",
-    "pharmacy",
-    "verified",
-    "supermarket",
-    "shop24h",
-    "resupply",
-    "sleepSpot",
-    "camping",
-    "climb",
-  ];
-  const doFill = fillIds.includes(iconId);
   for (const d of paths) {
     const p = new Path2D(d);
-    // evenodd keeps Material cart basket / wheel cutouts readable
-    if (doFill) ctx.fill(p, "evenodd");
-    ctx.stroke(p);
+    if (mode === "solid") {
+      // evenodd — bag handle hole / compound silhouettes
+      ctx.fill(p, "evenodd");
+    } else {
+      ctx.stroke(p);
+    }
   }
   ctx.restore();
 }
 
 function drawVerifiedBadge(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number) {
-  const bx = cx + r * 0.68;
-  const by = cy + r * 0.68;
-  const br = Math.max(8, r * 0.28);
+  const bx = cx + r * 0.74;
+  const by = cy + r * 0.74;
+  const br = Math.max(9, r * 0.28);
   ctx.save();
   ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.arc(bx, by + 0.7, br + 0.5, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(20, 20, 18, 0.22)";
+  ctx.fill();
   ctx.beginPath();
   ctx.arc(bx, by, br, 0, Math.PI * 2);
   ctx.fillStyle = CHECK;
@@ -134,9 +99,9 @@ function drawVerifiedBadge(ctx: CanvasRenderingContext2D, cx: number, cy: number
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.beginPath();
-  ctx.moveTo(bx - br * 0.45, by + 0.1);
-  ctx.lineTo(bx - br * 0.08, by + br * 0.38);
-  ctx.lineTo(bx + br * 0.48, by - br * 0.35);
+  ctx.moveTo(bx - br * 0.42, by + 0.05);
+  ctx.lineTo(bx - br * 0.06, by + br * 0.36);
+  ctx.lineTo(bx + br * 0.46, by - br * 0.34);
   ctx.stroke();
   ctx.restore();
 }
@@ -158,109 +123,128 @@ function spriteKey(iconId: PlanIconId, kind: MarkerSpriteKind): string {
 }
 
 /**
- * High-res emoji collectibles.
- * Canvas 96–112 @ pixelRatio 2 → logical ~48–56px; MapLibre icon-size ~0.5× prior
- * so on-map markers stay glanceable without dominating place labels.
+ * Outdoor-first marker anatomy (logical ~60–70px @ pixelRatio 2):
+ * soft shadow → bright face → dark rim → category ring → large ink glyph
+ * Selected: ink face + paper glyph + sage focus ring
+ * Emphasized: soft category outer ring (nearest)
+ * Verified: sage ✓ badge — never emoji
  */
 function renderSprite(iconId: PlanIconId, kind: MarkerSpriteKind): ImageData {
   const selected = kind === "selected" || kind === "selectedVerified";
-  const emphasized =
-    kind === "emphasized" || kind === "emphasizedVerified";
-  // High-res canvases (downscaled via icon-size for crisp mobile markers)
-  const size = selected ? 112 : emphasized ? 104 : 96;
+  const emphasized = kind === "emphasized" || kind === "emphasizedVerified";
+  // Larger canvas + disc than prior paper markers — glanceable in sun
+  const size = selected ? 136 : emphasized ? 128 : 120;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
   const cx = size / 2;
   const cy = size / 2;
-  const r = selected ? size * 0.34 : emphasized ? size * 0.32 : size * 0.3;
+  const r = selected ? size * 0.36 : emphasized ? size * 0.345 : size * 0.335;
 
   const tone = toneForIcon(iconId);
-  const fill = TONE_FILL[tone];
+  const ring = TONE_RING[tone];
   const dim = kind === "disabled" || kind === "rejected" || kind === "dimmed";
-  const opacity = dim ? (kind === "dimmed" ? 0.4 : 0.45) : kind === "loading" ? 0.7 : 1;
+  const opacity = dim ? (kind === "dimmed" ? 0.4 : 0.45) : kind === "loading" ? 0.75 : 1;
   const hasBadge =
     kind === "verified" ||
     kind === "selectedVerified" ||
     kind === "emphasizedVerified";
+  const solidGlyph = (PLAN_ICON_MODE[iconId] || "stroke") === "solid";
 
   ctx.clearRect(0, 0, size, size);
   ctx.globalAlpha = opacity;
 
-  // Soft shadow — lift off basemap
+  // Soft contact shadow — stronger lift against bright map
   ctx.beginPath();
-  ctx.arc(cx, cy + 2, r + 1, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(26, 26, 24, 0.22)";
+  ctx.arc(cx, cy + 2.6, r + 1.6, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(20, 20, 18, 0.22)";
   ctx.fill();
 
-  // Recommended: subtle category ring (not bounce/flash)
+  // Emphasized (nearest): category outer halo
   if (emphasized && !selected) {
     ctx.beginPath();
-    ctx.arc(cx, cy, r + 5.5, 0, Math.PI * 2);
-    ctx.strokeStyle = fill;
-    ctx.lineWidth = 3.2;
-    ctx.globalAlpha = opacity * 0.85;
+    ctx.arc(cx, cy, r + 6.5, 0, Math.PI * 2);
+    ctx.strokeStyle = ring;
+    ctx.lineWidth = 2.6;
+    ctx.globalAlpha = opacity * 0.5;
     ctx.stroke();
     ctx.globalAlpha = opacity;
   }
 
-  // Selected: larger disc + highlight ring
+  // Selected: sage focus ring + paper hairline
   if (selected) {
     ctx.beginPath();
-    ctx.arc(cx, cy, r + 6.5, 0, Math.PI * 2);
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 3.5;
+    ctx.arc(cx, cy, r + 7.2, 0, Math.PI * 2);
+    ctx.strokeStyle = SAGE;
+    ctx.lineWidth = 3.4;
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(cx, cy, r + 6.5, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r + 7.2, 0, Math.PI * 2);
     ctx.strokeStyle = PAPER;
-    ctx.lineWidth = 1.6;
+    ctx.lineWidth = 1.3;
     ctx.stroke();
   }
 
-  // Solid category disc
+  // Face — bright white / light wash (high contrast vs map)
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   if (kind === "rejected") {
-    ctx.fillStyle = TONE_FILL.reject;
+    ctx.fillStyle = TONE_WASH.reject;
   } else if (selected) {
     ctx.fillStyle = INK;
   } else if (dim) {
-    ctx.fillStyle = TONE_FILL.muted;
+    ctx.fillStyle = PAPER_SOFT;
   } else {
-    ctx.fillStyle = fill;
+    ctx.fillStyle = TONE_WASH[tone];
   }
   ctx.fill();
 
-  // Thick paper outline — sunlight / 2-value
-  ctx.lineWidth = selected || emphasized ? 3.4 : 3;
-  ctx.strokeStyle = PAPER;
-  ctx.stroke();
-
-  // Real emoji (💧🛒🛏️) centered on the disc — large enough for mobile glanceability
-  const emoji = emojiForIcon(iconId);
-  if (emoji) {
-    const emojiPx = selected ? Math.round(r * 1.35) : emphasized ? Math.round(r * 1.3) : Math.round(r * 1.28);
-    drawEmoji(ctx, emoji, cx, cy, emojiPx);
+  // Dark outer rim (edge against map) + category ring
+  if (!selected) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 0.5, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(20, 20, 18, 0.42)";
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 3.2, 0, Math.PI * 2);
+    ctx.strokeStyle = kind === "rejected" ? TONE_RING.reject : dim ? TONE_RING.muted : ring;
+    ctx.lineWidth = emphasized ? 2.8 : 2.5;
+    ctx.globalAlpha = opacity * (dim ? 0.75 : 1);
+    ctx.stroke();
+    ctx.globalAlpha = opacity;
   } else {
-    // Secondary icons still use path glyphs
-    const glyphScale = selected ? 1.05 : emphasized ? 0.98 : 0.94;
-    const glyphWeight = selected ? 1.55 : 1.4;
-    drawGlyph(ctx, iconId, cx, cy, glyphScale, PAPER, glyphWeight);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 0.6, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
   }
 
-  // Verified: small ✓ corner badge on category icon — never a separate icon
+  const glyphColor = selected
+    ? PAPER
+    : kind === "rejected"
+      ? TONE_RING.reject
+      : dim
+        ? TONE_RING.muted
+        : INK;
+  // Large glyph — fill most of the disc for outdoor glanceability
+  const glyphScale = selected ? 1.52 : emphasized ? 1.46 : 1.44;
+  const glyphWeight = solidGlyph ? (selected ? 1.5 : 1.4) : selected ? 2.2 : 2.1;
+  drawGlyph(ctx, iconId, cx, cy, glyphScale, glyphColor, glyphWeight);
+
   if (hasBadge) {
     drawVerifiedBadge(ctx, cx, cy, r);
   }
 
   if (kind === "loading") {
-    ctx.globalAlpha = 0.9;
+    ctx.globalAlpha = 0.85;
     ctx.beginPath();
     ctx.arc(cx, cy, r + 5, -Math.PI / 2, 0.55);
-    ctx.strokeStyle = PAPER;
-    ctx.lineWidth = 3;
+    ctx.strokeStyle = selected ? PAPER : ring;
+    ctx.lineWidth = 2.6;
+    ctx.lineCap = "round";
     ctx.stroke();
   }
 
@@ -286,9 +270,9 @@ export function clusterSpriteId(tone: ClusterTone, count: number): string {
   return `rydn-cluster-${tone}-${clusterCountLabel(count)}`;
 }
 
-/** Category-tinted cluster pill with count — never empty grey discs. */
+/** Category-tinted cluster — bright face + strong ring + ink count. */
 export function clusterSprite(tone: ClusterTone = "sage", countLabel = "2"): ImageData {
-  const size = 88;
+  const size = 104;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
@@ -296,36 +280,41 @@ export function clusterSprite(tone: ClusterTone = "sage", countLabel = "2"): Ima
   const cx = size / 2;
   const cy = size / 2;
   const big = countLabel === "10+" || countLabel === "25+";
-  const r = big ? 24 : 21;
-  const fill =
+  const r = big ? 27 : 24;
+  const ring =
     tone === "mixed"
-      ? "#3a4a42"
+      ? "#3a4240"
       : tone === "water"
-        ? TONE_FILL.water
+        ? TONE_RING.water
         : tone === "fuel"
-          ? TONE_FILL.fuel
+          ? TONE_RING.fuel
           : tone === "sleep"
-            ? TONE_FILL.sleep
-            : TONE_FILL.sage;
+            ? TONE_RING.sleep
+            : TONE_RING.sage;
 
   ctx.beginPath();
-  ctx.arc(cx, cy + 1.5, r + 1.2, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(26, 26, 24, 0.2)";
+  ctx.arc(cx, cy + 1.8, r + 1.4, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(20, 20, 18, 0.2)";
   ctx.fill();
 
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = fill;
+  ctx.fillStyle = PAPER;
   ctx.fill();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = PAPER;
+  ctx.lineWidth = 2.2;
+  ctx.strokeStyle = "rgba(20, 20, 18, 0.4)";
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 2.4, 0, Math.PI * 2);
+  ctx.lineWidth = 2.8;
+  ctx.strokeStyle = ring;
   ctx.stroke();
 
   const label = countLabel;
-  ctx.font = `bold ${big ? 17 : 18}px system-ui, -apple-system, sans-serif`;
+  ctx.font = `700 ${big ? 17 : 18}px "IBM Plex Sans", system-ui, -apple-system, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillStyle = PAPER;
+  ctx.fillStyle = INK;
   ctx.fillText(label, cx, cy + 0.5);
 
   return ctx.getImageData(0, 0, size, size);
@@ -357,6 +346,35 @@ function upsertImage(map: MapLibreMap, id: string, data: ImageData): void {
   map.addImage(id, data, { pixelRatio: 2 });
 }
 
+/** Subtle chevron for route direction (MapLibre symbol-placement: line). */
+function routeChevronSprite(): ImageData {
+  const s = 48;
+  const canvas = document.createElement("canvas");
+  canvas.width = s;
+  canvas.height = s;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return new ImageData(s, s);
+  ctx.clearRect(0, 0, s, s);
+  // Soft paper halo so the mark reads on dark/light tiles without shouting.
+  ctx.strokeStyle = "rgba(247, 246, 243, 0.92)";
+  ctx.lineWidth = 5.5;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(s * 0.34, s * 0.26);
+  ctx.lineTo(s * 0.66, s * 0.5);
+  ctx.lineTo(s * 0.34, s * 0.74);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(26, 26, 24, 0.62)";
+  ctx.lineWidth = 3.1;
+  ctx.beginPath();
+  ctx.moveTo(s * 0.34, s * 0.26);
+  ctx.lineTo(s * 0.66, s * 0.5);
+  ctx.lineTo(s * 0.34, s * 0.74);
+  ctx.stroke();
+  return ctx.getImageData(0, 0, s, s);
+}
+
 /** Register all RYDN marker + cluster sprites on a MapLibre map (idempotent). */
 export function ensurePlanSprites(map: MapLibreMap): void {
   for (const iconId of ALL_ICONS) {
@@ -371,6 +389,7 @@ export function ensurePlanSprites(map: MapLibreMap): void {
   }
   // Legacy id kept for safety
   upsertImage(map, "rydn-cluster", clusterSprite("sage", "2"));
+  upsertImage(map, "rydn-route-chevron", routeChevronSprite());
 }
 
 export { CLUSTER_TONES, clusterCountLabel };

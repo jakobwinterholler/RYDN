@@ -63,7 +63,7 @@ export default function UltraAnalyticsPage({ ultraId, onBack, onOpenRide }: Prop
   if (loading || !detail || !analysis) {
     return (
       <div className="app-loading">
-        <RydnLoader label="Building Ultra analytics…" />
+        <RydnLoader label="Building trip analytics…" />
       </div>
     );
   }
@@ -75,7 +75,7 @@ export default function UltraAnalyticsPage({ ultraId, onBack, onOpenRide }: Prop
   return (
     <div className="ultra-page ultra-analytics">
       <header className="ultra-page__nav">
-        <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to Ultra">
+        <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to trip">
           <Icon name="chevronLeft" size={22} />
         </button>
       </header>
@@ -89,7 +89,7 @@ export default function UltraAnalyticsPage({ ultraId, onBack, onOpenRide }: Prop
       {analysis.status === "empty" && (
         <p className="ua-empty">
           {analysis.message ||
-            "Add at least one day to this Ultra, then open Analytics again — reports build from member rides."}
+            "Add at least one day to this trip, then open Analytics again — reports build from member rides."}
         </p>
       )}
 
@@ -163,7 +163,7 @@ function OverviewSection({ agg }: { agg: UltraAggregation }) {
         <MetricCard label="Distance" value={fmtNumber(Math.round(agg.distanceKm))} unit="km" />
         <MetricCard label="Elevation" value={fmtNumber(agg.elevationGainM)} unit="m" />
         <MetricCard
-          label="Ultra elapsed"
+          label="Trip elapsed"
           value={fmtDuration(agg.elapsedTimeS)}
           sub="first start → last finish"
         />
@@ -177,7 +177,7 @@ function OverviewSection({ agg }: { agg: UltraAggregation }) {
           label="Avg speed"
           value={agg.avgSpeedKmh.toFixed(1)}
           unit="km/h"
-          sub="vs Ultra elapsed"
+          sub="vs trip elapsed"
         />
         <MetricCard
           label="Moving average"
@@ -185,7 +185,7 @@ function OverviewSection({ agg }: { agg: UltraAggregation }) {
           unit="km/h"
           sub="riding only"
         />
-        <MetricCard label="Stopped" value={fmtDuration(agg.stoppedTimeS)} sub="Ultra elapsed − moving" />
+        <MetricCard label="Stopped" value={fmtDuration(agg.stoppedTimeS)} sub="Trip elapsed − moving" />
         <MetricCard
           label="Avg gradient"
           value={agg.avgGradientPct.toFixed(2)}
@@ -212,7 +212,7 @@ function PacingSection({ analysis }: { analysis: UltraAnalysis }) {
     <section className="ua-block">
       <h2 className="ua-block__title">Pacing</h2>
       <p className="ua-block__lead">
-        Moving across the expedition. Ultra elapsed includes overnight; ride elapsed is day totals only.
+        Moving across the trip. Trip elapsed includes overnight; ride elapsed is day totals only.
       </p>
 
       {ledger && ledger.buckets?.length > 0 ? (
@@ -366,7 +366,7 @@ function PerformanceSection({
   return (
     <section className="ua-block">
       <h2 className="ua-block__title">Performance</h2>
-      <p className="ua-block__lead">Best efforts across the whole Ultra.</p>
+      <p className="ua-block__lead">Best efforts across the whole trip.</p>
 
       {speed?.available && speed.points.length > 0 ? (
         <CurveCard

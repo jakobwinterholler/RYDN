@@ -18,7 +18,7 @@ const STATUS_COPY: Record<number, string> = {
   403: "You don’t have permission to do that.",
   404: "We couldn’t find that. It may have been removed.",
   408: "The request timed out. Check your connection and try again.",
-  409: "That ride already belongs to another Ultra. Remove it there first, or choose a different day.",
+  409: "That ride already belongs to another trip. Remove it there first, or choose a different day.",
   413: "That file is too large. Try a smaller export (under 80 MB).",
   422: "We couldn’t use that data. Re-export the file or re-sync the activity.",
   429: "Too many requests. Wait a minute, then try again.",

@@ -13,8 +13,10 @@ from app.analysis.poi_corridor import (
     GridIndex,
     bbox_intersects,
     filter_group,
+    normalize_viewport_bbox,
     query_viewport,
     track_fingerprint,
+    wrap_longitude,
 )
 from app.analysis.route_pois import fetch_viewport_pois
 
@@ -35,6 +37,105 @@ def _poi(i, lat, lon, *, cat="Drinking water", group="water", off=50):
         "hasShop": cat in ("24h Shop", "Fuel shop"),
         "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
     }
+
+
+class TestNormalizeViewportBBox(unittest.TestCase):
+    def test_unwraps_desktop_world_copy_lng(self):
+        s, w, n, e = normalize_viewport_bbox(41.7, 361.78, 41.75, 361.86)
+        self.assertAlmostEqual(w, 1.78, places=5)
+        self.assertAlmostEqual(e, 1.86, places=5)
+        self.assertAlmostEqual(s, 41.7, places=5)
+        self.assertAlmostEqual(n, 41.75, places=5)
+
+    def test_principal_mobile_and_desktop_bounds(self):
+        s, w, n, e = normalize_viewport_bbox(41.72, 1.80, 41.74, 1.84)
+        self.assertAlmostEqual(w, 1.80, places=5)
+        self.assertAlmostEqual(e, 1.84, places=5)
+        s, w, n, e = normalize_viewport_bbox(41.5, 1.0, 42.0, 2.2)
+        self.assertLess(w, e)
+        self.assertLess(e - w, 2.5)
+
+    def test_rejects_degenerate_zero_area(self):
+        with self.assertRaises(ValueError):
+            normalize_viewport_bbox(41.7, 1.8, 41.7, 1.8)
+
+    def test_wrap_longitude(self):
+        self.assertAlmostEqual(wrap_longitude(362.1), 2.1, places=8)
+
+    def test_unwrapped_bbox_finds_corridor_poi(self):
+        """Regression: desktop ±360 lng must still hit Catalonia POIs."""
+        pois = [_poi(1, 41.72, 1.82)]
+        grid = GridIndex(pois, cell_deg=0.05)
+        s, w, n, e = normalize_viewport_bbox(41.70, 361.78, 41.75, 361.86)
+        hit = grid.query_bbox(s, w, n, e)
+        self.assertEqual(len(hit), 1)
+        # Raw unwrapped query finds nothing — proves why normalize is required.
+        self.assertEqual(len(grid.query_bbox(41.70, 361.78, 41.75, 361.86)), 0)
+
+
+class TestEmptyCachePoison(unittest.TestCase):
+    def test_empty_analysis_cache_is_rebuilt(self):
+        """Regression: pois=[] must not stick as cache=hit forever."""
+        track = [
+            [42.0, 1.0, 100, 0.0],
+            [42.05, 1.05, 110, 5.0],
+            [42.1, 1.1, 120, 10.0],
+        ]
+        fp = track_fingerprint(track)
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"ULTRA_DATA_DIR": tmp}):
+                poi_corridor._MEMORY.clear()
+                root = poi_corridor._cache_root()
+                os.makedirs(root, exist_ok=True)
+                import hashlib
+                import json
+
+                key = f"analysis:{fp}:500"
+                path = os.path.join(
+                    root, f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.analysis.json"
+                )
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump({"fingerprint": fp, "pois": [], "sleep": []}, f)
+
+                # Empty corridor shell in memory must not block rebuild.
+                poi_corridor.put_memory_corridor(
+                    {
+                        "schema": poi_corridor.CACHE_SCHEMA,
+                        "fingerprint": fp,
+                        "bbox": [41.9, 0.9, 42.2, 1.2],
+                        "pois": [],
+                    }
+                )
+
+                fake_elems = [
+                    {
+                        "type": "node",
+                        "id": 99,
+                        "lat": 42.04,
+                        "lon": 1.04,
+                        "tags": {"amenity": "drinking_water", "name": "Font"},
+                    }
+                ]
+
+                with mock.patch(
+                    "app.analysis.route_pois._fetch_elements", return_value=fake_elems
+                ):
+                    from app.analysis.route_pois import fetch_route_pois
+
+                    bundle = fetch_route_pois(track, force_refresh=False)
+                # Analysis pad is 500 m; this fixture POI is farther — corridor still warms.
+                self.assertIsNone(bundle.get("error"))
+                corridor = poi_corridor.get_memory_corridor(fp)
+                self.assertTrue(poi_corridor.corridor_has_pois(corridor))
+                # Poisoned empty file must be gone or replaced with complete build.
+                if os.path.isfile(path):
+                    rebuilt = json.load(open(path, encoding="utf-8"))
+                    self.assertTrue(rebuilt.get("complete"))
+
+                res = fetch_viewport_pois(
+                    42.0, 1.0, 42.1, 1.1, group="water", track=track, limit=10, allow_overpass=False
+                )
+                self.assertGreaterEqual(len(res.get("pois") or []), 1)
 
 
 class TestSpatialFilter(unittest.TestCase):
