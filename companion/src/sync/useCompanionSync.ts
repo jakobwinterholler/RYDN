@@ -74,6 +74,7 @@ export function useCompanionSync() {
         race.downloadedRevision,
         race.offlineReady,
         race.downloadedChecksum,
+        race.downloadedClimbCount ?? null,
       ),
     );
     setUpdatesAvailable(pending.length);
@@ -180,6 +181,7 @@ export function useCompanionSync() {
           local.downloadedRevision,
           local.offlineReady,
           local.downloadedChecksum,
+          local.downloadedClimbCount ?? null,
         );
         if (needsUpdate) {
           const reason = `download: cloud v${cloudVersion} > local v${local.downloadedRevision ?? 0}`;
@@ -242,6 +244,9 @@ export function useCompanionSync() {
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : "Download failed.";
+          logSyncDebug("download-failed", `${target.name}: ${message}`, {
+            raceId: target.id,
+          });
           results.push({
             raceId: target.id,
             name: target.name,

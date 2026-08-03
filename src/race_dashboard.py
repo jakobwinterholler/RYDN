@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from suggested_stops import resolve_planning_zones
 from unsupported_sections import analyze_unsupported_sections
 
 RELIABLE_FOOD_SCORE = 35
@@ -83,7 +84,8 @@ def compute_race_dashboard_stats(
     *,
     max_gap_km: float = 45.0,
 ) -> dict[str, Any]:
-    zones = roadbook.get("resupply_zones") or []
+    all_zones = roadbook.get("resupply_zones") or []
+    planning_zones = resolve_planning_zones(roadbook)
     summary = roadbook.get("summary") or {}
     total_km = float(summary.get("distance_km") or 0)
     verified_stops = (preparation or {}).get("verified_stops") or {}
@@ -98,7 +100,7 @@ def compute_race_dashboard_stats(
     fuel_verified = 0
     missing_hours = 0
 
-    for zone in zones:
+    for zone in planning_zones:
         zone_id = zone.get("zone_id")
         verified = _is_verified(zone_id, verified_stops)
         if verified:
@@ -128,7 +130,7 @@ def compute_race_dashboard_stats(
         if not hours or not str(hours).strip():
             missing_hours += 1
 
-    unsupported = analyze_unsupported_sections(zones, total_km)
+    unsupported = analyze_unsupported_sections(all_zones, total_km)
     longest_unsupported = max((section["distanceKm"] for section in unsupported), default=None)
 
     readiness_input = {

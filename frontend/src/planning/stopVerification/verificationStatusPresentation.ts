@@ -1,7 +1,7 @@
 import type { StopVerificationStatus, VerifiedStopRecord } from "./types";
 import { verifiedStopKey } from "./types";
 
-export type DisplayVerificationStatus = StopVerificationStatus | "not_reviewed";
+export type DisplayVerificationStatus = StopVerificationStatus | "not_reviewed" | "skipped";
 
 export type VerificationStatusIconSize = "sm" | "md" | "lg";
 
@@ -32,41 +32,50 @@ export const VERIFICATION_STATUS_PRESENTATION: Record<
     labelClass: "text-emerald-800",
   },
   rejected: {
-    label: "Rejected",
-    shortLabel: "Rejected",
+    label: "Skipped",
+    shortLabel: "Skipped",
     iconGlyph: "✕",
-    markerColor: "#DC2626",
-    iconBgClass: "bg-red-500",
-    iconRingClass: "ring-red-600/20",
+    markerColor: "#94A3B8",
+    iconBgClass: "bg-slate-400",
+    iconRingClass: "ring-slate-400/20",
     iconContentClass: "text-white",
-    labelClass: "text-red-800",
+    labelClass: "text-slate-600",
   },
   deferred: {
-    label: "Deferred",
-    shortLabel: "Later",
-    iconGlyph: "⏳",
-    markerColor: "#D97706",
-    iconBgClass: "bg-amber-500",
-    iconRingClass: "ring-amber-600/20",
+    label: "Skipped",
+    shortLabel: "Skipped",
+    iconGlyph: "✕",
+    markerColor: "#94A3B8",
+    iconBgClass: "bg-slate-400",
+    iconRingClass: "ring-slate-400/20",
     iconContentClass: "text-white",
-    labelClass: "text-amber-800",
+    labelClass: "text-slate-600",
+  },
+  skipped: {
+    label: "Skipped",
+    shortLabel: "Skipped",
+    iconGlyph: "✕",
+    markerColor: "#94A3B8",
+    iconBgClass: "bg-slate-400",
+    iconRingClass: "ring-slate-400/20",
+    iconContentClass: "text-white",
+    labelClass: "text-slate-600",
   },
   not_reviewed: {
-    label: "Not reviewed",
-    shortLabel: "Pending",
+    label: "Suggested",
+    shortLabel: "Suggested",
     iconGlyph: "○",
     markerColor: null,
     iconBgClass: "bg-white",
-    iconRingClass: "ring-slate-300",
-    iconContentClass: "text-slate-400",
+    iconRingClass: "ring-accent/30",
+    iconContentClass: "text-accent",
     labelClass: "text-muted",
   },
 };
 
 export const VERIFICATION_STATUS_ORDER: DisplayVerificationStatus[] = [
   "verified",
-  "rejected",
-  "deferred",
+  "skipped",
   "not_reviewed",
 ];
 

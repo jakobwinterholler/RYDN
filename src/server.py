@@ -8,7 +8,7 @@ from dataclasses import asdict
 from typing import Any
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -31,20 +31,28 @@ from app_settings import AppSettings, app_settings_store
 from race_project import RaceSettings, race_store
 from route_preview_render import get_preview_status, start_preview_generation, start_preview_prepare
 from race_open_trace import race_open_trace
-from auth.dependencies import get_bearer_token, get_optional_user, require_user
+from auth.dependencies import get_bearer_token, get_optional_user, require_user, resolve_sync_user
 from auth.jwt import AuthUser
 from cloud.config import cloud_config
 from cloud.race_sync import (
     CloudSyncError,
     add_companion_verifications,
     compare_desktop_companion,
+    find_cloud_races_by_gpx_fingerprint,
     get_companion_bundle,
     list_companion_verifications,
     list_sync_races,
     push_all_local_races,
     push_race,
+    regenerate_all_cloud_bundles,
+    regenerate_cloud_bundle,
     review_companion_verification,
     soft_delete_race,
+)
+from companion_import import (
+    find_local_duplicates,
+    import_stage_catalog,
+    run_companion_import,
 )
 
 PREVIEW_NO_CACHE_HEADERS = {
@@ -62,6 +70,7 @@ from race_gpx_export import (
     GpsGpxExportOptions,
     GpxExportQualityError,
     GpxTrackModifiedError,
+    build_gpx_export_preview,
     export_race_gpx_for_gps,
     export_report_json,
 )
@@ -173,7 +182,7 @@ def _race_cache(race_id: str):
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.15"}
+    return {"status": "ok", "version": "0.3.0"}
 
 
 class AppSettingsBody(BaseModel):
@@ -328,6 +337,31 @@ def progress_steps() -> dict:
     return {"steps": pipeline_step_catalog()}
 
 
+# Generous cap for very long ultra routes; still bounds memory per request and
+# blocks oversized/malicious uploads. Matches the 50 MB companion asset bucket
+# with headroom for uncompressed GPX text.
+MAX_GPX_UPLOAD_BYTES = 60 * 1024 * 1024
+
+
+async def _read_gpx_upload(file: UploadFile) -> bytes:
+    """Read an uploaded GPX with a hard size cap so a single request can't
+    exhaust server memory. Reads in 1 MB chunks and aborts once the cap is hit."""
+    size_hint = getattr(file, "size", None)
+    if isinstance(size_hint, int) and size_hint > MAX_GPX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="GPX file is too large (max 60 MB).")
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_GPX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="GPX file is too large (max 60 MB).")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _validate_gpx_upload(file: UploadFile, file_bytes: bytes) -> None:
     if not file.filename or not file.filename.lower().endswith(".gpx"):
         raise HTTPException(status_code=400, detail="Please upload a .gpx file.")
@@ -369,6 +403,11 @@ class PreparationProgressBody(BaseModel):
     verified_stops: dict[str, dict[str, Any]] | None = None
 
 
+class PromoteDiscoveryBody(BaseModel):
+    suggested_stop: dict[str, Any]
+    verified_stop: dict[str, Any] | None = None
+
+
 @app.get("/api/races")
 def list_races(include_archived: bool = False) -> dict:
     return {
@@ -387,7 +426,7 @@ async def create_race(
     user: AuthUser | None = Depends(get_optional_user),
     access_token: str | None = Depends(get_bearer_token),
 ) -> dict:
-    file_bytes = await file.read()
+    file_bytes = await _read_gpx_upload(file)
     _validate_gpx_upload(file, file_bytes)
     race = race_store.create_race(filename=file.filename, gpx_bytes=file_bytes, name=name)
     _schedule_cloud_sync(background_tasks, user, race.id, access_token)
@@ -441,6 +480,27 @@ def patch_race_preparation(
         "preparation": race.preparation.to_dict(),
         "race": race_store.get_summary(race_id).to_dict(),
     }
+
+
+@app.post("/api/races/{race_id}/promote-discovery")
+def promote_discovered_stop(
+    race_id: str,
+    body: PromoteDiscoveryBody,
+    background_tasks: BackgroundTasks,
+    user: AuthUser | None = Depends(get_optional_user),
+    access_token: str | None = Depends(get_bearer_token),
+) -> dict:
+    _require_race(race_id)
+    try:
+        roadbook = race_store.promote_discovered_stop(
+            race_id,
+            body.suggested_stop,
+            verified_stop=body.verified_stop,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _schedule_cloud_sync(background_tasks, user, race_id, access_token)
+    return {"roadbook": roadbook}
 
 
 @app.delete("/api/races/{race_id}")
@@ -813,6 +873,49 @@ def export_race_validation_gpx(race_id: str) -> FileResponse:
     )
 
 
+@app.get("/api/races/{race_id}/exports/gps-gpx/preview")
+def preview_race_gps_gpx(
+    race_id: str,
+    device: str = Query("coros"),
+    verified_only: bool = Query(True),
+    include_high_confidence: bool = Query(False),
+    include_alternatives: bool = Query(False),
+    include_optional: bool = Query(False),
+) -> dict:
+    if device not in DEVICE_PROFILES:
+        raise HTTPException(status_code=400, detail=f"Unsupported device profile: {device}")
+
+    race = race_store.get_race(race_id)
+    if not race.meta.has_analysis:
+        raise HTTPException(status_code=400, detail="Analyze the race before previewing GPS GPX export.")
+
+    roadbook = race_store.load_analysis(race_id)
+    if not roadbook:
+        raise HTTPException(status_code=400, detail="Race analysis not found.")
+
+    gpx_path = race_store.get_gpx_path(race_id)
+    if not gpx_path.is_file():
+        raise HTTPException(status_code=404, detail="Original GPX file not found.")
+
+    options = GpsGpxExportOptions(
+        device_profile=device,
+        verified_only=verified_only,
+        include_high_confidence=include_high_confidence,
+        include_alternatives=include_alternatives,
+        include_optional=include_optional,
+    )
+    verified_stops = {
+        key: record.to_dict()
+        for key, record in race.preparation.verified_stops.items()
+    }
+    return build_gpx_export_preview(
+        original_gpx_path=gpx_path,
+        roadbook=roadbook,
+        verified_stops=verified_stops,
+        options=options,
+    )
+
+
 @app.get("/api/races/{race_id}/exports/gps-gpx")
 def export_race_gps_gpx(
     race_id: str,
@@ -820,6 +923,7 @@ def export_race_gps_gpx(
     verified_only: bool = Query(True),
     include_high_confidence: bool = Query(False),
     include_alternatives: bool = Query(False),
+    include_optional: bool = Query(False),
 ) -> FileResponse:
     if device not in DEVICE_PROFILES:
         raise HTTPException(status_code=400, detail=f"Unsupported device profile: {device}")
@@ -844,6 +948,7 @@ def export_race_gps_gpx(
         verified_only=verified_only,
         include_high_confidence=include_high_confidence,
         include_alternatives=include_alternatives,
+        include_optional=include_optional,
     )
 
     try:
@@ -917,7 +1022,7 @@ async def generate_roadbook(
     poi_profile: str | None = Form(default=None),
 ) -> dict:
     """Analyze an uploaded GPX file and return roadbook data as JSON."""
-    file_bytes = await file.read()
+    file_bytes = await _read_gpx_upload(file)
     _validate_gpx_upload(file, file_bytes)
     profile = _parse_poi_profile(poi_profile)
 
@@ -939,7 +1044,7 @@ async def generate_roadbook_stream(
     poi_profile: str | None = Form(default=None),
 ) -> StreamingResponse:
     """Analyze a GPX upload and stream real pipeline progress events."""
-    file_bytes = await file.read()
+    file_bytes = await _read_gpx_upload(file)
     _validate_gpx_upload(file, file_bytes)
     profile = _parse_poi_profile(poi_profile)
 
@@ -1008,6 +1113,11 @@ def export_validation_gpx() -> FileResponse:
 
 class SyncPushBody(BaseModel):
     race_id: str
+    user_id: str | None = None
+
+
+class SyncPushAllBody(BaseModel):
+    user_id: str | None = None
 
 
 class CompanionVerificationsBody(BaseModel):
@@ -1046,6 +1156,8 @@ def sync_list_races(
                 "has_bundle": bool(race.get("has_bundle")),
                 "bundle_checksum": race.get("bundle_checksum"),
                 "bundle_schema_version": race.get("bundle_schema_version"),
+                "significant_climb_count": race.get("significant_climb_count"),
+                "gpx_fingerprint": race.get("gpx_fingerprint"),
             }
             for race in races
         ]
@@ -1088,6 +1200,29 @@ def sync_get_bundle(
     )
 
 
+@app.post("/api/sync/races/{race_id}/regenerate-bundle")
+def sync_regenerate_bundle(
+    race_id: str,
+    user: AuthUser = Depends(require_user),
+    access_token: str | None = Depends(get_bearer_token),
+) -> dict:
+    try:
+        return regenerate_cloud_bundle(user.id, race_id, access_token)
+    except CloudSyncError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/sync/regenerate-all-bundles")
+def sync_regenerate_all_bundles(
+    user: AuthUser = Depends(require_user),
+    access_token: str | None = Depends(get_bearer_token),
+) -> dict:
+    try:
+        return regenerate_all_cloud_bundles(user.id, access_token)
+    except CloudSyncError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/sync/races/{race_id}/gpx")
 def sync_get_original_gpx(race_id: str, user: AuthUser = Depends(require_user)) -> FileResponse:
     _require_race(race_id)
@@ -1098,6 +1233,107 @@ def sync_get_original_gpx(race_id: str, user: AuthUser = Depends(require_user)) 
         gpx_path,
         filename=gpx_path.name,
         media_type="application/gpx+xml",
+    )
+
+
+@app.get("/api/sync/import-gpx/stages")
+def sync_import_gpx_stages() -> dict:
+    return {"stages": import_stage_catalog()}
+
+
+@app.get("/api/sync/import-gpx/duplicates")
+def sync_import_gpx_duplicates(
+    fingerprint: str = Query(..., min_length=8, max_length=64),
+    user: AuthUser = Depends(require_user),
+    access_token: str | None = Depends(get_bearer_token),
+) -> dict:
+    local_matches = [match.to_dict() for match in find_local_duplicates(fingerprint)]
+    cloud_matches: list[dict[str, Any]] = []
+    try:
+        cloud_matches = find_cloud_races_by_gpx_fingerprint(user.id, fingerprint, access_token)
+    except CloudSyncError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    seen: set[str] = set()
+    matches: list[dict[str, Any]] = []
+    for entry in [*local_matches, *cloud_matches]:
+        race_id = str(entry.get("id") or entry.get("race_id") or "")
+        if not race_id or race_id in seen:
+            continue
+        seen.add(race_id)
+        matches.append(
+            {
+                "id": race_id,
+                "name": entry.get("name"),
+                "distance_km": entry.get("distance_km"),
+                "elevation_gain_m": entry.get("elevation_gain_m"),
+                "updated_at": entry.get("updated_at"),
+                "source": "local" if race_id in {m["id"] for m in local_matches} else "cloud",
+            }
+        )
+    return {"fingerprint": fingerprint, "matches": matches}
+
+
+@app.post("/api/sync/import-gpx")
+async def sync_import_gpx(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    name: str | None = Form(default=None),
+    conflict_action: str = Form(default="create"),
+    replace_race_id: str | None = Form(default=None),
+    user: AuthUser = Depends(require_user),
+    access_token: str | None = Depends(get_bearer_token),
+) -> StreamingResponse:
+    file_bytes = await _read_gpx_upload(file)
+    _validate_gpx_upload(file, file_bytes)
+    if conflict_action not in {"create", "replace"}:
+        raise HTTPException(status_code=400, detail="conflict_action must be create or replace.")
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    thread = threading.Thread(
+        target=run_companion_import,
+        kwargs={
+            "filename": file.filename or "route.gpx",
+            "gpx_bytes": file_bytes,
+            "name": name,
+            "conflict_action": conflict_action,  # type: ignore[arg-type]
+            "replace_race_id": replace_race_id,
+            "loop": loop,
+            "queue": queue,
+        },
+        daemon=True,
+    )
+    thread.start()
+
+    async def event_stream():
+        import_ok = False
+        race_id: str | None = None
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            if isinstance(event, dict):
+                if event.get("type") == "complete":
+                    import_ok = True
+                    race_id = str(event.get("race_id") or "")
+                yield f"data: {json.dumps(event)}\n\n"
+        if import_ok and race_id:
+            try:
+                sync_result = push_race(user.id, race_id, access_token)
+                yield f"data: {json.dumps({'type': 'synced', 'sync': sync_result})}\n\n"
+            except Exception as exc:
+                logger.exception("Cloud push after companion import failed for race %s", race_id)
+                yield f"data: {json.dumps({'type': 'sync_warning', 'detail': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -1117,9 +1353,11 @@ def sync_push_race(
 @app.post("/api/sync/push-now")
 def sync_push_race_now(
     body: SyncPushBody,
-    user: AuthUser = Depends(require_user),
+    request: Request,
+    authorization: str | None = Header(default=None),
     access_token: str | None = Depends(get_bearer_token),
 ) -> dict:
+    user = resolve_sync_user(request, authorization, body.user_id)
     _require_race(body.race_id)
     try:
         return push_race(user.id, body.race_id, access_token)
@@ -1129,9 +1367,12 @@ def sync_push_race_now(
 
 @app.post("/api/sync/push-all")
 def sync_push_all(
-    user: AuthUser = Depends(require_user),
+    request: Request,
+    body: SyncPushAllBody | None = None,
+    authorization: str | None = Header(default=None),
     access_token: str | None = Depends(get_bearer_token),
 ) -> dict:
+    user = resolve_sync_user(request, authorization, body.user_id if body else None)
     try:
         return push_all_local_races(user.id, access_token)
     except CloudSyncError as exc:

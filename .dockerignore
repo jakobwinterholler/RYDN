@@ -1,0 +1,34 @@
+# Build context = monorepo root. Keep the RYDN app; drop the rest.
+
+.git
+**/.venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.DS_Store
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local app data / builds (not needed in image)
+ultra-analytics/backend/data
+ultra-analytics/frontend/dist
+ultra-analytics/.tunnel-url
+ultra-analytics/.tunnel.log
+
+# Sibling monorepo trees (not part of Railway image)
+/companion
+/cache
+/output
+/input
+/data
+/src
+/tests
+/tools
+/launcher
+/docs
+/frontend
+
+# Docs are not required at runtime
+**/*.md
+!ultra-analytics/README.md

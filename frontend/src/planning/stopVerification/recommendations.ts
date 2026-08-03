@@ -69,7 +69,7 @@ export function buildWhyRecommended(
   }
 
   if (reasons.length === 0) {
-    reasons.push("Recommended planning hub");
+    reasons.push("Recommended stop");
   }
 
   return reasons.slice(0, 5);

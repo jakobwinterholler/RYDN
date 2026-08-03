@@ -20,7 +20,7 @@ interface UnsupportedSectionDetailContentProps {
   section: UnsupportedSection;
   route: RouteVisualization;
   allZones: ResupplyZone[];
-  planningHubIds: Set<number>;
+  suggestedStopIds: Set<number>;
 }
 
 function stopLabel(stop: { name: string; km: number } | null, fallback: string): string {
@@ -34,7 +34,7 @@ export default function UnsupportedSectionDetailContent({
   section,
   route,
   allZones,
-  planningHubIds,
+  suggestedStopIds,
 }: UnsupportedSectionDetailContentProps) {
   const tier = riskTierForSection(section);
 
@@ -47,11 +47,11 @@ export default function UnsupportedSectionDetailContent({
       .sort((left, right) => left.distance_along_km - right.distance_along_km)
       .map((zone) => ({
         zone,
-        hiddenFromPlanning: !planningHubIds.has(zone.zone_id),
+        hiddenFromPlanning: !suggestedStopIds.has(zone.zone_id),
         reliableFood: zoneHasReliableFood(zone),
         reliableWater: zoneHasReliableWater(zone),
       }));
-  }, [allZones, planningHubIds, section.endKm, section.startKm]);
+  }, [allZones, suggestedStopIds, section.endKm, section.startKm]);
 
   const mapMarkers = useMemo(() => {
     const markers = [];

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "@shared/auth/AuthProvider";
+import { cloudSyncUnavailableUserMessage } from "@shared/companion/userFacingErrors";
 import { GoogleSignInButton } from "@shared/ui/GoogleSignInButton";
 
 function CompanionLogo() {
@@ -58,7 +59,7 @@ export default function WelcomeScreen() {
 
         {!configured ? (
           <p className="mt-4 max-w-xs text-xs text-red-300">
-            Cloud sync is not configured for this build.
+            {cloudSyncUnavailableUserMessage()}
           </p>
         ) : null}
 

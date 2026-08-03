@@ -125,11 +125,27 @@ function projectOntoSegment(
   };
 }
 
+export interface MatchOptions {
+  /**
+   * Last known along-route km. When provided, matching prefers candidates
+   * within a km-window around this value so self-intersecting routes (loops,
+   * lollipops, out-and-backs) don't snap backward to a spatially-overlapping
+   * segment at a different distance. Falls back to a global search when no
+   * in-window candidate exists (e.g. first fix or rejoining after a shortcut).
+   */
+  hintKm?: number | null;
+  /** How far behind the hint to allow (GPS jitter / small backtrack). Default 2 km. */
+  windowBackKm?: number;
+  /** How far ahead of the hint to allow (movement between fixes). Default 6 km. */
+  windowAheadKm?: number;
+}
+
 /** Snap a GPS position onto the route polyline. */
 export function matchPositionToRoute(
   lat: number,
   lon: number,
   track: RouteTrack,
+  options?: MatchOptions,
 ): MapMatchResult | null {
   const { points } = track;
   if (points.length === 0) {
@@ -147,38 +163,69 @@ export function matchPositionToRoute(
     };
   }
 
+  const hintKm = options?.hintKm ?? null;
+  const backKm = options?.windowBackKm ?? 2;
+  const aheadKm = options?.windowAheadKm ?? 6;
+  const lowKm = hintKm === null ? -Infinity : hintKm - backKm;
+  const highKm = hintKm === null ? Infinity : hintKm + aheadKm;
+
   let bestDistanceM = Infinity;
   let bestKm = points[0].km;
   let bestLat = points[0].lat;
   let bestLon = points[0].lon;
   let bestSegment = 0;
 
+  let winDistanceM = Infinity;
+  let winKm = points[0].km;
+  let winLat = points[0].lat;
+  let winLon = points[0].lon;
+  let winSegment = -1;
+
   for (let index = 0; index < points.length - 1; index += 1) {
     const a = points[index];
     const b = points[index + 1];
     const projection = projectOntoSegment(lat, lon, a, b);
+    const projKm = a.km + (b.km - a.km) * projection.t;
+
     if (projection.distanceM < bestDistanceM) {
       bestDistanceM = projection.distanceM;
       bestLat = projection.lat;
       bestLon = projection.lon;
-      bestKm = a.km + (b.km - a.km) * projection.t;
+      bestKm = projKm;
       bestSegment = index;
+    }
+
+    if (hintKm !== null && projKm >= lowKm && projKm <= highKm) {
+      if (projection.distanceM < winDistanceM) {
+        winDistanceM = projection.distanceM;
+        winLat = projection.lat;
+        winLon = projection.lon;
+        winKm = projKm;
+        winSegment = index;
+      }
     }
   }
 
-  const aheadIndex = Math.min(points.length - 1, bestSegment + 1);
+  const useWindowed = hintKm !== null && winSegment >= 0;
+  const chosenDistanceM = useWindowed ? winDistanceM : bestDistanceM;
+  const chosenKm = useWindowed ? winKm : bestKm;
+  const chosenLat = useWindowed ? winLat : bestLat;
+  const chosenLon = useWindowed ? winLon : bestLon;
+  const chosenSegment = useWindowed ? winSegment : bestSegment;
+
+  const aheadIndex = Math.min(points.length - 1, chosenSegment + 1);
   const bearing = bearingBetween(
-    { lon: bestLon, lat: bestLat },
+    { lon: chosenLon, lat: chosenLat },
     { lon: points[aheadIndex].lon, lat: points[aheadIndex].lat },
   );
 
   return {
-    km: Math.max(0, Math.min(track.totalKm, bestKm)),
-    lat: bestLat,
-    lon: bestLon,
+    km: Math.max(0, Math.min(track.totalKm, chosenKm)),
+    lat: chosenLat,
+    lon: chosenLon,
     bearing,
-    snapDistanceM: bestDistanceM,
-    segmentIndex: bestSegment,
+    snapDistanceM: chosenDistanceM,
+    segmentIndex: chosenSegment,
   };
 }
 

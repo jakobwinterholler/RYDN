@@ -188,6 +188,22 @@ export interface ResupplyZone {
   categories: ZoneCategoryGroup[];
 }
 
+export interface SuggestedStop {
+  zone_id: number;
+  osm_id: number;
+  osm_type: string;
+  name: string | null;
+  poi_category: string;
+  category_key: string;
+  category_label: string;
+  distance_along_km: number;
+  distance_off_route_m: number;
+  lat: number;
+  lon: number;
+  score: number;
+  reason: string | null;
+}
+
 export interface TrackPoint {
   lat: number;
   lon: number;
@@ -295,6 +311,7 @@ export interface RoadbookResult {
   climb_candidates: ClimbCandidateRow[];
   pois: PoiRow[];
   resupply_zones: ResupplyZone[];
+  suggested_stops?: SuggestedStop[];
   route: RouteVisualization;
   performance_report?: PerformanceStageRow[];
   performance_summary?: PerformanceSummaryRow | null;
@@ -311,6 +328,7 @@ export type AppTab =
   | "climbs"
   | "surface"
   | "resupply"
+  | "export"
   | "preview";
 
 export interface ClimbDetectionConfig {
@@ -629,6 +647,9 @@ export interface GpsGpxExportReport {
   coros_icons_total: number | null;
   integrity_percent: number;
   waypoint_count: number;
+  critical_count: number;
+  recommended_count: number;
+  optional_count: number;
 }
 
 export async function downloadExport(endpoint: string, filename: string): Promise<void> {

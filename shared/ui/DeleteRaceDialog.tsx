@@ -1,28 +1,64 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { HoldToConfirmButton } from "./HoldToConfirmButton";
 
-interface DeleteRaceDialogProps {
+export interface DeleteRaceDialogProps {
   open: boolean;
   raceName: string;
+  distanceKm?: number | null;
+  elevationGainM?: number | null;
+  cloudSynced?: boolean | null;
+  lastModified?: string | null;
   busy?: boolean;
+  variant?: "light" | "dark";
   onClose: () => void;
   onConfirm: () => void;
+}
+
+function formatDistance(km: number | null | undefined): string {
+  if (km == null || !Number.isFinite(km)) {
+    return "—";
+  }
+  return `${Math.round(km)} km`;
+}
+
+function formatElevation(m: number | null | undefined): string {
+  if (m == null || !Number.isFinite(m)) {
+    return "—";
+  }
+  return `+${Math.round(m).toLocaleString()} m`;
+}
+
+function formatLastModified(value: string | null | undefined): string {
+  if (!value) {
+    return "—";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 export function DeleteRaceDialog({
   open,
   raceName,
+  distanceKm,
+  elevationGainM,
+  cloudSynced,
+  lastModified,
   busy = false,
+  variant = "light",
   onClose,
   onConfirm,
 }: DeleteRaceDialogProps) {
-  const [typed, setTyped] = useState("");
-  const [acknowledged, setAcknowledged] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const inputId = useId();
-  const checkboxId = useId();
-
-  const canDelete =
-    typed.trim() === raceName.trim() && acknowledged && !busy;
+  const dark = variant === "dark";
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -30,10 +66,7 @@ export function DeleteRaceDialog({
       return;
     }
     if (open && !dialog.open) {
-      setTyped("");
-      setAcknowledged(false);
       dialog.showModal();
-      queueMicrotask(() => dialog.querySelector<HTMLInputElement>("input[type=text]")?.focus());
     }
     if (!open && dialog.open) {
       dialog.close();
@@ -53,73 +86,73 @@ export function DeleteRaceDialog({
     return () => dialog.removeEventListener("cancel", handleCancel);
   }, [onClose]);
 
+  const shell = dark
+    ? "border-white/12 bg-[#141414] text-white backdrop:bg-black/60"
+    : "border-line bg-card text-ink backdrop:bg-ink/40";
+  const muted = dark ? "text-white/55" : "text-muted";
+  const label = dark ? "text-white/40" : "text-muted";
+  const value = dark ? "text-white/90" : "text-ink";
+  const statBg = dark ? "bg-white/[0.04] border-white/8" : "bg-canvas/60 border-line/60";
+
   return (
     <dialog
       ref={dialogRef}
-      className="w-full max-w-md rounded-2xl border border-line bg-card p-0 shadow-xl backdrop:bg-ink/40"
+      className={`w-full max-w-md rounded-2xl border p-0 shadow-xl ${shell}`}
       onClose={onClose}
     >
-      <form
-        method="dialog"
-        className="p-6"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (canDelete) {
-            onConfirm();
-          }
-        }}
-      >
-        <h3 className="text-lg font-semibold text-ink">Delete race?</h3>
-        <p className="mt-2 text-sm leading-relaxed text-muted">
-          This permanently removes <span className="font-medium text-ink">{raceName}</span> from
-          this computer and the cloud. This cannot be undone.
+      <div className="p-6">
+        <h3 className="text-lg font-semibold">Delete race permanently?</h3>
+        <p className={`mt-2 text-sm leading-relaxed ${muted}`}>
+          This removes the race from Desktop, cloud sync, and any downloaded phone bundles.
+          Verification data is deleted. This cannot be undone.
         </p>
 
-        <label htmlFor={inputId} className="mt-5 block text-sm text-muted">
-          Type the race name to confirm
-          <input
-            id={inputId}
-            type="text"
-            value={typed}
-            autoComplete="off"
-            onChange={(event) => setTyped(event.target.value)}
-            placeholder={raceName}
-            className="mt-1.5 w-full rounded-xl border border-line bg-white px-4 py-2.5 text-sm text-ink"
-          />
-        </label>
+        <div className={`mt-5 rounded-2xl border px-4 py-3 ${statBg}`}>
+          <p className={`text-base font-semibold ${value}`}>{raceName}</p>
+          <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+            <div>
+              <dt className={`text-[11px] font-medium uppercase tracking-wide ${label}`}>Distance</dt>
+              <dd className={`mt-0.5 tabular-nums ${value}`}>{formatDistance(distanceKm)}</dd>
+            </div>
+            <div>
+              <dt className={`text-[11px] font-medium uppercase tracking-wide ${label}`}>Elevation</dt>
+              <dd className={`mt-0.5 tabular-nums ${value}`}>{formatElevation(elevationGainM)}</dd>
+            </div>
+            <div>
+              <dt className={`text-[11px] font-medium uppercase tracking-wide ${label}`}>Cloud synced</dt>
+              <dd className={`mt-0.5 ${value}`}>
+                {cloudSynced == null ? "—" : cloudSynced ? "Yes" : "No"}
+              </dd>
+            </div>
+            <div>
+              <dt className={`text-[11px] font-medium uppercase tracking-wide ${label}`}>Last modified</dt>
+              <dd className={`mt-0.5 text-xs ${value}`}>{formatLastModified(lastModified)}</dd>
+            </div>
+          </dl>
+        </div>
 
-        <label
-          htmlFor={checkboxId}
-          className="mt-4 flex cursor-pointer items-start gap-3 text-sm text-ink"
-        >
-          <input
-            id={checkboxId}
-            type="checkbox"
-            checked={acknowledged}
-            onChange={(event) => setAcknowledged(event.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-line"
+        <div className="mt-6 flex flex-col gap-3">
+          <HoldToConfirmButton
+            label="Delete permanently"
+            holdingLabel="Deleting…"
+            disabled={busy}
+            variant={variant}
+            onConfirm={onConfirm}
           />
-          <span>I understand this permanently deletes the race.</span>
-        </label>
-
-        <div className="mt-6 flex justify-end gap-3">
           <button
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="rounded-xl border border-line px-4 py-2 text-sm font-medium text-ink"
+            className={`min-h-[44px] rounded-xl border px-4 text-sm font-medium disabled:opacity-50 ${
+              dark
+                ? "border-white/15 text-white/85 hover:bg-white/5"
+                : "border-line text-ink"
+            }`}
           >
             Cancel
           </button>
-          <button
-            type="submit"
-            disabled={!canDelete}
-            className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {busy ? "Deleting…" : "Delete race"}
-          </button>
         </div>
-      </form>
+      </div>
     </dialog>
   );
 }

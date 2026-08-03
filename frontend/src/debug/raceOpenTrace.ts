@@ -78,7 +78,9 @@ export function raceOpenTrace(
     detail: options.detail,
   };
   trace.push(entry);
-  console.info(`[race-open] ${entry.at} +${entry.msSinceStart}ms ${step}`, options.detail ?? "");
+  if (import.meta.env.DEV) {
+    console.info(`[race-open] ${entry.at} +${entry.msSinceStart}ms ${step}`, options.detail ?? "");
+  }
 }
 
 export function getRaceOpenTrace(): RaceOpenTraceEntry[] {

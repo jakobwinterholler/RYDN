@@ -30,6 +30,12 @@ interface PwaUpdateContextValue {
 
 const PwaUpdateContext = createContext<PwaUpdateContextValue | null>(null);
 
+function reloadWithCacheBust(): void {
+  const target = new URL(window.location.href);
+  target.searchParams.set("appUpdate", String(Date.now()));
+  window.location.replace(target.toString());
+}
+
 export function PwaUpdateProvider({ children }: { children: ReactNode }) {
   const [pendingVersion, setPendingVersion] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
@@ -61,6 +67,10 @@ export function PwaUpdateProvider({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
+    void refreshPendingVersion();
+  }, [refreshPendingVersion]);
+
+  useEffect(() => {
     if (needRefresh) {
       void refreshPendingVersion();
     }
@@ -69,6 +79,7 @@ export function PwaUpdateProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const checkForUpdate = () => {
       void registrationRef.current?.update();
+      void refreshPendingVersion();
     };
 
     checkForUpdate();
@@ -95,14 +106,28 @@ export function PwaUpdateProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("online", onOnline);
     };
-  }, []);
+  }, [refreshPendingVersion]);
 
   const applyUpdate = useCallback(async () => {
     setApplying(true);
     try {
-      await updateServiceWorker(true);
-    } finally {
-      setApplying(false);
+      const registration =
+        registrationRef.current ?? (await navigator.serviceWorker.getRegistration());
+      if (registration?.waiting) {
+        registration.waiting.postMessage({ type: "SKIP_WAITING" });
+      }
+      await registration?.update();
+
+      try {
+        await updateServiceWorker(true);
+      } catch {
+        // iOS often ignores the virtual helper — fall through to hard reload.
+      }
+
+      // Always hard-reload on phone PWAs; controllerchange is unreliable on iOS.
+      reloadWithCacheBust();
+    } catch {
+      reloadWithCacheBust();
     }
   }, [updateServiceWorker]);
 
@@ -110,7 +135,8 @@ export function PwaUpdateProvider({ children }: { children: ReactNode }) {
     setDismissed(true);
   }, []);
 
-  const updateAvailable = needRefresh && !dismissed;
+  const versionMismatch = pendingVersion != null && pendingVersion !== APP_VERSION;
+  const updateAvailable = (needRefresh || versionMismatch) && !dismissed;
 
   const value = useMemo<PwaUpdateContextValue>(
     () => ({

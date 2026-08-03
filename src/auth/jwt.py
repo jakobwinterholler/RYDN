@@ -18,6 +18,10 @@ class AuthUser:
     email: str | None = None
 
 
+class AuthTokenError(ValueError):
+    """Token is invalid or expired — do not fall back to other verifiers."""
+
+
 @lru_cache(maxsize=1)
 def _jwks_client() -> PyJWKClient:
     return PyJWKClient(f"{cloud_config.url}/auth/v1/.well-known/jwks.json")
@@ -32,21 +36,19 @@ def _verify_via_auth_api(token: str) -> dict:
         },
         timeout=15.0,
     )
+    if response.status_code in {401, 403}:
+        raise AuthTokenError("Invalid or expired session.")
     if response.status_code >= 400:
-        raise ValueError("Invalid or expired session.")
+        raise RuntimeError(f"Supabase auth API error ({response.status_code}).")
     user = response.json()
     user_id = user.get("id")
     if not user_id:
-        raise ValueError("Invalid token: missing subject.")
+        raise AuthTokenError("Invalid token: missing subject.")
     return {"sub": user_id, "email": user.get("email")}
 
 
-def verify_access_token(token: str) -> AuthUser:
-    if not cloud_config.auth_enabled:
-        raise ValueError("Cloud auth is not configured.")
-
+def _payload_from_local_jwt(token: str) -> dict | None:
     payload: dict | None = None
-    last_error: Exception | None = None
 
     if cloud_config.jwt_secret:
         try:
@@ -55,9 +57,10 @@ def verify_access_token(token: str) -> AuthUser:
                 cloud_config.jwt_secret,
                 algorithms=["HS256"],
                 audience="authenticated",
+                leeway=30,
             )
-        except jwt.InvalidTokenError as exc:
-            last_error = exc
+        except jwt.InvalidTokenError:
+            payload = None
 
     if payload is None:
         try:
@@ -67,17 +70,29 @@ def verify_access_token(token: str) -> AuthUser:
                 signing_key.key,
                 algorithms=["ES256", "RS256"],
                 audience="authenticated",
+                leeway=30,
             )
-        except jwt.InvalidTokenError as exc:
-            last_error = exc
+        except jwt.InvalidTokenError:
+            payload = None
+
+    return payload
+
+
+def verify_access_token(token: str) -> AuthUser:
+    if not cloud_config.auth_enabled:
+        raise ValueError("Cloud auth is not configured.")
+
+    payload: dict | None = None
+
+    try:
+        payload = _verify_via_auth_api(token)
+    except AuthTokenError:
+        raise ValueError("Invalid or expired session.") from None
+    except Exception:
+        payload = _payload_from_local_jwt(token)
 
     if payload is None:
-        try:
-            payload = _verify_via_auth_api(token)
-        except Exception as exc:
-            if last_error is not None:
-                raise ValueError("Invalid or expired session.") from last_error
-            raise ValueError("Invalid or expired session.") from exc
+        raise ValueError("Invalid or expired session.")
 
     user_id = payload.get("sub")
     if not user_id:

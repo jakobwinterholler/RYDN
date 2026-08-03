@@ -1,12 +1,13 @@
 {
   "name": "race-companion",
   "private": true,
-  "version": "0.1.16",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "prebuild": "npm install --prefix ../shared",
-    "build": "tsc -b && vite build",
+    "test:sync": "cd .. && sh -c 'if [ -n \"$VERCEL\" ]; then echo \"[sync] Skipping sync tests on Vercel\"; elif command -v python3 >/dev/null 2>&1; then PYTHONPATH=src python3 -m unittest tests.test_analysis_parity_collserola tests.test_sync_compatibility_pipeline tests.test_sync_reliability tests.test_bundle_validate tests.test_bundle_migration tests.test_bundle_checksum -q && npx --yes tsx shared/race/bundlePois.test.ts && npx --yes tsx shared/race/companionClimbs.test.ts && npx --yes tsx shared/sync/bundleValidation.test.ts && npx --yes tsx shared/sync/raceVersion.test.ts && npx --yes tsx shared/race/streetViewUrl.test.ts && npx --yes tsx shared/race/applyVerificationToBundle.test.ts; else echo \"[sync] Python not available — skipping sync compatibility tests\"; fi'",
+    "build": "npm run test:sync && tsc -b && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

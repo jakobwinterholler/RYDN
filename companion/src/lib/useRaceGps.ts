@@ -132,7 +132,9 @@ export function useRaceGps({ enabled, bundle }: UseRaceGpsOptions) {
       const speedKmh =
         speed != null && Number.isFinite(speed) ? Math.max(0, speed * 3.6) : null;
 
-      const matched = matchPositionToRoute(latitude, longitude, track);
+      const matched = matchPositionToRoute(latitude, longitude, track, {
+        hintKm: lastGoodRef.current?.km ?? null,
+      });
       if (!matched) {
         return;
       }

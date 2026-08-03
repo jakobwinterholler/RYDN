@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { VerifiedStopRecord } from "../planning/stopVerification/types";
 import { downloadGpsExport, type GpsGpxExportReport } from "../api";
-import { raceGpsExportEndpoint } from "../races/api";
+import { raceGpsExportEndpoint, raceGpsExportPreviewEndpoint } from "../races/api";
+import GpsExportQrPanel from "./GpsExportQrPanel";
+import CorosExportPreviewPanel, { useCorosExportPreview } from "./CorosExportPreviewPanel";
 
 export type GpsGpxDeviceProfile = "original" | "coros" | "garmin" | "wahoo";
 
@@ -10,6 +12,7 @@ export interface GpsGpxExportOptions {
   verifiedOnly: boolean;
   includeHighConfidence: boolean;
   includeAlternatives: boolean;
+  includeOptional: boolean;
 }
 
 interface GpsGpxExportDialogProps {
@@ -23,7 +26,7 @@ interface GpsGpxExportDialogProps {
 
 const DEVICE_OPTIONS: Array<{ id: GpsGpxDeviceProfile; label: string; hint: string }> = [
   { id: "original", label: "GPX (Original)", hint: "Full waypoint names and metadata" },
-  { id: "coros", label: "GPX for Coros", hint: "Native icons and short names for Dura screens" },
+  { id: "coros", label: "GPX for Coros", hint: "Smart names, native icons, export preview" },
   { id: "garmin", label: "GPX for Garmin", hint: "Balanced names for Edge devices" },
   { id: "wahoo", label: "GPX for Wahoo", hint: "Balanced names for ELEMNT devices" },
 ];
@@ -50,6 +53,10 @@ function ExportReportPanel({ report }: { report: GpsGpxExportReport }) {
       ) : null}
       <p>Verified POIs: {report.verified_poi_count}</p>
       <p>Exported POIs: {report.exported_poi_count}</p>
+      <p>
+        Critical: {report.critical_count} · Recommended: {report.recommended_count}
+        {report.optional_count > 0 ? ` · Optional: ${report.optional_count}` : ""}
+      </p>
       {report.device_profile === "coros" && report.coros_icons_assigned != null ? (
         <p>
           Coros Icons: {report.coros_icons_assigned}/{report.coros_icons_total ?? report.exported_poi_count}{" "}
@@ -73,23 +80,43 @@ export default function GpsGpxExportDialog({
   const [verifiedOnly, setVerifiedOnly] = useState(true);
   const [includeHighConfidence, setIncludeHighConfidence] = useState(false);
   const [includeAlternatives, setIncludeAlternatives] = useState(false);
+  const [includeOptional, setIncludeOptional] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<GpsGpxExportReport | null>(null);
 
   const verifiedCount = countVerifiedStops(verifiedStops);
+  const exportOptions = useMemo(
+    () => ({
+      device,
+      verifiedOnly,
+      includeHighConfidence,
+      includeAlternatives,
+      includeOptional,
+    }),
+    [device, verifiedOnly, includeHighConfidence, includeAlternatives, includeOptional],
+  );
+
+  const previewEndpoint = useMemo(
+    () => (open && !report ? raceGpsExportPreviewEndpoint(raceId, exportOptions) : null),
+    [open, report, raceId, exportOptions],
+  );
+
+  const { preview, loading: previewLoading, error: previewError } = useCorosExportPreview(
+    previewEndpoint,
+    device === "coros" && open && !report,
+  );
+
+  const canExport =
+    device !== "coros" ||
+    (preview?.routeIntegrityPassed === true && preview.validationErrors.length === 0);
 
   async function handleExport() {
     setLoading(true);
     setError(null);
     setReport(null);
     try {
-      const endpoint = raceGpsExportEndpoint(raceId, {
-        device,
-        verifiedOnly,
-        includeHighConfidence,
-        includeAlternatives,
-      });
+      const endpoint = raceGpsExportEndpoint(raceId, exportOptions);
       const slug = raceName.trim().replace(/\s+/g, "-") || "race";
       const exportReport = await downloadGpsExport(endpoint, `${slug}-gps-${device}.gpx`);
       if (exportReport) {
@@ -126,7 +153,7 @@ export default function GpsGpxExportDialog({
         <p className="mt-2 text-sm text-muted">
           Exports your original GPX track unchanged and adds navigation waypoints only.
           {verifiedCount > 0
-            ? ` ${verifiedCount} verified stop${verifiedCount === 1 ? "" : "s"} will be included by default.`
+            ? ` ${verifiedCount} verified stop${verifiedCount === 1 ? "" : "s"} available.`
             : " No verified stops yet — export will contain the original route only."}
         </p>
 
@@ -165,7 +192,16 @@ export default function GpsGpxExportDialog({
                   onChange={(event) => setVerifiedOnly(event.target.checked)}
                   className="accent-accent"
                 />
-                Verified stops only (default)
+                Verified resupply stops only (default)
+              </label>
+              <label className="flex items-center gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  checked={includeOptional}
+                  onChange={(event) => setIncludeOptional(event.target.checked)}
+                  className="accent-accent"
+                />
+                Include optional stops
               </label>
               <label className="flex items-center gap-2 text-sm text-ink">
                 <input
@@ -188,15 +224,27 @@ export default function GpsGpxExportDialog({
               </label>
             </div>
 
-            <p className="mt-4 rounded-xl bg-canvas px-3 py-2 text-xs text-muted">
-              Validation runs before download: track point count, distance, ascent, descent, and
-              geometry checksum must match the imported GPX. Export is cancelled if the route changed.
-            </p>
+            {device === "coros" ? (
+              <CorosExportPreviewPanel
+                preview={preview}
+                loading={previewLoading}
+                error={previewError}
+              />
+            ) : (
+              <p className="mt-4 rounded-xl bg-canvas px-3 py-2 text-xs text-muted">
+                Validation runs before download: track point count, distance, ascent, descent, and
+                geometry checksum must match the imported GPX. Export is cancelled if the route
+                changed.
+              </p>
+            )}
           </>
         ) : (
           <>
             <p className="mt-3 text-sm text-muted">Export complete. Your GPX file has been downloaded.</p>
             <ExportReportPanel report={report} />
+            {device === "coros" ? (
+              <GpsExportQrPanel raceId={raceId} raceName={raceName} device="coros" />
+            ) : null}
           </>
         )}
 
@@ -215,10 +263,10 @@ export default function GpsGpxExportDialog({
             <button
               type="button"
               onClick={() => void handleExport()}
-              disabled={loading}
+              disabled={loading || previewLoading || !canExport}
               className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
             >
-              {loading ? "Validating…" : "Export GPX"}
+              {loading ? "Exporting…" : device === "coros" ? "Export to Coros" : "Export GPX"}
             </button>
           ) : null}
         </div>

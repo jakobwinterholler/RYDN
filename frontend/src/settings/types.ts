@@ -10,7 +10,9 @@ export interface PlanningSettings {
   preferred_stage_length_km: number;
   max_gap_without_resupply_km: number;
   default_arrival_time_window: TimeWindowId | null;
-  default_zone_density: ZoneDensityMode;
+  /** @deprecated v0.3 — planning modes removed; kept for migration */
+  default_zone_density?: ZoneDensityMode;
+  developer_mode_enabled: boolean;
 }
 
 export interface AnalysisSettings {

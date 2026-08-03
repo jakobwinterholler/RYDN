@@ -1,4 +1,5 @@
 import { analyzeRouteSegmentDifficulty } from "@shared/race/routeSegmentDifficulty";
+import { filterStopsForResupplyView } from "@shared/race/resupplyView";
 import type { CompanionBundle, CompanionStop, ResupplyTimelineEntry } from "../types";
 import {
   googleMapsUrl as sharedGoogleMapsUrl,
@@ -101,14 +102,9 @@ export function buildResupplyCards(
   bundle: CompanionBundle,
   verifiedOnly: boolean,
 ): ResupplyCardEntry[] {
-  const stops = bundle.stops
-    .filter(
-      (stop) =>
-        !verifiedOnly ||
-        stop.verificationStatus === "verified" ||
-        stop.verificationStatus === "pending",
-    )
-    .sort((left, right) => left.km - right.km);
+  const stops = filterStopsForResupplyView(bundle.stops, verifiedOnly).sort(
+    (left, right) => left.km - right.km,
+  );
 
   return stops.map((stop, index) => {
     const previous = stops[index - 1];

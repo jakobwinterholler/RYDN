@@ -258,8 +258,8 @@ export default function StopDetailPanel({
     <div className="space-y-5">
       <VerificationStatusBadge zoneId={zone.zone_id} size="md" />
       <div>
-        <p className="text-xs text-muted">Resupply hub</p>
-        <p className="mt-1 text-xs tracking-tight text-muted">{hubSummary.hubStarDisplay}</p>
+        <p className="text-xs text-muted">Resupply stop</p>
+        <p className="mt-1 text-xs tracking-tight text-muted">{hubSummary.stopStarDisplay}</p>
         <p className="mt-2 text-sm text-muted">
           {formatKm(zone.distance_along_km, 1)}
           <span className="mx-2 text-line">·</span>

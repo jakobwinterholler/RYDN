@@ -10,7 +10,13 @@ function bundleRevision(bundle: { revision?: number; bundle_version?: number }):
   return bundle.revision ?? bundle.bundle_version ?? 0;
 }
 
-export default function ShareScreen() {
+export default function ShareScreen({
+  autoExportDevice = null,
+  onAutoExportHandled,
+}: {
+  autoExportDevice?: "coros" | "garmin" | "wahoo" | null;
+  onAutoExportHandled?: () => void;
+}) {
   const { bundle, updateBundle, showUnverified } = useCompanion();
   const { accessToken, user } = useAuth();
   const { refresh } = useCloudRaceList();
@@ -53,8 +59,8 @@ export default function ShareScreen() {
   }
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto">
-      <section className="border-b border-white/10 px-4 py-4">
+    <div className="h-full min-h-0 overflow-y-auto pb-safe-bottom">
+      <section className="border-b border-white/10 px-4 pb-4">
         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-sky-300/80">Share</p>
         <h1 className="mt-1 text-xl font-semibold text-white">{bundle.race.name}</h1>
         <p className="mt-1 text-sm tabular-nums text-white/50">
@@ -145,7 +151,12 @@ export default function ShareScreen() {
       ) : null}
 
       <section className="px-4 py-5">
-        <GpsGpxExportPanel bundle={bundle} />
+        <GpsGpxExportPanel
+          bundle={bundle}
+          initialDevice={autoExportDevice ?? undefined}
+          autoStartExport={autoExportDevice != null}
+          onAutoStartHandled={onAutoExportHandled}
+        />
       </section>
     </div>
   );

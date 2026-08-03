@@ -13,6 +13,7 @@ import type { PlanningIntent } from "./planning/planningIntent";
 import type { ZoneDensityMode } from "./planning/types";
 import ClimbsPage from "./pages/ClimbsPage";
 import DashboardPage from "./pages/OverviewPage";
+import ExportPage from "./pages/ExportPage";
 import MyRacesPage from "./pages/MyRacesPage";
 import ResupplyPage from "./pages/ResupplyPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -44,7 +45,7 @@ function AppContent() {
   const { settings } = useSettings();
 
   const [view, setView] = useState<AppView>("races");
-  const [activeTab, setActiveTab] = useState<AppTab>("dashboard");
+  const [activeTab, setActiveTab] = useState<AppTab>("route");
   const [returnView, setReturnView] = useState<AppView>("races");
   const [error, setError] = useState<string | null>(null);
   const [analysisStartedAt, setAnalysisStartedAt] = useState(0);
@@ -111,7 +112,7 @@ function AppContent() {
   const finishAnalysis = useCallback(
     async (data: RoadbookResult) => {
       setRoadbook(data);
-      setActiveTab("dashboard");
+      setActiveTab("route");
       setView("workspace");
       await refreshRaces();
     },
@@ -150,7 +151,7 @@ function AppContent() {
         const summary = await openRace(raceId);
         if (summary.has_analysis) {
           setView("workspace");
-          setActiveTab("dashboard");
+          setActiveTab("route");
         } else {
           await startAnalysis(raceId, summary.name);
         }
@@ -246,12 +247,7 @@ function AppContent() {
           />
         );
       case "route":
-        return (
-          <RoutePage
-            result={roadbook}
-            onViewFullBriefing={() => setActiveTab("dashboard")}
-          />
-        );
+        return <RoutePage result={roadbook} />;
       case "verify":
         return (
           <StopVerificationPage
@@ -277,13 +273,9 @@ function AppContent() {
       case "surface":
         return <SurfacePage result={roadbook} onNavigate={setActiveTab} />;
       case "resupply":
-        return (
-          <ResupplyPage
-            zones={roadbook.resupply_zones}
-            route={roadbook.route}
-            totalKm={roadbook.summary.distance_km}
-          />
-        );
+        return <ResupplyPage result={roadbook} />;
+      case "export":
+        return <ExportPage result={roadbook} raceId={activeRaceId} />;
       case "preview":
         return (
           <RoutePreviewPage
@@ -317,30 +309,36 @@ function AppContent() {
         )}
 
         {view === "races" && (
-          <MyRacesPage
-            onRaceCreated={handleRaceCreated}
-            onOpenRace={handleOpenRace}
-          />
+          <div key="races" className="urp-animate-fade-up">
+            <MyRacesPage
+              onRaceCreated={handleRaceCreated}
+              onOpenRace={handleOpenRace}
+            />
+          </div>
         )}
 
         {view === "settings" && (
-          <SettingsPage
-            roadbook={roadbook}
-            onBack={handleCloseSettings}
-            onReanalysed={(result) => {
-              setRoadbook(result);
-              void refreshRaces();
-            }}
-          />
+          <div key="settings" className="urp-animate-fade-up">
+            <SettingsPage
+              roadbook={roadbook}
+              onBack={handleCloseSettings}
+              onReanalysed={(result) => {
+                setRoadbook(result);
+                void refreshRaces();
+              }}
+            />
+          </div>
         )}
 
         {view === "preparing" && (
-          <RacePreparingView
-            raceName={analyzingRaceName || activeRace?.name || "New race"}
-            state={analysisState}
-            startedAt={analysisStartedAt}
-            onCancel={handleMyRaces}
-          />
+          <div key="preparing" className="urp-animate-scale-in">
+            <RacePreparingView
+              raceName={analyzingRaceName || activeRace?.name || "New race"}
+              state={analysisState}
+              startedAt={analysisStartedAt}
+              onCancel={handleMyRaces}
+            />
+          </div>
         )}
 
         {error && view === "races" && (
@@ -349,7 +347,11 @@ function AppContent() {
           </div>
         )}
 
-        {view === "workspace" && renderTabContent()}
+        {view === "workspace" && (
+          <div key={`workspace-${activeRaceId}`} className="urp-animate-workspace-enter">
+            {renderTabContent()}
+          </div>
+        )}
       </div>
     </PlanningProvider>
   );

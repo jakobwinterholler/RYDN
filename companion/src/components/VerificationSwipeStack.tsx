@@ -3,9 +3,11 @@ import { computeStopConfidence, stopConfidenceBadgeClass } from "@shared/race/st
 import { formatStopDistanceM } from "@shared/race/sortVerificationQueue";
 import { haversineM } from "@shared/race/mapMatching";
 import type { CompanionStop } from "../types";
-import { formatKm, googleMapsUrl, googleStreetViewUrl } from "../lib/utils";
+import { formatKm, googleMapsUrl } from "../lib/utils";
 import { serviceLabels, stopStatusLabel } from "../lib/raceExecution";
 import { normalizeWebsite } from "@shared/race/streetViewUrl";
+import { useStreetViewLink } from "@shared/race/useStreetViewLink";
+import { haptic } from "../lib/haptics";
 
 export type VerificationAction = "verified" | "skip";
 
@@ -17,7 +19,7 @@ interface VerificationSwipeStackProps {
   gpsLat: number | null;
   gpsLon: number | null;
   routeCoordinates?: [number, number][];
-  onAction: (stop: CompanionStop, action: VerificationAction) => void;
+  onAction: (stop: CompanionStop, action: VerificationAction) => Promise<boolean>;
   onOpenDetails?: (stop: CompanionStop) => void;
 }
 
@@ -72,7 +74,7 @@ function SwipeCard({
   routeCoordinates?: [number, number][];
   style: React.CSSProperties;
   isTop: boolean;
-  onAction: (action: VerificationAction) => void;
+  onAction: (action: VerificationAction) => Promise<boolean>;
   onOpenDetails?: (stop: CompanionStop) => void;
 }) {
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -81,31 +83,62 @@ function SwipeCard({
   const [offset, setOffset] = useState(0);
   const [exiting, setExiting] = useState<ExitDirection | null>(null);
 
-  const streetViewOptions = {
-    routeCoordinates,
-    totalDistanceKm: totalKm,
-  };
-
   const applyOffset = useCallback((value: number) => {
     offsetRef.current = value;
     setOffset(value);
   }, []);
 
+  useEffect(() => {
+    applyOffset(0);
+    setExiting(null);
+  }, [applyOffset, stop.poiId, stop.zoneId]);
+
+  const streetViewOptions = {
+    routeCoordinates,
+    totalDistanceKm: totalKm,
+  };
+  const streetView = useStreetViewLink(
+    {
+      lat: stop.lat,
+      lon: stop.lon,
+      placeId: stop.placeId,
+      routeKm: stop.km,
+      name: stop.name,
+    },
+    streetViewOptions,
+  );
+
   const finishExit = useCallback(
     (direction: ExitDirection, action: VerificationAction) => {
-      setExiting(direction);
-      window.setTimeout(() => onAction(action), EXIT_MS);
+      void (async () => {
+        const ok = await onAction(action);
+        if (!ok) {
+          applyOffset(0);
+          setExiting(null);
+          return;
+        }
+        haptic(action === "verified" ? "success" : "light");
+        setExiting(direction);
+      })();
     },
-    [onAction],
+    [applyOffset, onAction],
   );
 
   const finishSwipe = useCallback(
     (direction: "left" | "right") => {
       const action = direction === "right" ? "verified" : "skip";
-      setExiting(direction);
-      const exitX = direction === "right" ? window.innerWidth * 1.2 : -window.innerWidth * 1.2;
-      applyOffset(exitX);
-      window.setTimeout(() => onAction(action), EXIT_MS);
+      void (async () => {
+        const ok = await onAction(action);
+        if (!ok) {
+          applyOffset(0);
+          setExiting(null);
+          return;
+        }
+        haptic(action === "verified" ? "success" : "light");
+        setExiting(direction);
+        const exitX = direction === "right" ? window.innerWidth * 1.2 : -window.innerWidth * 1.2;
+        applyOffset(exitX);
+      })();
     },
     [applyOffset, onAction],
   );
@@ -161,7 +194,6 @@ function SwipeCard({
     phone: stop.phone,
   });
   const distanceLabel = stopDistanceLabel(stop, gpsLat, gpsLon);
-  const streetViewHref = googleStreetViewUrl(stop, streetViewOptions);
   const mapsHref = googleMapsUrl(stop.lat, stop.lon, stop.placeId);
 
   const transform = exiting
@@ -213,15 +245,24 @@ function SwipeCard({
           </p>
         </div>
 
-        <a
-          href={streetViewHref}
-          target="_blank"
-          rel="noreferrer"
-          className="verification-street-view-btn"
-          onClick={(event) => event.stopPropagation()}
-        >
-          👁 Open Street View
-        </a>
+        {streetView.available === false ? (
+          <div className="verification-street-view-btn verification-street-view-btn--unavailable">
+            <span>{streetView.unavailableMessage}</span>
+            <a href={streetView.mapsUrl} target="_blank" rel="noreferrer">
+              Google Maps
+            </a>
+          </div>
+        ) : (
+          <a
+            href={streetView.streetViewUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="verification-street-view-btn"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {streetView.loading ? "Street View…" : "👁 Open Street View"}
+          </a>
+        )}
 
         <div className="verification-primary-actions">
           <button
@@ -345,20 +386,28 @@ export default function VerificationSwipeStack({
   onOpenDetails,
 }: VerificationSwipeStackProps) {
   const [index, setIndex] = useState(0);
+  const prevLengthRef = useRef(stops.length);
   const current = stops[index] ?? null;
   const next = stops[index + 1] ?? null;
 
   useEffect(() => {
-    setIndex(0);
-  }, [stops]);
+    const prevLength = prevLengthRef.current;
+    prevLengthRef.current = stops.length;
+    if (stops.length === 0) {
+      setIndex(0);
+      return;
+    }
+    if (stops.length < prevLength) {
+      setIndex((value) => Math.min(value, stops.length - 1));
+    }
+  }, [stops.length]);
 
   const handleAction = useCallback(
-    (action: VerificationAction) => {
+    async (action: VerificationAction) => {
       if (!current) {
-        return;
+        return false;
       }
-      onAction(current, action);
-      setIndex((value) => value + 1);
+      return onAction(current, action);
     },
     [current, onAction],
   );
@@ -387,7 +436,7 @@ export default function VerificationSwipeStack({
       <div className="verification-swipe-stack__deck">
         {next ? (
           <SwipeCard
-            key={next.zoneId}
+            key={`${next.poiId ?? next.zoneId}-behind`}
             stop={next}
             totalKm={totalKm}
             gpsLat={gpsLat}
@@ -395,11 +444,11 @@ export default function VerificationSwipeStack({
             routeCoordinates={routeCoordinates}
             isTop={false}
             style={{ zIndex: 1 }}
-            onAction={() => {}}
+            onAction={() => Promise.resolve(false)}
           />
         ) : null}
         <SwipeCard
-          key={current.zoneId}
+          key={`${current.poiId ?? current.zoneId}-${index}`}
           stop={current}
           totalKm={totalKm}
           gpsLat={gpsLat}

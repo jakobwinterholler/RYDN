@@ -1,11 +1,14 @@
 export {
   googleMapsUrl,
   googleStreetViewUrl,
+  googleStreetViewFallbackMapsUrl,
   normalizeWebsite,
   placeIdFromTags,
+  resolveStreetView,
   type StreetViewLocation,
   type StreetViewUrlOptions,
 } from "@shared/race/streetViewUrl";
+export { useStreetViewLink } from "@shared/race/useStreetViewLink";
 
 export function openStreetMapUrl(lat: number, lon: number): string {
   return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=17/${lat}/${lon}`;

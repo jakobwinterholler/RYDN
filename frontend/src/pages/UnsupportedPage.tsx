@@ -3,7 +3,7 @@ import type { AppTab, RoadbookResult } from "../api";
 import { useRenderTrace } from "../debug/raceOpenTrace";
 import { usePlanning } from "../planning/PlanningContext";
 import { selectKmRangeIntent } from "../planning/planningIntent";
-import { presentZones } from "../planning/zonePresentation";
+import { presentSuggestedStops } from "../planning/suggestedStops";
 import { analyzeUnsupportedSections, riskTierForSection } from "../planning/unsupportedSections";
 import PlanningDetailSheet from "../components/planning/PlanningDetailSheet";
 import UnsupportedSectionCard from "../components/unsupported/UnsupportedSectionCard";
@@ -16,22 +16,15 @@ interface UnsupportedPageProps {
 
 export default function UnsupportedPage({ result, onNavigate }: UnsupportedPageProps) {
   useRenderTrace("render.unsupported.start", "render.unsupported.done");
-  const { timeMode, zoneDensity, setPlanningIntent } = usePlanning();
+  const { timeMode, setPlanningIntent } = usePlanning();
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
 
   const presentedZones = useMemo(
-    () =>
-      presentZones(
-        result.resupply_zones,
-        timeMode,
-        zoneDensity,
-        result.summary.distance_km,
-        result.route,
-      ),
-    [result.resupply_zones, timeMode, zoneDensity, result.summary.distance_km, result.route],
+    () => presentSuggestedStops(result, timeMode),
+    [result, timeMode],
   );
 
-  const planningHubIds = useMemo(
+  const suggestedStopIds = useMemo(
     () => new Set(presentedZones.map((zone) => zone.zone_id)),
     [presentedZones],
   );
@@ -144,7 +137,7 @@ export default function UnsupportedPage({ result, onNavigate }: UnsupportedPageP
             section={selectedSection}
             route={result.route}
             allZones={result.resupply_zones}
-            planningHubIds={planningHubIds}
+            suggestedStopIds={suggestedStopIds}
           />
         )}
       </PlanningDetailSheet>

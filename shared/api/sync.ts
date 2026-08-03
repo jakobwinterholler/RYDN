@@ -1,8 +1,8 @@
 import { fetchWithAuth, getApiBaseUrl, parseApiError } from "./client";
-import { fetchCompanionBundleDirect, fetchOriginalGpxDirect, fetchSyncRacesDirect } from "./cloudDirect";
+import { deleteCloudRaceDirect, fetchOriginalGpxDirect, fetchSyncRacesDirect } from "./cloudDirect";
 import type { AuthProfile, CompanionBundle, SyncPushAllResult, SyncPushRaceResult, SyncRaceSummary } from "../types/sync";
-import { isCompanionBundle } from "../types/sync";
-import { validateCompanionBundle } from "../sync/bundleValidation";
+import { fetchCompanionBundleSelfHealing } from "../sync/selfHealingBundle";
+import { logSyncDebug } from "../sync/syncDebugLog";
 
 export async function fetchAuthProfile(accessToken: string): Promise<AuthProfile> {
   const response = await fetchWithAuth("/api/auth/me", accessToken);
@@ -28,18 +28,9 @@ export async function fetchSyncRaces(accessToken: string): Promise<SyncRaceSumma
     bundle_version: race.bundle_version ?? race.companion_revision,
     bundle_checksum: race.bundle_checksum ?? null,
     bundle_schema_version: race.bundle_schema_version ?? null,
+    significant_climb_count: race.significant_climb_count ?? null,
+    gpx_fingerprint: race.gpx_fingerprint ?? null,
   }));
-}
-
-function parseCompanionBundle(payload: unknown): CompanionBundle {
-  if (!isCompanionBundle(payload)) {
-    throw new Error("Invalid companion bundle from cloud.");
-  }
-  const validation = validateCompanionBundle(payload);
-  if (!validation.valid) {
-    throw new Error(`Bundle validation failed: ${validation.errors.join(", ")}`);
-  }
-  return payload;
 }
 
 export async function fetchCompanionBundle(
@@ -47,22 +38,11 @@ export async function fetchCompanionBundle(
   raceId: string,
   userId?: string | null,
 ): Promise<CompanionBundle> {
-  if (!getApiBaseUrl()) {
-    if (!userId) {
-      throw new Error("User id required to download race.");
-    }
-    return fetchCompanionBundleDirect(userId, raceId);
+  const result = await fetchCompanionBundleSelfHealing(accessToken, raceId, userId);
+  if (result.healed) {
+    logSyncDebug("self-healing", `Bundle healed for ${raceId}`, result.notes);
   }
-  const cacheBust = Date.now();
-  const response = await fetchWithAuth(
-    `/api/sync/races/${raceId}/bundle?_=${cacheBust}`,
-    accessToken,
-    { cache: "no-store" },
-  );
-  if (!response.ok) {
-    throw new Error(await parseApiError(response, "Failed to download race."));
-  }
-  return parseCompanionBundle(await response.json());
+  return result.bundle;
 }
 
 export async function fetchOriginalGpx(
@@ -83,11 +63,15 @@ export async function fetchOriginalGpx(
   return response.arrayBuffer();
 }
 
-export async function pushRaceNow(accessToken: string, raceId: string): Promise<SyncPushRaceResult> {
+export async function pushRaceNow(
+  accessToken: string | null,
+  raceId: string,
+  userId?: string | null,
+): Promise<SyncPushRaceResult> {
   const response = await fetchWithAuth("/api/sync/push-now", accessToken, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ race_id: raceId }),
+    body: JSON.stringify({ race_id: raceId, user_id: userId ?? undefined }),
   });
   if (!response.ok) {
     throw new Error(await parseApiError(response, "Failed to sync race."));
@@ -99,15 +83,22 @@ export async function pushRaceNow(accessToken: string, raceId: string): Promise<
   };
 }
 
-export async function pushAllLocalRaces(accessToken: string): Promise<SyncPushAllResult> {
+export async function pushAllLocalRaces(
+  accessToken: string | null,
+  userId?: string | null,
+): Promise<SyncPushAllResult> {
   const response = await fetchWithAuth("/api/sync/push-all", accessToken, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId ?? undefined }),
   });
   if (!response.ok) {
     throw new Error(await parseApiError(response, "Failed to sync local races."));
   }
   return response.json();
 }
+
+export { regenerateCompanionBundle } from "../sync/selfHealingBundle";
 
 export async function queueRacePush(accessToken: string, raceId: string): Promise<void> {
   const response = await fetchWithAuth("/api/sync/push", accessToken, {
@@ -117,5 +108,27 @@ export async function queueRacePush(accessToken: string, raceId: string): Promis
   });
   if (!response.ok) {
     throw new Error(await parseApiError(response, "Failed to queue race sync."));
+  }
+}
+
+export async function deleteCloudRace(
+  accessToken: string,
+  raceId: string,
+  userId?: string | null,
+): Promise<void> {
+  if (!getApiBaseUrl()) {
+    if (!userId) {
+      throw new Error("User id required to delete cloud race.");
+    }
+    await deleteCloudRaceDirect(userId, raceId);
+    return;
+  }
+  const response = await fetchWithAuth(`/api/races/${raceId}`, accessToken, { method: "DELETE" });
+  if (response.status === 404 && userId) {
+    await deleteCloudRaceDirect(userId, raceId);
+    return;
+  }
+  if (!response.ok) {
+    throw new Error(await parseApiError(response, "Failed to delete race."));
   }
 }

@@ -1,26 +1,27 @@
 import { useMemo, useEffect, useCallback, useState } from "react";
 import type { RoadbookResult } from "../../api";
+import { poiOsmKey } from "@shared/race/discoverStops";
 import { useRenderTrace } from "../../debug/raceOpenTrace";
 import { usePlanning } from "../../planning/PlanningContext";
 import { buildRouteHighlights } from "../../planning/routeHighlights";
 import type { RouteHighlight } from "../../planning/routeHighlights";
 import { applyBriefingHighlight } from "../../planning/briefingActions";
-import { buildResupplyGapInsights } from "../../planning/resupplyGaps";
-import {
-  buildResupplySegmentSummary,
+import { buildResupplySegmentSummary,
   kmRangeFromSegment,
   resolveResupplySegmentEndingAtZone,
 } from "../../planning/resupplySegments";
-import { layersForOverlay } from "../../planning/timelineLayers";
 import { useRouteWorkspaceSelection } from "../../planning/useRouteWorkspaceSelection";
-import { presentZones } from "../../planning/zonePresentation";
+import { presentSuggestedStops, suggestedStopCount } from "../../planning/suggestedStops";
+import { verificationProgress } from "../../planning/stopVerification/priority";
+import RouteSummaryStrip from "../RouteSummaryStrip";
+import { useSettings } from "../../settings/SettingsContext";
 import { useRace } from "../../races/RaceContext";
 import { findNearestTrackIndex } from "../routeUtils";
 import ElevationProfile from "../ElevationProfile";
 import MultiLayerTimeline from "../MultiLayerTimeline";
 import RouteInspector from "../RouteInspector";
 import RouteMap from "../RouteMap";
-import TimelineLayerControls from "../TimelineLayerControls";
+import CandidateContextSummary from "./CandidateContextSummary";
 import PlanningDetailSheet from "../planning/PlanningDetailSheet";
 import PoiDebugPanel from "../planning/PoiDebugPanel";
 import ClimbDebugPanel from "../planning/ClimbDebugPanel";
@@ -28,37 +29,37 @@ import ResupplyHubDetailContent from "../resupply/ResupplyHubDetailContent";
 import { nearbyPoiDebugEntries } from "../../planning/poiDebug";
 import { buildClimbDebugContext } from "../../planning/climbDebug";
 import { significantClimbs } from "@shared/race/significantClimbs";
-import { activePoint, computeRouteInsights, percentOfRoute } from "../routeInsights";
-import { formatKm } from "../routeInsights";
-import ClimbDetailView from "../climb/ClimbDetailView";
-import RoutePlanningInsight from "./RoutePlanningInsight";
+import { activePoint, computeRouteInsights } from "../routeInsights";
 import { usePlanningAssumptions } from "../../planning/usePlanningAssumptions";
-import RouteExplorationBar from "./RouteExplorationBar";
-import RouteStopsBrowseSheet from "./RouteStopsBrowseSheet";
-import CandidateContextSummary from "./CandidateContextSummary";
 import ResupplySegmentSummary from "./ResupplySegmentSummary";
+import SuggestedStopsReviewPanel from "./SuggestedStopsReviewPanel";
+import DiscoverStopsControls from "../discovery/DiscoverStopsControls";
+import DiscoverCandidateDetail from "../discovery/DiscoverCandidateDetail";
+import { buildPromoteRecord, useDiscoverStops } from "../../planning/useDiscoverStops";
+import { poiRowToDiscoverInput } from "../../planning/discoverStopsAdapter";
+import { buildPromotedSuggestedStop } from "@shared/race/promoteDiscoverStop";
+import { promoteDiscoveredStop } from "../../races/api";
 
 interface RouteWorkspaceProps {
   result: RoadbookResult;
-  onViewFullBriefing: () => void;
 }
 
-export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWorkspaceProps) {
+export default function RouteWorkspace({ result }: RouteWorkspaceProps) {
   useRenderTrace("render.route.start", "render.route.done");
   const {
     overlay,
     setOverlay,
     timeMode,
-    zoneDensity,
     timelineLayers,
     selectedSurfaceType,
     setSelectedSurfaceType,
     planningIntent,
     consumePlanningIntent,
   } = usePlanning();
+  const { settings } = useSettings();
+  const developerMode = settings?.planning.developer_mode_enabled ?? false;
   const { stageSettings, arrivalTimeWindow } = usePlanningAssumptions();
-  const { verifiedStops } = useRace();
-  const [stopsBrowseOpen, setStopsBrowseOpen] = useState(false);
+  const { verifiedStops, saveVerifiedStop, setRoadbook, activeRaceId } = useRace();
   const [poiDebugMode, setPoiDebugMode] = useState(false);
   const [climbDebugMode, setClimbDebugMode] = useState(false);
   const [poiDebugClick, setPoiDebugClick] = useState<{ lat: number; lon: number } | null>(null);
@@ -68,15 +69,13 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
   const [climbDebugClick, setClimbDebugClick] = useState<{ lat: number; lon: number } | null>(null);
 
   const presentedZones = useMemo(
-    () =>
-      presentZones(
-        result.resupply_zones,
-        timeMode,
-        zoneDensity,
-        result.summary.distance_km,
-        result.route,
-      ),
-    [result.resupply_zones, timeMode, zoneDensity, result.summary.distance_km, result.route],
+    () => presentSuggestedStops(result, timeMode),
+    [result, timeMode],
+  );
+
+  const verifyProgress = useMemo(
+    () => verificationProgress(presentedZones, verifiedStops),
+    [presentedZones, verifiedStops],
   );
 
   const sortedClimbs = useMemo(
@@ -105,6 +104,50 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
   }, [climbDebugClick, result.climb_candidates, result.climbs, result.route.track_points]);
 
   const selection = useRouteWorkspaceSelection(result, presentedZones, verifiedStops);
+
+  const handlePromoteVerified = useCallback(
+    async (zoneId: number, poi: import("../../api").PoiRow) => {
+      const promoted = buildPromotedSuggestedStop(poiRowToDiscoverInput(poi));
+      const record = buildPromoteRecord(poi);
+
+      if (activeRaceId) {
+        const roadbook = await promoteDiscoveredStop(activeRaceId, {
+          suggestedStop: promoted,
+          verifiedStop: { zoneId, record },
+        });
+        setRoadbook(roadbook);
+        await saveVerifiedStop(zoneId, record);
+      } else {
+        setRoadbook((current) =>
+          current
+            ? {
+                ...current,
+                suggested_stops: [
+                  ...(current.suggested_stops ?? []).filter(
+                    (stop) =>
+                      !(
+                        stop.osm_id === promoted.osm_id && stop.osm_type === promoted.osm_type
+                      ) && stop.zone_id !== promoted.zone_id,
+                  ),
+                  promoted,
+                ].sort((left, right) => left.distance_along_km - right.distance_along_km),
+              }
+            : current,
+        );
+        await saveVerifiedStop(zoneId, record);
+      }
+    },
+    [activeRaceId, saveVerifiedStop, setRoadbook],
+  );
+
+  const discovery = useDiscoverStops({
+    pois: result.pois,
+    trackPoints: result.route.track_points,
+    presentedZones,
+    climbs: result.climbs,
+    onSelectPoi: selection.handleSelectPoi,
+    onPromoteVerified: handlePromoteVerified,
+  });
 
   const hoverHighlightKmRange = useMemo(() => {
     if (selection.hoveredZoneId === null) {
@@ -149,10 +192,18 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
     result.resupply_zones,
   ]);
 
-  const effectiveLayers = useMemo(() => {
-    const base = layersForOverlay(overlay);
-    return timelineLayers.rejectedClimbs ? { ...base, rejectedClimbs: true } : base;
-  }, [overlay, timelineLayers.rejectedClimbs]);
+  const effectiveLayers = useMemo(
+    () => ({
+      climbs: true,
+      rejectedClimbs: developerMode && timelineLayers.rejectedClimbs,
+      surface: false,
+      food: false,
+      water: false,
+      resupply: false,
+      dangerous: false,
+    }),
+    [developerMode, timelineLayers.rejectedClimbs],
+  );
 
   const insights = useMemo(
     () => computeRouteInsights(presentedZones, result.route, result.summary.distance_km),
@@ -164,17 +215,6 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
     [result.climbs, presentedZones, result.route, result.summary.distance_km],
   );
 
-  const resupplyGaps = useMemo(
-    () =>
-      buildResupplyGapInsights(
-        presentedZones,
-        result.route.track_points,
-        result.summary.distance_km,
-      ),
-    [presentedZones, result.route.track_points, result.summary.distance_km],
-  );
-
-  const poorPct = percentOfRoute(insights.resupplyMix.poor ?? 0, result.summary.distance_km);
   const inspectorPoint = activePoint(result.route.track_points, selection.activeIndex);
 
   const applyHighlight = useCallback(
@@ -189,10 +229,6 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
     },
     [presentedZones, result, selection, setSelectedSurfaceType],
   );
-
-  function handleSelectHighlight(highlight: RouteHighlight) {
-    applyHighlight(highlight);
-  }
 
   useEffect(() => {
     if (!planningIntent) {
@@ -263,11 +299,6 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
     result.route.track_points,
   ]);
 
-  const selectedClimb =
-    selection.selectedClimbId !== null
-      ? sortedClimbs.find((climb) => climb.id === selection.selectedClimbId) ?? null
-      : null;
-
   const selectedCandidate =
     selection.selectedCandidateId !== null
       ? (result.climb_candidates ?? []).find(
@@ -282,7 +313,7 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
         ? selection.detailSelection.poi.name ??
           selection.detailSelection.poi.brand ??
           "Stop detail"
-        : "Resupply hub";
+        : "Stop detail";
 
   function handleSelectPoiFromSheet(poi: import("../../api").ZonePoiOption) {
     const zone =
@@ -299,159 +330,81 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
   }
 
   return (
-    <div className="mx-auto max-w-[1600px] px-4 py-4 pb-10 lg:px-6">
-      <header className="relative space-y-2 pb-3">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h2 className="text-xl font-semibold tracking-tight text-ink">Route</h2>
-          <p className="text-sm text-muted">{result.summary.route_name}</p>
-        </div>
+    <div className="mx-auto flex h-[calc(100vh-7.5rem)] max-w-[1600px] flex-col lg:flex-row lg:px-0">
+      <SuggestedStopsReviewPanel
+        zones={presentedZones}
+        result={result}
+        selectedZoneId={selection.selectedZoneId}
+        onSelectZone={selection.handleSelectZone}
+        onFocusOnMap={selection.handleFocusZoneOnMap}
+      />
 
-        <p className="text-sm text-muted">
-          <span className="tabular-nums text-ink">{formatKm(result.summary.distance_km, 0)}</span>
-          <span className="mx-2 text-line">·</span>
-          <span className="tabular-nums text-ink">+{Math.round(result.summary.elevation_gain_m)} m</span>
-          <span className="mx-2 text-line">·</span>
-          <span className="tabular-nums text-ink">{result.summary.climb_count} climbs</span>
-          <span className="mx-2 text-line">·</span>
-          <span className="tabular-nums text-ink">{presentedZones.length} stops</span>
-          {(overlay === "surface" || overlay === "normal") && (
-            <>
-              <span className="mx-2 text-line">·</span>
-              <span className="tabular-nums text-ink">{result.summary.asphalt_pct}% road</span>
-            </>
-          )}
-          {overlay === "resupply" && poorPct > 0 && (
-            <>
-              <span className="mx-2 text-line">·</span>
-              <span className="text-red-700">{poorPct}% poor resupply</span>
-            </>
-          )}
-        </p>
-
-        {resupplyGaps.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {resupplyGaps.map((gap) => (
-              <RoutePlanningInsight
-                key={gap.id}
-                icon={gap.icon}
-                title={gap.label}
-                distance={formatKm(gap.gapKm, 0)}
-                elevationGain={`+${gap.elevationGainM.toLocaleString()} m`}
-                detail={`km ${Math.round(gap.startKm)} → ${Math.round(gap.endKm)}`}
-                active={
-                  selection.kmRange?.startKm === gap.startKm &&
-                  selection.kmRange?.endKm === gap.endKm
-                }
-                onClick={() =>
-                  selection.handleSelectKmRange({
-                    startKm: gap.startKm,
-                    endKm: gap.endKm,
-                    label: gap.label,
-                  })
-                }
-              />
-            ))}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-5 py-4 lg:px-6">
+        <header className="relative shrink-0 space-y-3 pb-3">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h2 className="text-xl font-semibold tracking-tight text-ink">Plan route</h2>
+            <p className="text-sm text-muted">{result.summary.route_name}</p>
           </div>
-        )}
 
-        <RouteExplorationBar />
+          <RouteSummaryStrip
+            distanceKm={result.summary.distance_km}
+            elevationGainM={result.summary.elevation_gain_m}
+            climbCount={result.summary.climb_count}
+            suggestedStopCount={suggestedStopCount(result)}
+            verifiedPercent={verifyProgress.verifiedPercent}
+            insights={insights}
+          />
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setStopsBrowseOpen(true)}
-            className="rounded-lg border border-line bg-card px-3 py-1.5 text-sm font-medium text-ink hover:bg-canvas"
-          >
-            Planning stops ({presentedZones.length})
-          </button>
-
-          {selection.kmRange && (
-            <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-3 py-1.5 text-sm">
-              <span className="font-medium text-ink">{selection.kmRange.label}</span>
-              <span className="text-muted">
-                {formatKm(selection.kmRange.endKm - selection.kmRange.startKm, 0)}
-              </span>
+          {developerMode && (
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={selection.handleFocusKmRangeOnMap}
-                className="text-xs font-semibold text-accent hover:text-accent/80"
+                onClick={() => {
+                  setPoiDebugMode((current) => !current);
+                  setClimbDebugMode(false);
+                  setPoiDebugClick(null);
+                  setPoiDebugSelection(null);
+                  setClimbDebugClick(null);
+                }}
+                className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                  poiDebugMode
+                    ? "bg-accent/10 text-accent"
+                    : "bg-canvas text-muted hover:text-ink"
+                }`}
               >
-                Focus on map
+                {poiDebugMode ? "POI debug on" : "POI debug"}
               </button>
               <button
                 type="button"
-                onClick={selection.handleClearEntitySelection}
-                className="text-xs font-semibold text-muted hover:text-ink"
+                onClick={() => {
+                  setClimbDebugMode((current) => !current);
+                  setPoiDebugMode(false);
+                  setPoiDebugClick(null);
+                  setPoiDebugSelection(null);
+                  setClimbDebugClick(null);
+                }}
+                className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                  climbDebugMode
+                    ? "bg-accent/10 text-accent"
+                    : "bg-canvas text-muted hover:text-ink"
+                }`}
               >
-                Clear
+                {climbDebugMode ? "Climb debug on" : "Climb debug"}
               </button>
             </div>
           )}
-        </div>
+        </header>
 
-        <details className="rounded-xl border border-line bg-card px-4 py-2">
-          <summary className="cursor-pointer text-sm font-medium text-ink">Map layers</summary>
-          <div className="pt-3">
-            <TimelineLayerControls />
-          </div>
-        </details>
-
-        <button
-          type="button"
-          onClick={() => {
-            setPoiDebugMode((current) => !current);
-            setClimbDebugMode(false);
-            setPoiDebugClick(null);
-            setPoiDebugSelection(null);
-            setClimbDebugClick(null);
-          }}
-          className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${
-            poiDebugMode
-              ? "border-accent bg-accent/10 text-accent"
-              : "border-line bg-card text-muted hover:text-ink"
-          }`}
-        >
-          {poiDebugMode ? "POI debug on" : "POI debug"}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setClimbDebugMode((current) => !current);
-            setPoiDebugMode(false);
-            setPoiDebugClick(null);
-            setPoiDebugSelection(null);
-            setClimbDebugClick(null);
-          }}
-          className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${
-            climbDebugMode
-              ? "border-accent bg-accent/10 text-accent"
-              : "border-line bg-card text-muted hover:text-ink"
-          }`}
-        >
-          {climbDebugMode ? "Climb debug on" : "Climb debug"}
-        </button>
-      </header>
-
-      {selectedClimb ? (
-        <ClimbDetailView
-          climb={selectedClimb}
-          route={result.route}
-          pois={result.pois}
-          zones={presentedZones}
-          totalKm={result.summary.distance_km}
-          onClose={selection.handleClearEntitySelection}
-        />
-      ) : (
         <>
-          <div className="flex min-w-0 flex-col gap-2">
-            <div className="relative h-[min(58vh,680px)] min-h-[320px]">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+              <div className="relative min-h-[280px] flex-1">
               <RouteMap
                 route={result.route}
                 zones={presentedZones}
                 climbs={sortedClimbs}
                 rejectedClimbs={result.climb_candidates ?? []}
-                showRejectedClimbs={timelineLayers.rejectedClimbs}
-                zoneDensity={zoneDensity}
+                showRejectedClimbs={developerMode && timelineLayers.rejectedClimbs}
+                zoneDensity="planning"
                 overlay={overlay}
                 timeMode={timeMode}
                 arrivalTimeWindow={arrivalTimeWindow}
@@ -479,7 +432,29 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
                 onClimbDebugClick={(lat, lon) => {
                   setClimbDebugClick({ lat, lon });
                 }}
+                discoverCandidates={discovery.candidates}
+                selectedDiscoverKey={discovery.selectedCandidateKey}
+                onDiscoverBoundsChange={discovery.handleBoundsChange}
+                onSelectDiscoverCandidate={(candidate) =>
+                  discovery.selectCandidate(poiOsmKey(candidate.osmType, candidate.osmId))
+                }
+                roadbookResult={result}
               />
+              <div className="pointer-events-none absolute bottom-4 right-4 z-[1000]">
+                <DiscoverStopsControls
+                  loading={discovery.loading}
+                  resultMessage={discovery.resultMessage}
+                  onFindStops={discovery.findStops}
+                />
+              </div>
+              {discovery.selectedCandidate && (
+                <DiscoverCandidateDetail
+                  candidate={discovery.selectedCandidate}
+                  verifying={discovery.promoting}
+                  onVerify={() => discovery.verifyCandidate(discovery.selectedCandidate!)}
+                  onSkip={() => discovery.skipCandidate(discovery.selectedCandidate!)}
+                />
+              )}
               {poiDebugMode && (
                 <PoiDebugPanel
                   entries={poiDebugNearby}
@@ -502,79 +477,82 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
               )}
             </div>
 
-            <ElevationProfile
-              route={result.route}
-              points={result.route.track_points}
-              zones={presentedZones}
-              climbs={sortedClimbs}
-              rejectedClimbs={result.climb_candidates ?? []}
-              layers={effectiveLayers}
-              totalKm={result.summary.distance_km}
-              overlay={overlay}
-              timeMode={timeMode}
-              selectedSurfaceType={selectedSurfaceType}
-              maxGapThresholdKm={stageSettings.maxGapWithoutResupplyKm}
-              activeIndex={selection.activeIndex}
-              selectedZoneId={selection.selectedZoneId}
-              selectedClimbId={selection.selectedClimbId}
-              selectedCandidateId={selection.selectedCandidateId}
-              highlightKmRange={highlightKmRange}
-              hero
-              onHoverIndex={selection.setActiveIndex}
-              onSelectZone={selection.handleSelectZone}
-              onHoverZone={selection.handleHoverZone}
-              onSelectClimb={selection.handleSelectClimb}
-              onSelectCandidate={selection.handleSelectCandidate}
-              onSelectSurfaceType={setSelectedSurfaceType}
-            />
-
-            {activeSegmentSummary && (
-              <ResupplySegmentSummary
-                summary={activeSegmentSummary}
-                compact
-                onFocusOnMap={selection.handleFocusKmRangeOnMap}
-                onClear={
-                  selection.kmRange ? selection.handleClearEntitySelection : undefined
-                }
+              <ElevationProfile
+                route={result.route}
+                points={result.route.track_points}
+                zones={presentedZones}
+                climbs={sortedClimbs}
+                rejectedClimbs={result.climb_candidates ?? []}
+                layers={effectiveLayers}
+                totalKm={result.summary.distance_km}
+                overlay={overlay}
+                timeMode={timeMode}
+                selectedSurfaceType={selectedSurfaceType}
+                maxGapThresholdKm={stageSettings.maxGapWithoutResupplyKm}
+                activeIndex={selection.activeIndex}
+                selectedZoneId={selection.selectedZoneId}
+                selectedClimbId={selection.selectedClimbId}
+                selectedCandidateId={selection.selectedCandidateId}
+                highlightKmRange={highlightKmRange}
+                onHoverIndex={selection.setActiveIndex}
+                onSelectZone={selection.handleSelectZone}
+                onHoverZone={selection.handleHoverZone}
+                onSelectClimb={selection.handleSelectClimb}
+                onSelectCandidate={selection.handleSelectCandidate}
+                onSelectSurfaceType={setSelectedSurfaceType}
               />
-            )}
 
-            <RouteInspector
-              point={inspectorPoint}
-              zones={presentedZones}
-              overlay={overlay}
-              timeMode={timeMode}
-              route={result.route}
-            />
+              {activeSegmentSummary && (
+                <ResupplySegmentSummary
+                  summary={activeSegmentSummary}
+                  compact
+                  onFocusOnMap={selection.handleFocusKmRangeOnMap}
+                  onClear={
+                    selection.kmRange ? selection.handleClearEntitySelection : undefined
+                  }
+                />
+              )}
 
-            <MultiLayerTimeline
-              totalKm={result.summary.distance_km}
-              route={result.route}
-              trackPoints={result.route.track_points}
-              zones={presentedZones}
-              climbs={sortedClimbs}
-              rejectedClimbs={result.climb_candidates ?? []}
-              layers={effectiveLayers}
-              selectedZoneId={selection.selectedZoneId}
-              selectedClimbId={selection.selectedClimbId}
-              selectedSurfaceType={selectedSurfaceType}
-              activeIndex={selection.activeIndex}
-              highlightKmRange={highlightKmRange}
-              maxGapThresholdKm={stageSettings.maxGapWithoutResupplyKm}
-              onHoverIndex={selection.setActiveIndex}
-              onSelectZone={selection.handleSelectZone}
-              onHoverZone={selection.handleHoverZone}
-              onSelectClimb={selection.handleSelectClimb}
-              onSelectSurfaceType={setSelectedSurfaceType}
-              onSelectKmRange={selection.handleSelectKmRange}
-              onSelectCandidate={selection.handleSelectCandidate}
-            />
-          </div>
+              {developerMode && (
+                <>
+                  <RouteInspector
+                    point={inspectorPoint}
+                    zones={presentedZones}
+                    overlay={overlay}
+                    timeMode={timeMode}
+                    route={result.route}
+                  />
+
+                  <MultiLayerTimeline
+                    totalKm={result.summary.distance_km}
+                    route={result.route}
+                    trackPoints={result.route.track_points}
+                    zones={presentedZones}
+                    climbs={sortedClimbs}
+                    rejectedClimbs={result.climb_candidates ?? []}
+                    layers={effectiveLayers}
+                    selectedZoneId={selection.selectedZoneId}
+                    selectedClimbId={selection.selectedClimbId}
+                    selectedSurfaceType={selectedSurfaceType}
+                    activeIndex={selection.activeIndex}
+                    highlightKmRange={highlightKmRange}
+                    maxGapThresholdKm={stageSettings.maxGapWithoutResupplyKm}
+                    onHoverIndex={selection.setActiveIndex}
+                    onSelectZone={selection.handleSelectZone}
+                    onHoverZone={selection.handleHoverZone}
+                    onSelectClimb={selection.handleSelectClimb}
+                    onSelectSurfaceType={setSelectedSurfaceType}
+                    onSelectKmRange={selection.handleSelectKmRange}
+                    onSelectCandidate={selection.handleSelectCandidate}
+                  />
+                </>
+              )}
+            </div>
 
           <PlanningDetailSheet
             open={selection.detailSelection !== null}
             title={hubSheetTitle}
-            subtitle="Resupply hub"
+            subtitle="Resupply stop"
             onClose={selection.handleCloseDetail}
           >
             {selection.detailSelection && activeSegmentSummary && (
@@ -611,23 +589,8 @@ export default function RouteWorkspace({ result, onViewFullBriefing }: RouteWork
               />
             )}
           </PlanningDetailSheet>
-
-          <RouteStopsBrowseSheet
-            open={stopsBrowseOpen}
-            onClose={() => setStopsBrowseOpen(false)}
-            zones={presentedZones}
-            totalZones={result.resupply_zones.length}
-            zoneDensity={zoneDensity}
-            timeMode={timeMode}
-            selectedZoneId={selection.selectedZoneId}
-            briefingHighlights={briefingHighlights}
-            onSelectZone={selection.handleSelectZone}
-            onHoverZone={selection.handleHoverZone}
-            onSelectHighlight={handleSelectHighlight}
-            onViewFullBriefing={onViewFullBriefing}
-          />
         </>
-      )}
+      </div>
     </div>
   );
 }

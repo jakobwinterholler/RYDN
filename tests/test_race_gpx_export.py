@@ -125,7 +125,7 @@ class TestRaceGpxExport(unittest.TestCase):
         names = _waypoint_names(exported)
         assert names
         assert "KM" not in " ".join(names)
-        assert all("⛽" not in name and "💧" not in name for name in names)
+        assert any("⛽" in name or "💧" in name or "🛒" in name for name in names)
 
     @unittest.skipUnless(
         (DATA / RACES["collserola"]).is_dir(),
@@ -151,7 +151,7 @@ class TestRaceGpxExport(unittest.TestCase):
         syms = _waypoint_syms(exported)
         assert len(syms) == summary["exported_poi_count"]
         assert summary["coros_icons_assigned"] == summary["exported_poi_count"]
-        assert all(sym in {"Water", "Supplies", "Hazard", "Bathroom", "Hut", "Campsite", "Pin"} for sym in syms)
+        assert all(sym in {"Water", "Supplies", "Supplies/Fuel", "Hazard", "Bathroom", "Hut", "Campsite", "Trailfork", "Pin"} for sym in syms)
 
     @unittest.skipUnless(
         (DATA / RACES["capitals"]).is_dir(),

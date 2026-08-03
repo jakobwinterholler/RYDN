@@ -379,6 +379,7 @@ class RaceSummary:
     preparation_completed: int
     preparation_total: int
     preparation_items: list[PreparationProgressItem]
+    gpx_fingerprint: str | None = None
     archived_at: str | None = None
     dashboard_stats: dict[str, Any] | None = None
 
@@ -393,6 +394,7 @@ class RaceSummary:
             "distance_km": self.distance_km,
             "elevation_gain_m": self.elevation_gain_m,
             "climb_count": self.climb_count,
+            "gpx_fingerprint": self.gpx_fingerprint,
             "has_analysis": self.has_analysis,
             "preparation_completed": self.preparation_completed,
             "preparation_total": self.preparation_total,
@@ -642,8 +644,24 @@ class RaceProjectStore:
         return summaries
 
     def create_race(self, *, filename: str, gpx_bytes: bytes, name: str | None = None) -> RaceProject:
-        race_id = str(uuid.uuid4())
+        return self.create_race_with_id(
+            str(uuid.uuid4()),
+            filename=filename,
+            gpx_bytes=gpx_bytes,
+            name=name,
+        )
+
+    def create_race_with_id(
+        self,
+        race_id: str,
+        *,
+        filename: str,
+        gpx_bytes: bytes,
+        name: str | None = None,
+    ) -> RaceProject:
         race_dir = self._race_dir(race_id)
+        if race_dir.exists():
+            raise ValueError(f"Race {race_id} already exists.")
         race_dir.mkdir(parents=True)
         (race_dir / "analysis").mkdir()
         self._exports_dir(race_id).mkdir()
@@ -752,12 +770,58 @@ class RaceProjectStore:
             for key, payload in verified_stops.items():
                 if not isinstance(payload, dict):
                     continue
+                if payload.get("_delete"):
+                    race.preparation.verified_stops.pop(str(key), None)
+                    continue
                 race.preparation.verified_stops[str(key)] = VerifiedStopRecord.from_dict(payload)
         race.meta.updated_at = _utc_now()
         if verified_stops is not None and self.has_analysis(race_id):
             self._refresh_dashboard_stats_cache(race)
         self._save_race(race)
         return race
+
+    def promote_discovered_stop(
+        self,
+        race_id: str,
+        suggested_stop: dict[str, Any],
+        *,
+        verified_stop: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        roadbook = self.load_analysis(race_id)
+        if roadbook is None:
+            raise ValueError("Generate a roadbook before promoting discovered stops.")
+
+        suggested = list(roadbook.get("suggested_stops") or [])
+        osm_id = suggested_stop.get("osm_id")
+        osm_type = suggested_stop.get("osm_type")
+        zone_id = suggested_stop.get("zone_id")
+
+        suggested = [
+            item
+            for item in suggested
+            if not (
+                item.get("osm_id") == osm_id
+                and item.get("osm_type") == osm_type
+            )
+        ]
+        if zone_id is not None:
+            suggested = [item for item in suggested if item.get("zone_id") != zone_id]
+        suggested.append(suggested_stop)
+        suggested.sort(key=lambda item: float(item.get("distance_along_km") or 0))
+        roadbook["suggested_stops"] = suggested
+        self.save_analysis(race_id, roadbook)
+
+        if verified_stop:
+            race = self.get_race(race_id)
+            zone_key = str(verified_stop.get("zone_id"))
+            record = verified_stop.get("record")
+            if zone_key and isinstance(record, dict):
+                race.preparation.verified_stops[zone_key] = VerifiedStopRecord.from_dict(record)
+                race.meta.updated_at = _utc_now()
+                self._refresh_dashboard_stats_cache(race, roadbook)
+                self._save_race(race)
+
+        return roadbook
 
     def add_companion_verifications(
         self,
@@ -870,6 +934,28 @@ class RaceProjectStore:
         self._save_race(race)
         return race
 
+    def replace_race_gpx(
+        self,
+        race_id: str,
+        *,
+        filename: str,
+        gpx_bytes: bytes,
+        name: str | None = None,
+    ) -> RaceProject:
+        race = self.get_race(race_id)
+        self._gpx_path(race_id).write_bytes(gpx_bytes)
+        race.meta.gpx_original_name = filename
+        race.meta.gpx_fingerprint = gpx_fingerprint(gpx_bytes)
+        race.meta.updated_at = _utc_now()
+        if name and name.strip():
+            race.meta.name = name.strip()
+        analysis_path = self._analysis_path(race_id)
+        if analysis_path.is_file():
+            analysis_path.unlink()
+        race.analysis = {"latest_snapshot_id": None, "pipeline_version": PIPELINE_VERSION}
+        self._save_race(race)
+        return race
+
     def get_gpx_path(self, race_id: str) -> Path:
         path = self._gpx_path(race_id)
         if not path.is_file():
@@ -910,13 +996,14 @@ class RaceProjectStore:
         snapshot_id = str(uuid.uuid4())
         analysis_path = self._analysis_path(race_id)
         analysis_path.parent.mkdir(parents=True, exist_ok=True)
-        analysis_path.write_text(json.dumps(roadbook, indent=2), encoding="utf-8")
 
         summary = roadbook.get("summary") or {}
         race.meta.distance_km = summary.get("distance_km")
         race.meta.elevation_gain_m = summary.get("elevation_gain_m")
         race.meta.climb_count = summary.get("climb_count")
         race.meta.updated_at = _utc_now()
+        roadbook["analyzed_at"] = race.meta.updated_at
+        analysis_path.write_text(json.dumps(roadbook, indent=2), encoding="utf-8")
         race.analysis = {
             "latest_snapshot_id": snapshot_id,
             "pipeline_version": PIPELINE_VERSION,
@@ -999,6 +1086,7 @@ class RaceProjectStore:
             distance_km=race.meta.distance_km,
             elevation_gain_m=race.meta.elevation_gain_m,
             climb_count=race.meta.climb_count,
+            gpx_fingerprint=race.meta.gpx_fingerprint,
             has_analysis=has_analysis,
             preparation_completed=progress.completed_count(),
             preparation_total=progress.total_count,

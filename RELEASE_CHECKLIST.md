@@ -1,158 +1,102 @@
-# Ultra Roadbook v1.0 RC — Release Checklist
+# Release Checklist — Ultra Roadbook
 
-Last verified: 2026-07-14 (automated builds + API smoke; browser UI requires manual pass)
+Manual verification before race day. Check each box on the **actual iPhone you will
+race with**, on the **network conditions you will race in** (including none).
 
-Legend: ✅ Verified | ⚠️ Partial | ❌ Not verified
+> Goal: trust the app for an 800 km ultra, and hand it to another rider without
+> having to explain anything.
 
----
-
-## Infrastructure
-
-| Check | Status | Notes |
-|-------|--------|-------|
-| Backend starts (`uvicorn` on :8000) | ⚠️ | Existing process responds at `/api/health`; fresh `uvicorn src.server:app` fails without `PYTHONPATH=src` |
-| Desktop dev server (:5173) | ❌ | Not started this session |
-| Companion dev server (:5174) | ✅ | HTTP 200 after `npm run dev` |
-| Desktop production build | ✅ | `npm run build` passes (2026-07-14) |
-| Companion production build | ⚠️ | `npx tsc -b` passes; full `vite build` not re-run this session |
-| TypeScript compiles (desktop + companion) | ✅ | No TS errors in builds/tsc |
-| Map matching script | ✅ | `node scripts/test_map_matching.mjs` passes |
+Legend: **[BLOCKER]** must pass before relying on the app · **[IMPORTANT]** fix if
+it fails · **[NICE]** polish.
 
 ---
 
-## Desktop — Prepare the Race
+## 0. Pre-flight — deploy gates (do these first)
 
-| Workflow | Status | Notes |
-|----------|--------|-------|
-| Login (Google OAuth) | ❌ | Requires Supabase credentials + manual browser test |
-| Session restore | ❌ | Not tested without live auth session |
-| Import GPX | ❌ | UI not exercised; create API exists |
-| Analysis pipeline | ⚠️ | Existing races have analysis; stream endpoint not re-run |
-| Open race → Dashboard first | ✅ | Desktop `App.tsx` opens dashboard tab |
-| Race dashboard (readiness, stats) | ⚠️ | API returns `dashboard_stats`; UI not visually confirmed |
-| Readiness: READY/NOT READY header | ⚠️ | Implemented in `OverviewPage`; not visually confirmed |
-| Readiness: estimated review time | ⚠️ | Implemented (~30 sec/stop); not visually confirmed |
-| Stop confidence section | ⚠️ | `shared/race/stopConfidence.ts` + `StopConfidenceOverview` on dashboard; not visually confirmed |
-| Stop verification | ❌ | Not exercised this session |
-| Rename race | ⚠️ | API exists; not re-tested this session |
-| Duplicate race | ⚠️ | API exists; not re-tested this session |
-| Archive race | ⚠️ | API exists; not re-tested this session |
-| Delete race (type name + checkbox) | ⚠️ | `DeleteRaceDialog` implemented; UI flow not exercised |
-| Safe delete — no one-click | ✅ | Dialog requires typed name + checkbox (code review) |
-| Sync status badge | ⚠️ | Component exists; live sync not tested |
-| Sync now | ❌ | Requires authenticated Supabase session |
-| Account page — all fields | ⚠️ | Fields present in code; not visually confirmed |
-| Restart / session persistence | ❌ | Not tested |
+- [ ] **[BLOCKER]** Analysis API is live: `curl https://ultra-roadbook-api.onrender.com/api/health` returns `{"status":"ok"}`
+      *(As of the last check this returned 404 — the Render service must be deployed. Companion GPX import will fail until this passes. See `scripts/verify_production_api.sh`.)*
+- [ ] **[BLOCKER]** Companion PWA deployed and reachable: https://companion-flax.vercel.app
+- [ ] **[BLOCKER]** Companion `vercel.json` `/api/*` rewrite points at the live API
+- [ ] **[BLOCKER]** Supabase env vars set on the API host (SUPABASE_URL, ANON_KEY, SERVICE_ROLE_KEY, JWT_SECRET)
+- [ ] **[IMPORTANT]** App version shown in Companion → Account matches the build you deployed
+- [ ] **[IMPORTANT]** Installed as a PWA to the Home Screen (not just Safari tab)
 
 ---
 
-## Desktop — Verification Review Queue (Part 6)
+## 1. Desktop — full workflow (plan the race)
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Header "Verification Updates" + pending count | ⚠️ | Implemented in `CompanionVerificationReview`; not visually confirmed |
-| Accept all / Reject all | ⚠️ | Bulk review loops pending items; not exercised |
-| Review history (accepted/rejected) | ⚠️ | Stored in `companion_verification_history`; `GET ?status=history` returns 401 without auth (endpoint exists) |
-| Summary labels (opening hours, water, closed) | ⚠️ | `shared/race/verificationSummary.ts`; not visually confirmed |
-| Accept/reject per item | ⚠️ | Existing flow preserved; not exercised end-to-end |
-
----
-
-## Companion — Execute the Race
-
-| Workflow | Status | Notes |
-|----------|--------|-------|
-| Login | ❌ | Requires manual browser + Supabase |
-| Session restore | ❌ | Not tested |
-| Download race from cloud | ❌ | Requires auth |
-| Open race → Map default tab | ⚠️ | `App.tsx` sets `tab` to `map` on open; not visually confirmed |
-| Dashboard (race name, km, next resupply) | ⚠️ | `DashboardScreen` with GPS km, est. arrival, coffee in services; not visually confirmed |
-| Map tab | ⚠️ | `MapScreen` exists; not exercised in browser |
-| Resupply tab | ⚠️ | Auto-scroll, green checks; not exercised |
-| GPS current km (no manual input) | ⚠️ | Race mode uses `gps.currentKm`; not exercised with real GPS |
-| Stop details sheet | ⚠️ | `StopSheet` has hours, services, coffee, confidence; not exercised |
-| Unsupported section sheet | ⚠️ | Distance, riding time, climbing, risk, water, carbs; code complete; not exercised |
-| Verification mode + queue | ⚠️ | `VerificationSheet` queues to IndexedDB; offline sync on reconnect; not exercised |
-| Offline verification queue | ⚠️ | `verificationQueue.ts` + `useVerificationSync.ts` implemented; airplane-mode test not run |
-| Offline mode (PWA) | ✅ | Service worker builds; dev PWA enabled |
-| Delete offline race | ❌ | Not exercised |
-| Sign out | ❌ | Not exercised |
-| Account page — all fields | ⚠️ | Enhanced with cloud/desktop/companion stats; not visually confirmed |
-| No navigation / recording | ✅ | No nav or activity recording features in codebase |
-| Premium UX polish | ⚠️ | Spacing/typography tweaks on dashboard, resupply, verification; not visually confirmed |
+- [ ] **[BLOCKER]** Import GPX → analysis completes without error
+- [ ] **[BLOCKER]** Large race (~800 km) imports and analyzes without freezing
+- [ ] **[IMPORTANT]** Small race (< 50 km) imports and analyzes correctly
+- [ ] **[IMPORTANT]** Suggested Stops appear and are sensible (near route, plausible services)
+- [ ] **[IMPORTANT]** Find Stops (discovery) returns candidates in map bounds
+- [ ] **[IMPORTANT]** Verify a stop → status persists after reload
+- [ ] **[IMPORTANT]** Skip a stop → status persists after reload
+- [ ] **[IMPORTANT]** Undo last decision restores previous state
+- [ ] **[BLOCKER]** Export → GPS GPX downloads; route matches the original track
+- [ ] **[BLOCKER]** Coros export opens/loads on the Coros device, waypoints present
+- [ ] **[IMPORTANT]** Signed-in race syncs to cloud (appears in Companion after refresh)
+- [ ] **[NICE]** Planning tab answers "where should I stop?" — no climb-detail takeover
 
 ---
 
-## Cloud Sync
+## 2. Companion — full workflow (ride the race)
 
-| Workflow | Status | Notes |
-|----------|--------|-------|
-| Upload race | ❌ | Requires auth (`POST /api/sync/push`) |
-| Download bundle | ❌ | Requires auth (`GET /api/sync/races/{id}/bundle`) |
-| Submit verifications | ⚠️ | `POST /api/sync/verifications` exists; requires auth |
-| List verifications (pending/history) | ⚠️ | `GET /api/sync/verifications?status=` returns 401 without token (endpoint wired) |
-| Review verification | ⚠️ | `POST /api/sync/verifications/{id}/review` exists; not exercised |
-| Update / revision bump | ❌ | Not tested |
-| Delete from cloud | ❌ | Not tested |
-| Conflict handling | ❌ | Not tested |
-| Waiting-to-sync indicator | ⚠️ | `pendingSync.ts` + badge implemented; not exercised |
-
----
-
-## Race Cards (My Races)
-
-| Field | Status | Notes |
-|-------|--------|-------|
-| Distance + elevation | ✅ | Shown when `has_analysis` |
-| Readiness score badge | ✅ | From `dashboard_stats` via API |
-| Verified / unverified stops | ✅ | `RaceStatsGrid` |
-| Supermarkets / water / fuel | ✅ | `RaceStatsGrid` |
-| Longest unsupported gap | ✅ | `RaceStatsGrid` |
-| Last verification date | ✅ | `formatLastVerification` |
-| Cloud sync badge | ⚠️ | Wired in `MyRacesPage`; live sync not tested |
-| Last modified | ✅ | Shows `updated_at` |
+- [ ] **[BLOCKER]** Login with Google succeeds
+- [ ] **[BLOCKER]** Session restores after closing/reopening the app (no re-login every time)
+- [ ] **[BLOCKER]** Download race bundle succeeds (progress completes, race opens)
+- [ ] **[BLOCKER]** Open race → Map renders route, stops, climbs, unsupported sections
+- [ ] **[BLOCKER]** Map tab: GPS status badge shows (Acquiring → Active) with signal
+- [ ] **[BLOCKER]** Resupply: next verified stop is immediately understandable
+- [ ] **[IMPORTANT]** Verify a stop in Companion → syncs to desktop/cloud
+- [ ] **[IMPORTANT]** Search new stops (Find Stops) works and can promote/verify
+- [ ] **[IMPORTANT]** Google Maps link opens the correct location
+- [ ] **[IMPORTANT]** Street View link opens (or falls back to Maps cleanly when unavailable)
+- [ ] **[BLOCKER]** Export / send route to device from Companion works
 
 ---
 
-## Performance
+## 3. Reliability — the trust-critical cases
 
-| Metric | Before | After | Status |
-|--------|--------|-------|--------|
-| `list_races` (4 races) | ~47 ms | ~2 ms | ✅ Cached `dashboard_stats` in `race.json` |
-| Desktop bundle size | — | 2.6 MB JS | ⚠️ No code-splitting yet |
-| Companion bundle size | — | 1.5 MB JS | ⚠️ No code-splitting yet |
-| Map tile offline cache | — | 1500 tiles / 30 days | ⚠️ Documented in `KNOWN_LIMITATIONS.md`; not fully offline |
-
----
-
-## Automated Test Results (2026-07-14)
-
-| Command | Result |
-|---------|--------|
-| `npm run build` (frontend) | ✅ Pass |
-| `npx tsc -b` (companion) | ✅ Pass |
-| `node scripts/test_map_matching.mjs` | ✅ Pass |
-| `python3 -m pytest tests/` | ❌ `pytest` not installed |
-| `python3 -m unittest discover -s tests` | ⚠️ 14/15 pass; `test_companion_bundle` import path fails without `PYTHONPATH=src` |
-| `tests/test_companion_verifications.py` | ✅ Pass (history storage verified) |
-| `curl /api/health` | ✅ `{"status":"ok"}` |
-| `curl /api/sync/verifications?status=history` | ✅ Returns 401 (auth required, route exists) |
-| Browser test companion :5174 | ❌ Browser automation unavailable |
+- [ ] **[BLOCKER]** **Offline:** enable Airplane Mode, force-quit, reopen → race still opens, map + stops still work
+- [ ] **[BLOCKER]** **Restart mid-ride:** force-quit during a ride → reopen → continues at correct position, verifications intact
+- [ ] **[BLOCKER]** **Active bundle protection:** while a race is open, a newer cloud revision does NOT wipe/swap it silently (update banner only)
+- [ ] **[IMPORTANT]** **Low signal:** with weak GPS, position degrades gracefully (Degraded/Lost badge, dead-reckoning) — no wild jumps
+- [ ] **[IMPORTANT]** **Loop / out-and-back route:** GPS does not snap backward across overlapping segments
+- [ ] **[IMPORTANT]** **Sync after reconnect:** verify offline, come back online → pending verifications sync
+- [ ] **[IMPORTANT]** **Delete race:** delete works, does not delete the wrong race, and offline copy is removed
+- [ ] **[IMPORTANT]** **Wake lock:** screen stays awake while a race is open (does not sleep mid-glance)
+- [ ] **[NICE]** Battery: rough check that an hour of Map + GPS does not drain abnormally fast
 
 ---
 
-## Manual Testing Required
+## 4. Device & UI review (as if submitting to TestFlight)
 
-The following **must** be verified by a human with Supabase credentials configured:
+- [ ] **[BLOCKER]** **Dynamic Island / notch safe area:** no content hidden under the island or home indicator (headers, bottom nav, sheets)
+- [ ] **[IMPORTANT]** **Rotation:** rotate the phone on the Map tab → map resizes correctly, no white frame or clipped UI
+- [ ] **[IMPORTANT]** **Persistent map:** switch Map ↔ Resupply ↔ Verify repeatedly → map keeps zoom/position/tiles, returns instantly, no flash (KI-08)
+- [ ] **[IMPORTANT]** **Touch targets:** all primary actions are ≥ 44px and easy to hit with gloves/sweat
+- [ ] **[IMPORTANT]** **Sheets:** every bottom sheet drags to dismiss and animates consistently (Stop, Climb, Unsupported, Stop detail)
+- [ ] **[IMPORTANT]** **Bright sunlight:** legible outdoors at full brightness
+- [ ] **[NICE]** No developer/debug UI visible (Account → Developer hidden until 7× version tap)
+- [ ] **[NICE]** No raw error codes / technical messages surface to the rider
+- [ ] **[NICE]** First-run: a new rider understands the Race Library → open → Map/Resupply/Verify flow without help
 
-1. Google sign-in on Desktop and Companion
-2. Full GPX import → analysis → dashboard flow
-3. Desktop stop verification round (verify, reject, complete)
-4. **Companion verification → desktop review queue** (submit, accept all, reject all, history)
-5. **Companion execution flow** (map default tab, GPS km, next resupply with est. arrival)
-6. **Offline verification** (airplane mode submit, reconnect sync)
-7. Cloud sync: upload, download, conflict, delete
-8. Stop confidence badges on desktop dashboard
-9. Delete race dialog (type name + checkbox)
-10. Delete account flow on both apps
-11. Visual polish pass on real devices (macOS Safari, iOS Safari)
+---
+
+## 5. Known limitations to be aware of (not blockers, but know them)
+
+- [ ] Haptics are silent on iPhone (Web Vibration API unsupported on iOS) — KI-07
+- [ ] With GPS **denied/unavailable**, position stays at km 0 and "next stop" assumes the start — grant location before the start, or treat next-stop as unknown (KI-03/04)
+- [ ] Bundle checksum self-heals on mismatch (accepts recomputed) — after downloading a race, sanity-check that distance/climbs match desktop (KI-02)
+- [ ] Desktop planning API is single-user / not multi-tenant — keep it local, do not expose publicly (KI-01)
+
+---
+
+## 6. Final go / no-go
+
+- [ ] All **[BLOCKER]** items pass on the race-day phone
+- [ ] A second rider can open the app and complete Login → Open race → Map → Resupply unaided
+- [ ] You would trust this for 800 km
+
+_Last updated: v0.7 Release Candidate._

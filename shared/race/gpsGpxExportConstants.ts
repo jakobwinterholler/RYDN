@@ -5,6 +5,11 @@
  * There is no universal GPX icon standard; Coros maps common sym strings to native icons.
  */
 
+import {
+  buildCorosWaypointLabel,
+  type CorosWaypointLabelInput,
+} from "./corosWaypointNaming";
+
 export const GPS_GPX_EXPORT_VERSION = "3.0";
 
 export const ROUTE_INTEGRITY_FAILED_MESSAGE =
@@ -16,10 +21,12 @@ export const MAX_WAYPOINT_OFF_ROUTE_M = 500;
 export const COROS_WPT_ICONS = [
   "Water",
   "Supplies",
+  "Supplies/Fuel",
   "Hazard",
   "Bathroom",
   "Hut",
   "Campsite",
+  "Trailfork",
   "Pin",
 ] as const;
 
@@ -33,6 +40,10 @@ export const EXCLUDED_EXPORT_CATEGORY_KEYWORDS = [
   "gap marker",
   "helper",
   "geometry",
+  "planning",
+  "debug",
+  "skipped",
+  "marker",
 ] as const;
 
 export function isInvalidExportName(value: string | null | undefined): boolean {
@@ -67,23 +78,22 @@ export function resolveCorosWptIcon(input: {
 }): CorosWptIcon {
   const category = input.category.toLowerCase();
   if (
-    input.hasWater ||
+    category.includes("fuel") ||
+    category.includes("gas station") ||
+    category.includes("gas_station") ||
+    input.hasFuel
+  ) {
+    return "Supplies/Fuel";
+  }
+  if (
     category.includes("water") ||
     category.includes("drinking") ||
-    category.includes("fountain")
+    category.includes("fountain") ||
+    input.hasWater
   ) {
     return "Water";
   }
   if (
-    input.hasFuel ||
-    category.includes("fuel") ||
-    category.includes("gas station") ||
-    category.includes("gas_station")
-  ) {
-    return "Supplies";
-  }
-  if (
-    input.hasFood ||
     category.includes("supermarket") ||
     category.includes("convenience") ||
     category.includes("mini supermarket") ||
@@ -94,7 +104,9 @@ export function resolveCorosWptIcon(input: {
     category.includes("restaurant") ||
     category.includes("fast food") ||
     category.includes("bakery") ||
-    category.includes("shop")
+    category.includes("shop") ||
+    (category.includes("bike") && category.includes("shop")) ||
+    input.hasFood
   ) {
     return "Supplies";
   }
@@ -110,56 +122,58 @@ export function resolveCorosWptIcon(input: {
   if (category.includes("camp")) {
     return "Campsite";
   }
+  if (
+    category.includes("crossroad") ||
+    category.includes("cross road") ||
+    category.includes("junction") ||
+    category.includes("trail fork")
+  ) {
+    return "Trailfork";
+  }
+  if (category.includes("bike") && category.includes("shop")) {
+    return "Supplies";
+  }
   return "Pin";
 }
 
-export function smartPoiLabel(input: {
-  name?: string | null;
-  brand?: string | null;
+/** Emoji prefix for Coros `<name>` — icons use `<sym>` separately. */
+export function corosWaypointEmoji(input: {
   category: string;
   hasFuel?: boolean;
   hasWater?: boolean;
   hasFood?: boolean;
-  zoneName?: string | null;
 }): string {
-  const brand = input.brand?.trim() ?? "";
-  const name = input.name?.trim() ?? "";
-  if (brand && !isInvalidExportName(brand)) {
-    return brand.slice(0, 14);
-  }
-  if (name && !isInvalidExportName(name)) {
-    return name.slice(0, 14);
-  }
-  if (input.hasFuel) {
-    return "Fuel";
-  }
-  if (input.hasWater) {
-    return "Water";
-  }
-  if (input.hasFood) {
-    return "Shop";
-  }
+  const sym = resolveCorosWptIcon(input);
   const category = input.category.toLowerCase();
-  if (category.includes("supermarket")) {
-    return "Supermarket";
+  const map: Record<CorosWptIcon, string> = {
+    Water: "💧",
+    Supplies: input.hasFood ? "🛒" : "📦",
+    "Supplies/Fuel": "⛽",
+    Hazard: "⚠️",
+    Bathroom: "🚻",
+    Hut: "🏠",
+    Campsite: "⛺",
+    Trailfork: "🔀",
+    Pin: "📍",
+  };
+  if (sym === "Supplies" && (category.includes("fuel") || category.includes("gas") || input.hasFuel)) {
+    return "⛽";
   }
-  if (category.includes("convenience")) {
-    return "Shop";
-  }
-  if (category.includes("cafe") || category.includes("café")) {
-    return "Café";
-  }
-  if (category.includes("restaurant")) {
-    return "Restaurant";
-  }
-  if (category.includes("water") || category.includes("fountain")) {
-    return "Water";
-  }
-  const zoneName = input.zoneName?.trim();
-  if (zoneName && !isInvalidExportName(zoneName)) {
-    return zoneName.slice(0, 14);
-  }
-  return "Stop";
+  return map[sym] ?? "📍";
+}
+
+export function formatCorosWaypointName(
+  input: CorosWaypointLabelInput & { isPrimary?: boolean },
+): string {
+  const prefix = input.isPrimary === false ? "ALT " : "";
+  const emoji = corosWaypointEmoji(input);
+  const label = buildCorosWaypointLabel(input);
+  return `${prefix}${emoji} ${label}`.trim().slice(0, 32);
+}
+
+/** @deprecated Use buildCorosWaypointLabel — kept for tests and gradual migration. */
+export function smartPoiLabel(input: CorosWaypointLabelInput): string {
+  return buildCorosWaypointLabel(input);
 }
 
 export function isExcludedExportCategory(category: string): boolean {

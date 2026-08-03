@@ -1,23 +1,25 @@
 import { useMemo, useState } from "react";
-import type { ResupplyZone, RouteVisualization } from "../api";
+import type { ResupplyZone, RoadbookResult } from "../api";
 import ResupplyZoneCard from "../components/ResupplyZoneCard";
 import PlanningDetailSheet from "../components/planning/PlanningDetailSheet";
 import ResupplyHubDetailContent from "../components/resupply/ResupplyHubDetailContent";
 import { usePlanning } from "../planning/PlanningContext";
 import { usePlanningAssumptions } from "../planning/usePlanningAssumptions";
 import {
+  filterResupplyZonesForView,
+} from "../planning/resupplyView";
+import {
   filterResupplyZones,
   sortResupplyZones,
 } from "../planning/viewModel";
-import { presentZones } from "../planning/zonePresentation";
+import { presentSuggestedStops } from "../planning/suggestedStops";
 import type { DetourFilter, ResupplyCategoryFilter } from "../planning/types";
 import type { StopSelection } from "../planning/stopSelection";
 import { zoneAvailability } from "../planning/stopAvailability";
+import { useRace } from "../races/RaceContext";
 
 interface ResupplyPageProps {
-  zones: ResupplyZone[];
-  route: RouteVisualization;
-  totalKm: number;
+  result: RoadbookResult;
 }
 
 const CATEGORY_OPTIONS: { id: ResupplyCategoryFilter; label: string }[] = [
@@ -46,28 +48,35 @@ function toggleValue<T>(values: T[], value: T): T[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
 
-export default function ResupplyPage({ zones, route, totalKm }: ResupplyPageProps) {
+export default function ResupplyPage({ result }: ResupplyPageProps) {
   const {
     resupplyFilters,
     setResupplyFilters,
     resupplySort,
     setResupplySort,
     timeMode,
-    zoneDensity,
   } = usePlanning();
   const { arrivalTimeWindow } = usePlanningAssumptions();
+  const { verifiedStops } = useRace();
+  const [showVerifiedOnly, setShowVerifiedOnly] = useState(false);
   const [detailSelection, setDetailSelection] = useState<StopSelection>(null);
   const [selectedZoneId, setSelectedZoneId] = useState<number | null>(null);
 
   const planningZones = useMemo(
-    () => presentZones(zones, timeMode, zoneDensity, totalKm, route),
-    [zones, timeMode, zoneDensity, totalKm, route],
+    () => presentSuggestedStops(result, timeMode),
+    [result, timeMode],
   );
 
   const visibleZones = useMemo(() => {
-    const filtered = filterResupplyZones(planningZones, resupplyFilters);
+    const verifiedFiltered = filterResupplyZonesForView(
+      planningZones,
+      result,
+      verifiedStops,
+      showVerifiedOnly,
+    );
+    const filtered = filterResupplyZones(verifiedFiltered, resupplyFilters);
     return sortResupplyZones(filtered, resupplySort);
-  }, [planningZones, resupplyFilters, resupplySort]);
+  }, [planningZones, result, verifiedStops, showVerifiedOnly, resupplyFilters, resupplySort]);
 
   function handleSelectZone(zone: ResupplyZone) {
     setSelectedZoneId(zone.zone_id);
@@ -84,21 +93,32 @@ export default function ResupplyPage({ zones, route, totalKm }: ResupplyPageProp
       ? detailSelection.zone.name
       : detailSelection?.kind === "poi"
         ? detailSelection.poi.name ?? detailSelection.poi.brand ?? "Stop detail"
-        : "Resupply hub";
+        : "Resupply stop";
 
   return (
     <div className="mx-auto max-w-3xl space-y-8 px-8 py-12 sm:px-10">
       <div>
         <h2 className="text-display font-semibold tracking-tight text-ink">Resupply</h2>
         <p className="mt-2 text-sm text-muted">
-          {visibleZones.length} planning hubs along your route
-          {zones.length !== visibleZones.length && (
-            <>
-              {" "}
-              · {zones.length} total in dataset
-            </>
-          )}
+          {visibleZones.length} {showVerifiedOnly ? "verified" : "suggested"} stops along your route
         </p>
+      </div>
+
+      <div className="flex gap-2">
+        {(["all", "verified"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setShowVerifiedOnly(value === "verified")}
+            className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
+              (value === "verified") === showVerifiedOnly
+                ? "bg-accent text-white"
+                : "border border-line bg-card text-ink"
+            }`}
+          >
+            {value === "all" ? "All stops" : "Verified only"}
+          </button>
+        ))}
       </div>
 
       <details className="rounded-2xl border border-line bg-card shadow-card">
@@ -199,13 +219,13 @@ export default function ResupplyPage({ zones, route, totalKm }: ResupplyPageProp
       <PlanningDetailSheet
         open={detailSelection !== null}
         title={sheetTitle}
-        subtitle="Resupply hub"
+        subtitle="Resupply stop"
         onClose={handleCloseDetail}
       >
         {detailSelection && (
           <ResupplyHubDetailContent
             selection={detailSelection}
-            route={route}
+            route={result.route}
             timeWindowId={arrivalTimeWindow}
             timeMode={timeMode}
             onSelectPoi={(poi) =>

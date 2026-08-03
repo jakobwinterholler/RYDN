@@ -1,0 +1,145 @@
+@keyframes urp-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes urp-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes urp-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes urp-sheet-up {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes urp-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes urp-pulse-soft {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.urp-animate-fade-in {
+  animation: urp-fade-in 0.35s ease-out both;
+}
+
+.urp-animate-fade-up {
+  animation: urp-fade-up 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.urp-animate-scale-in {
+  animation: urp-scale-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.urp-animate-workspace-enter {
+  animation: urp-scale-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.urp-animate-sheet {
+  animation: urp-sheet-up 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.urp-card-hover {
+  transition:
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.22s ease,
+    border-color 0.22s ease;
+}
+
+.urp-card-hover:hover {
+  transform: translateY(-2px);
+}
+
+.urp-card-hover:active {
+  transform: translateY(0) scale(0.995);
+  transition-duration: 0.1s;
+}
+
+.urp-stagger-1 {
+  animation-delay: 40ms;
+}
+.urp-stagger-2 {
+  animation-delay: 80ms;
+}
+.urp-stagger-3 {
+  animation-delay: 120ms;
+}
+.urp-stagger-4 {
+  animation-delay: 160ms;
+}
+
+.urp-skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(128, 128, 128, 0.08) 0%,
+    rgba(128, 128, 128, 0.16) 50%,
+    rgba(128, 128, 128, 0.08) 100%
+  );
+  background-size: 200% 100%;
+  animation: urp-shimmer 1.4s ease-in-out infinite;
+}
+
+.urp-skeleton-dark {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: urp-shimmer 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .urp-animate-fade-in,
+  .urp-animate-fade-up,
+  .urp-animate-scale-in,
+  .urp-animate-workspace-enter,
+  .urp-animate-sheet,
+  .urp-card-hover,
+  .urp-skeleton,
+  .urp-skeleton-dark {
+    animation: none !important;
+    transition: none !important;
+  }
+}

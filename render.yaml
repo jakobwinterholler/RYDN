@@ -1,0 +1,19 @@
+# Deploy Ultra Roadbook API (required for Companion mobile GPX import).
+# Dashboard: https://dashboard.render.com → New → Blueprint → connect repo.
+services:
+  - type: web
+    name: ultra-roadbook-api
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: PYTHONPATH
+        value: /app/src

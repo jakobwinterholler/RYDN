@@ -209,10 +209,10 @@ export function applyZoneDensity(
 export function presentZones(
   zones: ResupplyZone[],
   timeMode: TimeMode,
-  density: ZoneDensityMode,
-  totalKm: number,
-  route?: import("../api").RouteVisualization,
+  _density?: ZoneDensityMode,
+  _totalKm?: number,
+  _route?: import("../api").RouteVisualization,
 ): ResupplyZone[] {
   const afterTime = applyTimeModeFilter(zones, timeMode);
-  return applyZoneDensity(afterTime, density, totalKm, route);
+  return afterTime;
 }

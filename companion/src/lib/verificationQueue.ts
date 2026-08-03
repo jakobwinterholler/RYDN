@@ -1,33 +1,7 @@
 import type { CompanionVerificationSubmission } from "@shared/types/verification";
+import { openCompanionDb } from "../db";
 
-const DB_NAME = "race-companion";
-const DB_VERSION = 3;
 const VERIFICATIONS_STORE = "verifications";
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains("bundles")) {
-        db.createObjectStore("bundles", { keyPath: "race.id" });
-      }
-      if (!db.objectStoreNames.contains("raceList")) {
-        db.createObjectStore("raceList", { keyPath: "id" });
-      }
-      if (!db.objectStoreNames.contains("meta")) {
-        db.createObjectStore("meta");
-      }
-      if (!db.objectStoreNames.contains(VERIFICATIONS_STORE)) {
-        const store = db.createObjectStore(VERIFICATIONS_STORE, { keyPath: "id" });
-        store.createIndex("raceId", "raceId", { unique: false });
-        store.createIndex("synced", "synced", { unique: false });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB failed."));
-  });
-}
 
 export interface StoredVerification extends CompanionVerificationSubmission {
   synced: boolean;
@@ -36,7 +10,7 @@ export interface StoredVerification extends CompanionVerificationSubmission {
 export async function queueVerification(
   submission: CompanionVerificationSubmission,
 ): Promise<void> {
-  const db = await openDb();
+  const db = await openCompanionDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(VERIFICATIONS_STORE, "readwrite");
     tx.objectStore(VERIFICATIONS_STORE).put({ ...submission, synced: false });
@@ -47,7 +21,7 @@ export async function queueVerification(
 }
 
 export async function loadPendingVerifications(raceId?: string): Promise<StoredVerification[]> {
-  const db = await openDb();
+  const db = await openCompanionDb();
   const items = await new Promise<StoredVerification[]>((resolve, reject) => {
     const tx = db.transaction(VERIFICATIONS_STORE, "readonly");
     const store = tx.objectStore(VERIFICATIONS_STORE);
@@ -65,7 +39,7 @@ export async function markVerificationsSynced(ids: string[]): Promise<void> {
   if (ids.length === 0) {
     return;
   }
-  const db = await openDb();
+  const db = await openCompanionDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(VERIFICATIONS_STORE, "readwrite");
     const store = tx.objectStore(VERIFICATIONS_STORE);
@@ -85,7 +59,7 @@ export async function markVerificationsSynced(ids: string[]): Promise<void> {
 }
 
 export async function removeSyncedVerifications(): Promise<void> {
-  const db = await openDb();
+  const db = await openCompanionDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(VERIFICATIONS_STORE, "readwrite");
     const store = tx.objectStore(VERIFICATIONS_STORE);
@@ -104,8 +78,26 @@ export async function removeSyncedVerifications(): Promise<void> {
   db.close();
 }
 
+export async function deleteVerificationsForRace(raceId: string): Promise<void> {
+  const db = await openCompanionDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(VERIFICATIONS_STORE, "readwrite");
+    const store = tx.objectStore(VERIFICATIONS_STORE);
+    const request = store.index("raceId").getAll(raceId);
+    request.onsuccess = () => {
+      const items = (request.result as StoredVerification[]) ?? [];
+      for (const item of items) {
+        store.delete(item.id);
+      }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error("Failed to delete verifications."));
+  });
+  db.close();
+}
+
 export async function deleteVerification(id: string): Promise<void> {
-  const db = await openDb();
+  const db = await openCompanionDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(VERIFICATIONS_STORE, "readwrite");
     tx.objectStore(VERIFICATIONS_STORE).delete(id);

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useAuth } from "@shared/auth/AuthProvider";
+import { getFreshAccessToken } from "@shared/auth/accessToken";
 import { pushAllLocalRaces } from "@shared/api/sync";
 import { updateDeviceLastActive } from "@shared/sync/deviceProfile";
 import { setAuthAccessToken } from "../api/authFetch";
@@ -29,7 +30,8 @@ export function AuthSyncBridge() {
 
     importedRef.current = true;
     void updateDeviceLastActive("desktop");
-    void pushAllLocalRaces(accessToken)
+    void getFreshAccessToken(accessToken)
+      .then((token) => pushAllLocalRaces(token, user?.id))
       .then((result) => {
         localStorage.setItem(`${IMPORTED_KEY}:${user.id}`, "1");
         recordSyncSuccess(user.id);

@@ -10,7 +10,7 @@ import { verifiedStopKey } from "../stopVerification/types";
 import { analyzeUnsupportedSections } from "../unsupportedSections";
 import type { TimeMode } from "../types";
 import type { ZoneDensityMode } from "../types";
-import { presentZones } from "../zonePresentation";
+import { presentSuggestedStops } from "../suggestedStops";
 import { detectScenicCandidates } from "./scenicCandidates";
 import type {
   RoutePreviewCandidate,
@@ -289,7 +289,7 @@ function buildTownCandidates(
     candidates.push({
       id: `town-${zone.zone_id}`,
       type: "town",
-      title: "Major resupply hub",
+      title: "Major resupply stop",
       description: `${zone.name} · km ${Math.round(zone.distance_along_km)} · ${zone.poi_count} nearby options`,
       whyChosen: "Dense resupply cluster — a natural story beat for towns and services",
       startKm: range.startKm,
@@ -466,16 +466,9 @@ export function generateRoutePreview(input: GenerateRoutePreviewInput): RoutePre
     raceName,
     verifiedStops,
     timeMode = "day",
-    zoneDensity = "planning",
   } = input;
   const totalKm = roadbook.summary.distance_km;
-  const zones = presentZones(
-    roadbook.resupply_zones,
-    timeMode,
-    zoneDensity,
-    totalKm,
-    roadbook.route,
-  );
+  const zones = presentSuggestedStops(roadbook, timeMode);
   const highlights = buildRouteHighlights(
     roadbook.climbs,
     zones,

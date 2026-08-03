@@ -65,6 +65,30 @@ export default defineConfig({
         orientation: "portrait",
         scope: "/",
         start_url: "/",
+        file_handlers: [
+          {
+            action: "/",
+            accept: {
+              "application/gpx+xml": [".gpx"],
+              "application/xml": [".gpx"],
+              "text/xml": [".gpx"],
+              "application/octet-stream": [".gpx"],
+            },
+          },
+        ],
+        share_target: {
+          action: "/?import=gpx",
+          method: "POST",
+          enctype: "multipart/form-data",
+          params: {
+            files: [
+              {
+                name: "gpx",
+                accept: [".gpx", "application/gpx+xml", "application/xml", "text/xml"],
+              },
+            ],
+          },
+        },
         icons: [
           {
             src: "/icons/icon-192.png",
@@ -87,6 +111,7 @@ export default defineConfig({
         ],
       },
       workbox: {
+        importScripts: ["/share-import-sw.js"],
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2,webmanifest}"],
         navigateFallback: "index.html",
         navigateFallbackDenylist: [/^\/api\//],

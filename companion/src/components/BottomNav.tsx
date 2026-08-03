@@ -1,10 +1,20 @@
+import { haptic } from "../lib/haptics";
+
 interface BottomNavProps {
   active: CompanionTab;
   onChange: (tab: CompanionTab) => void;
+  onBackToLibrary: () => void;
 }
 
-function NavIcon({ tab, active }: { tab: CompanionTab; active: boolean }) {
+function NavIcon({ tab, active }: { tab: CompanionTab | "library"; active: boolean }) {
   const color = active ? "text-white" : "text-white/40";
+  if (tab === "library") {
+    return (
+      <svg className={`h-6 w-6 ${color}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden>
+        <path d="M3 10.5L12 4l9 6.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1v-9.5z" strokeLinejoin="round" />
+      </svg>
+    );
+  }
   if (tab === "map") {
     return (
       <svg className={`h-6 w-6 ${color}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden>
@@ -31,29 +41,20 @@ function NavIcon({ tab, active }: { tab: CompanionTab; active: boolean }) {
       </svg>
     );
   }
-  if (tab === "share") {
-    return (
-      <svg className={`h-6 w-6 ${color}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden>
-        <path d="M4 12v7a2 2 0 002 2h12a2 2 0 002-2v-7" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M12 3v12M8 7l4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
   return (
     <svg className={`h-6 w-6 ${color}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden>
-      <circle cx="12" cy="8" r="4" />
-      <path d="M5 20c0-3.866 3.134-7 7-7s7 3.134 7 7" strokeLinecap="round" />
+      <path d="M4 12v7a2 2 0 002 2h12a2 2 0 002-2v-7" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 3v12M8 7l4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-export default function BottomNav({ active, onChange }: BottomNavProps) {
+export default function BottomNav({ active, onChange, onBackToLibrary }: BottomNavProps) {
   const items: { id: CompanionTab; label: string; accent?: boolean }[] = [
-    { id: "map", label: "Map" },
+    { id: "map", label: "Race" },
     { id: "resupply", label: "Resupply" },
     { id: "verify", label: "Verify", accent: true },
     { id: "share", label: "Share" },
-    { id: "account", label: "Account" },
   ];
 
   return (
@@ -62,6 +63,18 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
       style={{ paddingBottom: "max(6px, env(safe-area-inset-bottom))" }}
     >
       <div className="relative grid grid-cols-5">
+        <button
+          type="button"
+          onClick={() => {
+            haptic("selection");
+            onBackToLibrary();
+          }}
+          aria-label="Race library"
+          className="relative flex min-h-[52px] min-w-[44px] flex-col items-center justify-center gap-1 px-1 py-1.5 text-white/40 transition-colors duration-200 hover:text-white/70 active:scale-95"
+        >
+          <NavIcon tab="library" active={false} />
+          <span className="text-[11px] font-medium leading-none">Library</span>
+        </button>
         {items.map((item) => {
           const isActive = active === item.id;
           const activeClass =
@@ -74,10 +87,15 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
             <button
               key={item.id}
               type="button"
-              onClick={() => onChange(item.id)}
+              onClick={() => {
+                if (!isActive) {
+                  haptic("selection");
+                }
+                onChange(item.id);
+              }}
               aria-label={item.label}
               aria-current={isActive ? "page" : undefined}
-              className={`relative flex min-h-[52px] flex-col items-center justify-center gap-1 py-1.5 transition-colors duration-200 ${activeClass}`}
+              className={`relative flex min-h-[52px] min-w-[44px] flex-col items-center justify-center gap-1 px-1 py-1.5 transition-[color,transform] duration-200 active:scale-95 ${activeClass}`}
             >
               {isActive ? (
                 <span
@@ -97,4 +115,4 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
   );
 }
 
-export type CompanionTab = "map" | "resupply" | "verify" | "share" | "account";
+export type CompanionTab = "map" | "resupply" | "verify" | "share";

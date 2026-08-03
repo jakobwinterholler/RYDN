@@ -27,6 +27,7 @@ from pipeline_profiler import PipelineProfiler
 from progress import ProgressReporter
 from resupply_quality import ResupplyQualitySegment, build_resupply_quality_segments
 from resupply_zones import ResupplyZone, ResupplyZonePlan, ZoneCategoryGroup, ZonePoiOption, build_resupply_zones
+from suggested_stops import build_suggested_stops
 from significant_climbs import significant_climbs
 from route_segment_index import RouteSegmentIndex
 from route_visualization import RouteVisualization, build_route_visualization, build_track_route_visualization
@@ -188,6 +189,25 @@ class ResupplyZoneRow:
 
 
 @dataclass
+class SuggestedStopRow:
+    """One hand-picked suggested stop for the planning workflow."""
+
+    zone_id: int
+    osm_id: int
+    osm_type: str
+    name: str | None
+    poi_category: str
+    category_key: str
+    category_label: str
+    distance_along_km: float
+    distance_off_route_m: float
+    lat: float
+    lon: float
+    score: float
+    reason: str | None
+
+
+@dataclass
 class TrackPointRow:
     lat: float
     lon: float
@@ -304,6 +324,7 @@ class RoadbookResult:
     climb_candidates: list[ClimbCandidateRow]
     pois: list[PoiRow]
     resupply_zones: list[ResupplyZoneRow]
+    suggested_stops: list[SuggestedStopRow]
     route: RouteVisualizationRow
     performance_report: list[PerformanceStageRow]
     performance_summary: PerformanceSummaryRow | None
@@ -860,6 +881,20 @@ def analyze_gpx_file(
     )
 
     zone_rows = [_resupply_zone_row(zone) for zone in resupply_plan.zones]
+    climb_dicts = [
+        {
+            "id": row.id,
+            "start_km": row.start_km,
+            "end_km": row.end_km,
+        }
+        for row in climb_rows
+    ]
+    suggested_stop_dicts = build_suggested_stops(
+        [asdict(zone) for zone in zone_rows],
+        climbs=climb_dicts,
+        total_km=total_km,
+    )
+    suggested_stop_rows = [SuggestedStopRow(**stop) for stop in suggested_stop_dicts]
     poi_debug_entries = build_poi_debug_entries(
         poi_dataset.pois,
         resupply_plan,
@@ -966,6 +1001,7 @@ def analyze_gpx_file(
         climb_candidates=candidate_rows,
         pois=poi_rows,
         resupply_zones=zone_rows,
+        suggested_stops=suggested_stop_rows,
         route=_route_visualization_row(route_viz),
         performance_report=performance_report,
         performance_summary=performance_summary,
@@ -1123,6 +1159,7 @@ def roadbook_to_dict(result: RoadbookResult) -> dict:
         "climb_candidates": [asdict(candidate) for candidate in result.climb_candidates],
         "pois": [asdict(poi) for poi in result.pois],
         "resupply_zones": [asdict(zone) for zone in result.resupply_zones],
+        "suggested_stops": [asdict(stop) for stop in result.suggested_stops],
         "route": asdict(result.route),
         "performance_report": [asdict(row) for row in result.performance_report],
         "performance_summary": (

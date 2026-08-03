@@ -1,3 +1,4 @@
+import { collectAllBundlePois } from "@shared/race/bundlePois";
 import type { CompanionBundle, CompanionStop } from "@shared/types/sync";
 import {
   sortVerificationQueue,
@@ -5,10 +6,9 @@ import {
 } from "@shared/race/sortVerificationQueue";
 
 export function stopsNeedingVerification(bundle: CompanionBundle): CompanionStop[] {
-  return bundle.stops.filter(
-    (stop) =>
-      stop.verificationStatus === "unverified" || stop.verificationStatus === "needs_review",
-  );
+  return collectAllBundlePois(bundle)
+    .map((entry) => entry.stop)
+    .filter((stop) => stop.verificationStatus === "unverified");
 }
 
 export function sortedVerificationQueue(

@@ -8,17 +8,22 @@ import {
   type ReactNode,
 } from "react";
 import { normalizeSyncListError } from "@shared/api/supabaseErrors";
+import { cloudSyncUnavailableUserMessage } from "@shared/companion/userFacingErrors";
 import { fetchSyncRaces } from "@shared/api/sync";
 import type { SyncRaceSummary } from "@shared/types/sync";
-import { needsCompanionDownload } from "@shared/sync/raceVersion";
+import { needsCompanionDownload, localBundleIsCurrent } from "@shared/sync/raceVersion";
 import { useAuth } from "@shared/auth/AuthProvider";
 import { logSyncDebug } from "@shared/sync/syncDebugLog";
 import {
   hasValidCompanionBundle,
+  invalidateStaleBundle,
+  loadCompanionBundle,
   loadRaceList,
   saveRaceList,
+  deleteCompanionRace,
   type StoredRaceListItem,
 } from "../db";
+import { isRaceDownloading } from "../lib/downloadRaceAssets";
 
 async function resolveOfflineReady(
   race: SyncRaceSummary,
@@ -35,6 +40,10 @@ async function resolveOfflineReady(
     return { downloadedRevision, downloadedChecksum, offlineReady: false };
   }
 
+  if (isRaceDownloading(race.id)) {
+    return { downloadedRevision, downloadedChecksum, offlineReady: true };
+  }
+
   const bundleExists = await hasValidCompanionBundle(race.id);
   if (!bundleExists) {
     logSyncDebug("stale-cache", `${race.name} — bundle missing or invalid in IndexedDB`, {
@@ -42,7 +51,29 @@ async function resolveOfflineReady(
       downloadedRevision,
       downloadedChecksum,
     });
-    return { downloadedRevision, downloadedChecksum, offlineReady: false };
+    await invalidateStaleBundle(race.id);
+    return { downloadedRevision: null, downloadedChecksum: null, offlineReady: false };
+  }
+
+  const localBundle = await loadCompanionBundle(race.id);
+  const downloadedClimbCount = localBundle?.climbs?.length ?? existing?.downloadedClimbCount ?? null;
+  const localSchemaVersion = localBundle?.schemaVersion ?? null;
+
+  if (
+    localBundle &&
+    localBundleIsCurrent(
+      race,
+      downloadedRevision,
+      true,
+      downloadedClimbCount,
+      localSchemaVersion,
+    )
+  ) {
+    return {
+      downloadedRevision: downloadedRevision ?? race.companion_revision,
+      downloadedChecksum: downloadedChecksum ?? localBundle.bundleChecksum ?? null,
+      offlineReady: true,
+    };
   }
 
   const needsUpdate = needsCompanionDownload(
@@ -50,22 +81,25 @@ async function resolveOfflineReady(
     downloadedRevision,
     true,
     downloadedChecksum,
+    downloadedClimbCount,
+    localSchemaVersion,
   );
   if (needsUpdate) {
-    return { downloadedRevision, downloadedChecksum, offlineReady: false };
-  }
-
-  if (
-    race.bundle_checksum &&
-    downloadedChecksum &&
-    race.bundle_checksum !== downloadedChecksum
-  ) {
-    logSyncDebug("checksum-mismatch", `${race.name} — checksum drift detected`, {
+    // A newer cloud revision exists, but we must NEVER delete a working offline
+    // bundle just because an update is available — that could leave a rider with
+    // no route mid-race. Keep the downloaded copy openable offline; the UI still
+    // surfaces the update via the revision mismatch, and the rider (or background
+    // sync, when this isn't the active race) refreshes it when it's safe.
+    logSyncDebug("stale-cache", `${race.name} — cloud update available; keeping offline copy`, {
       raceId: race.id,
-      cloud: race.bundle_checksum,
-      local: downloadedChecksum,
+      cloudRevision: race.companion_revision,
+      localRevision: downloadedRevision,
+      cloudChecksum: race.bundle_checksum,
+      localChecksum: downloadedChecksum,
+      cloudClimbCount: race.significant_climb_count ?? null,
+      localClimbCount: downloadedClimbCount,
     });
-    return { downloadedRevision, downloadedChecksum, offlineReady: false };
+    return { downloadedRevision, downloadedChecksum, offlineReady: true };
   }
 
   return { downloadedRevision, downloadedChecksum, offlineReady: true };
@@ -76,16 +110,42 @@ async function mergeRaceLists(
   local: StoredRaceListItem[],
 ): Promise<StoredRaceListItem[]> {
   const localById = new Map(local.map((race) => [race.id, race]));
+  const cloudIds = new Set(cloud.map((race) => race.id));
   const merged: StoredRaceListItem[] = [];
+
   for (const race of cloud) {
     const existing = localById.get(race.id);
     const status = await resolveOfflineReady(race, existing);
     merged.push({
       ...race,
       ...status,
+      source: existing?.source === "local-import" ? "local-import" : "cloud",
+      lastOpenedAt: existing?.lastOpenedAt ?? null,
+      verified_percent: existing?.verified_percent ?? null,
+      verified_stops_count: existing?.verified_stops_count ?? null,
     });
   }
-  return merged;
+
+  for (const race of local) {
+    if (cloudIds.has(race.id)) {
+      continue;
+    }
+    if (race.source === "local-import") {
+      merged.push({
+        ...race,
+        source: "local-import",
+      });
+      continue;
+    }
+    if (race.offlineReady || race.has_bundle) {
+      logSyncDebug("race-list", `Purging deleted cloud race ${race.name}`, { raceId: race.id });
+      await deleteCompanionRace(race.id);
+    }
+  }
+
+  return merged.sort((left, right) =>
+    (right.updated_at ?? "").localeCompare(left.updated_at ?? ""),
+  );
 }
 
 interface CloudRaceListContextValue {
@@ -93,6 +153,7 @@ interface CloudRaceListContextValue {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  removeRace: (raceId: string) => void;
   onlineConfigured: boolean;
 }
 
@@ -132,11 +193,15 @@ export function CloudRaceListProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!configured) {
       setLoading(false);
-      setError("Cloud sync is not configured.");
+      setError(cloudSyncUnavailableUserMessage());
       return;
     }
     void refresh();
   }, [configured, refresh]);
+
+  const removeRace = useCallback((raceId: string) => {
+    setRaces((current) => current.filter((race) => race.id !== raceId));
+  }, []);
 
   const value = useMemo(
     () => ({
@@ -144,9 +209,10 @@ export function CloudRaceListProvider({ children }: { children: ReactNode }) {
       loading,
       error,
       refresh,
+      removeRace,
       onlineConfigured: configured,
     }),
-    [configured, error, loading, races, refresh],
+    [configured, error, loading, races, refresh, removeRace],
   );
 
   return (

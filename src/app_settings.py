@@ -35,6 +35,7 @@ class PlanningDefaults:
     max_gap_without_resupply_km: int = 50
     default_arrival_time_window: str | None = None
     default_zone_density: str = "planning"
+    developer_mode_enabled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +46,7 @@ class PlanningDefaults:
             "max_gap_without_resupply_km": self.max_gap_without_resupply_km,
             "default_arrival_time_window": self.default_arrival_time_window,
             "default_zone_density": self.default_zone_density,
+            "developer_mode_enabled": self.developer_mode_enabled,
         }
 
     @classmethod
@@ -60,6 +62,7 @@ class PlanningDefaults:
             max_gap_without_resupply_km=int(payload.get("max_gap_without_resupply_km") or 50),
             default_arrival_time_window=payload.get("default_arrival_time_window"),
             default_zone_density=str(payload.get("default_zone_density") or "planning"),
+            developer_mode_enabled=bool(payload.get("developer_mode_enabled")),
         )
 
 

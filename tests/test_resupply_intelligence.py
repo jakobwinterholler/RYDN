@@ -22,7 +22,7 @@ class ResupplyIntelligenceTests(unittest.TestCase):
         supermarket = {
             "poi_category": "Supermarket",
             "score": 60.0,
-            "distance_off_route_m": 30.0,
+            "distance_off_route_m": 40.0,
             "distance_along_km": 20.0,
         }
         fuel_score = planning_score(fuel, category_key="fuel", zone_km=20.0)
@@ -33,6 +33,11 @@ class ResupplyIntelligenceTests(unittest.TestCase):
         small = stop_type_priority_boost({"poi_category": "Small supermarket"}, "food")
         large = stop_type_priority_boost({"poi_category": "Supermarket"}, "food")
         self.assertGreater(small, large)
+
+    def test_convenience_outranks_large_supermarket(self) -> None:
+        convenience = stop_type_priority_boost({"poi_category": "Convenience store"}, "food")
+        large = stop_type_priority_boost({"poi_category": "Supermarket"}, "food")
+        self.assertGreater(convenience, large)
 
     def test_water_on_climb_favours_later_fountain(self) -> None:
         climbs = [{"id": "C001", "start_km": 10.0, "end_km": 15.0}]
@@ -74,6 +79,55 @@ class ResupplyIntelligenceTests(unittest.TestCase):
         )
         self.assertIsNotNone(reason)
         self.assertIn("37", reason or "")
+
+
+    def test_opening_hours_boost(self) -> None:
+        with_hours = planning_score(
+            {
+                "poi_category": "Gas station",
+                "score": 50.0,
+                "distance_off_route_m": 40.0,
+                "distance_along_km": 20.0,
+                "opening_hours": "24/7",
+            },
+            category_key="fuel",
+            zone_km=20.0,
+        )
+        without_hours = planning_score(
+            {
+                "poi_category": "Gas station",
+                "score": 50.0,
+                "distance_off_route_m": 40.0,
+                "distance_along_km": 20.0,
+            },
+            category_key="fuel",
+            zone_km=20.0,
+        )
+        self.assertGreater(with_hours, without_hours)
+
+    def test_highway_only_fuel_penalized(self) -> None:
+        highway = planning_score(
+            {
+                "poi_category": "Gas station",
+                "score": 60.0,
+                "distance_off_route_m": 40.0,
+                "distance_along_km": 20.0,
+                "tags": {"highway": "motorway"},
+            },
+            category_key="fuel",
+            zone_km=20.0,
+        )
+        normal = planning_score(
+            {
+                "poi_category": "Gas station",
+                "score": 60.0,
+                "distance_off_route_m": 40.0,
+                "distance_along_km": 20.0,
+            },
+            category_key="fuel",
+            zone_km=20.0,
+        )
+        self.assertLess(highway, normal)
 
 
 if __name__ == "__main__":

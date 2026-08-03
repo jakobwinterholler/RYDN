@@ -40,8 +40,8 @@ export default function ExportSection({
     <section className="rounded-2xl bg-card p-6 shadow-card">
       <h3 className="text-lg font-semibold text-ink">Export</h3>
       <p className="mt-1 text-sm text-muted">
-        Download your roadbook, GPS navigation GPX, or validation files. Races sync automatically to
-        the Companion app when you are signed in.
+        Send your route to your GPS device. Signed-in races also sync to the Companion app
+        automatically.
       </p>
 
       <div className="mt-6 flex flex-wrap gap-3">
@@ -72,15 +72,6 @@ export default function ExportSection({
           className="rounded-xl border border-line bg-canvas px-5 py-2.5 text-sm font-semibold text-ink transition hover:border-accent/30 hover:bg-white disabled:opacity-60"
         >
           {loading === "gpx" ? "Exporting…" : "Validation GPX"}
-        </button>
-
-        <button
-          type="button"
-          disabled
-          className="cursor-not-allowed rounded-xl border border-line px-5 py-2.5 text-sm font-medium text-muted"
-          title="Coming soon"
-        >
-          Export PDF — Coming Soon
         </button>
       </div>
 

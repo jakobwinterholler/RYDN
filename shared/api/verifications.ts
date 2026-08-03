@@ -11,11 +11,29 @@ export async function submitCompanionVerifications(
     return { accepted: [] };
   }
   if (!getApiBaseUrl()) {
-    const raceId = submissions[0]?.raceId;
-    if (!userId || !raceId) {
+    if (!userId) {
       throw new Error("User id required to sync verifications without API server.");
     }
-    return submitCompanionVerificationsDirect(userId, raceId, submissions);
+    // Group by race so a batch spanning multiple races doesn't apply every
+    // submission to the first race's cloud row (which would corrupt the others).
+    const byRace = new Map<string, CompanionVerificationSubmission[]>();
+    for (const submission of submissions) {
+      if (!submission.raceId) {
+        continue;
+      }
+      const group = byRace.get(submission.raceId);
+      if (group) {
+        group.push(submission);
+      } else {
+        byRace.set(submission.raceId, [submission]);
+      }
+    }
+    const accepted: string[] = [];
+    for (const [raceId, group] of byRace) {
+      const result = await submitCompanionVerificationsDirect(userId, raceId, group);
+      accepted.push(...result.accepted);
+    }
+    return { accepted };
   }
   const response = await fetchWithAuth("/api/sync/verifications", accessToken, {
     method: "POST",

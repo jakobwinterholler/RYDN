@@ -18,7 +18,7 @@ export default function MapControls({
   gpsActive,
 }: MapControlsProps) {
   return (
-    <div className="pointer-events-none absolute bottom-28 right-4 z-20 flex flex-col items-end gap-2">
+    <div className="pointer-events-none absolute bottom-[max(7rem,calc(env(safe-area-inset-bottom,0px)+5.5rem))] right-4 z-20 flex flex-col items-end gap-2">
       <FloatingCard className="pointer-events-auto overflow-hidden">
         <button
           type="button"

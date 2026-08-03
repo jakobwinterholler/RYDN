@@ -24,7 +24,8 @@ import { zoneAvailability } from "../../planning/stopAvailability";
 import type { TimeMode } from "../../planning/types";
 import type { TimeWindowId } from "../../planning/timeWindows";
 import { formatPoiName } from "../poiUi";
-import { googleMapsUrl, googleStreetViewUrl, placeIdFromTags } from "../stopQuickActions";
+import { googleMapsUrl, placeIdFromTags } from "../stopQuickActions";
+import { useStreetViewLink } from "@shared/race/useStreetViewLink";
 import StopVerificationMap from "./StopVerificationMap";
 import StopVerificationPhotos from "./StopVerificationPhotos";
 import { stopMapStory, mapContextWindowKm } from "../../planning/stopVerification/stopMapContext";
@@ -89,6 +90,18 @@ export default function StopVerificationCard({
   const routeCoordinates = useMemo(
     () => route.track_points.map((point) => [point.lon, point.lat] as [number, number]),
     [route.track_points],
+  );
+  const streetView = useStreetViewLink(
+    {
+      lat: mapsLat,
+      lon: mapsLon,
+      routeKm: zone.distance_along_km,
+      name: stopTitle,
+      placeId: best
+        ? placeIdFromTags(best.poi.tags, (best.poi as { place_id?: string }).place_id)
+        : null,
+    },
+    { routeCoordinates, totalDistanceKm: totalKm },
   );
   const routeKm = Math.round(zone.distance_along_km);
   const segmentKm = mapContextWindowKm(zone.distance_along_km, Number.isFinite(detourM) ? detourM : 0) * 2;
@@ -203,29 +216,29 @@ export default function StopVerificationCard({
             Purple = race route · In/Out = where route enters and leaves · Green = stop
           </p>
           <div className="flex flex-wrap items-center gap-2">
-            <a
-              href={googleStreetViewUrl(
-                {
-                  lat: mapsLat,
-                  lon: mapsLon,
-                  routeKm: zone.distance_along_km,
-                  name: stopTitle,
-                  placeId: best
-                    ? placeIdFromTags(best.poi.tags, (best.poi as { place_id?: string }).place_id)
-                    : null,
-                },
-                {
-                  routeCoordinates,
-                  totalDistanceKm: totalKm,
-                },
-              )}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-ink transition hover:border-accent/40 hover:bg-accent/[0.03]"
-            >
-              <span aria-hidden>📍</span>
-              Open in Google Street View
-            </a>
+            {streetView.available === false ? (
+              <span className="text-xs text-muted">
+                {streetView.unavailableMessage}{" "}
+                <a
+                  href={streetView.mapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-accent underline"
+                >
+                  Google Maps
+                </a>
+              </span>
+            ) : (
+              <a
+                href={streetView.streetViewUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-xs font-medium text-ink transition hover:border-accent/40 hover:bg-accent/[0.03]"
+              >
+                <span aria-hidden>📍</span>
+                {streetView.loading ? "Street View…" : "Open in Google Street View"}
+              </a>
+            )}
             <a
               href={googleMapsUrl(mapsLat, mapsLon)}
               target="_blank"

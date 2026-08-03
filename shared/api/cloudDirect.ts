@@ -1,7 +1,11 @@
 import { getSupabaseClient } from "../auth/supabaseClient";
-import type { CompanionBundle, SyncRaceSummary } from "../types/sync";
-import { isCompanionBundle } from "../types/sync";
-import { validateCompanionBundle } from "../sync/bundleValidation";
+import { resolveVerifiedStopRecord } from "../race/poiId";
+import type { CompanionBundle, CompanionStop, CompanionStopAlternative, SyncRaceSummary } from "../types/sync";
+import {
+  formatBundlePrepareFailure,
+  prepareCompanionBundle,
+} from "../sync/bundleMigration";
+import { logSyncDebug } from "../sync/syncDebugLog";
 import type { CompanionVerificationSubmission } from "../types/verification";
 
 interface CloudRaceRow {
@@ -27,11 +31,13 @@ function applyVerificationToPreparation(
     ...(preparation.companion_verification_history as Record<string, unknown> | undefined),
   };
   const { updates } = submission;
-  verifiedStops[String(submission.zoneId)] = {
+  const key = submission.poiId ?? String(submission.zoneId);
+  verifiedStops[key] = {
     status: updates.status,
     reject_reason: updates.rejectReason ?? null,
     reject_notes: updates.notes ?? null,
     updated_at: submission.submittedAt,
+    poi_id: submission.poiId ?? null,
   };
   history[submission.id] = {
     ...submission,
@@ -46,6 +52,81 @@ function applyVerificationToPreparation(
   };
 }
 
+function applyVerifiedRecordToStop(
+  stop: CompanionStop,
+  record: { status?: string; reject_notes?: string; updated_at?: string },
+): CompanionStop {
+  if (record.status === "verified") {
+    return {
+      ...stop,
+      verificationStatus: "verified",
+      verificationDate: record.updated_at ?? null,
+    };
+  }
+  if (record.status === "rejected" || record.status === "deferred") {
+    return {
+      ...stop,
+      verificationStatus: "needs_review",
+      notes: record.reject_notes?.trim() || stop.notes,
+    };
+  }
+  return stop;
+}
+
+function applyVerifiedRecordToAlternative(
+  alternative: CompanionStopAlternative,
+  record: { status?: string; updated_at?: string },
+): CompanionStopAlternative {
+  if (record.status === "verified") {
+    return {
+      ...alternative,
+      verificationStatus: "verified",
+    };
+  }
+  if (record.status === "rejected" || record.status === "deferred") {
+    return {
+      ...alternative,
+      verificationStatus: "needs_review",
+    };
+  }
+  return alternative;
+}
+
+function patchStopFromPreparation(
+  stop: CompanionStop,
+  verifiedStops: Record<string, { status?: string; reject_notes?: string; updated_at?: string }>,
+): CompanionStop {
+  const patchAlternative = (alternative: CompanionStopAlternative) => {
+    const { record } = resolveVerifiedStopRecord(
+      verifiedStops as Record<string, unknown>,
+      stop.zoneId,
+      alternative.poiId ?? (alternative.osmId != null ? `poi_${alternative.osmId}` : null),
+    );
+    if (!record) {
+      return alternative;
+    }
+    return applyVerifiedRecordToAlternative(alternative, record);
+  };
+
+  const { record } = resolveVerifiedStopRecord(
+    verifiedStops as Record<string, unknown>,
+    stop.zoneId,
+    stop.poiId,
+  );
+
+  let next: CompanionStop = {
+    ...stop,
+    alternatives: stop.alternatives?.map(patchAlternative),
+    nearbyAlternatives: stop.nearbyAlternatives?.map(patchAlternative),
+  };
+
+  if (record) {
+    next = applyVerifiedRecordToStop(next, record);
+  }
+
+  return next;
+}
+
 function patchBundleFromPreparation(
   bundle: CompanionBundle,
   preparation: Record<string, unknown>,
@@ -55,27 +136,7 @@ function patchBundleFromPreparation(
     string,
     { status?: string; reject_notes?: string; updated_at?: string }
   >;
-  const stops = bundle.stops.map((stop) => {
-    const record = verifiedStops[String(stop.zoneId)];
-    if (!record) {
-      return stop;
-    }
-    if (record.status === "verified") {
-      return {
-        ...stop,
-        verificationStatus: "verified" as const,
-        verificationDate: record.updated_at ?? null,
-      };
-    }
-    if (record.status === "rejected" || record.status === "deferred") {
-      return {
-        ...stop,
-        verificationStatus: "needs_review" as const,
-        notes: record.reject_notes?.trim() || stop.notes,
-      };
-    }
-    return stop;
-  });
+  const stops = bundle.stops.map((stop) => patchStopFromPreparation(stop, verifiedStops));
   const verifiedCount = stops.filter((stop) => stop.verificationStatus === "verified").length;
   const unverifiedCount = stops.length - verifiedCount;
   return {
@@ -95,6 +156,22 @@ function patchBundleFromPreparation(
       remainingUnsupportedKm: bundle.dashboardStats?.remainingUnsupportedKm ?? 0,
     },
   };
+}
+
+/** Soft-delete a cloud race directly via Supabase (production companion — no API server). */
+export async function deleteCloudRaceDirect(userId: string, raceId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const deletedAt = new Date().toISOString();
+  const { error } = await supabase
+    .from("races")
+    .update({ deleted_at: deletedAt, updated_at: deletedAt })
+    .eq("id", raceId)
+    .eq("user_id", userId)
+    .is("deleted_at", null);
+
+  if (error) {
+    throw new Error(error.message);
+  }
 }
 
 /** Read cloud races directly from Supabase (Companion production — no API server needed). */
@@ -127,6 +204,8 @@ export async function fetchSyncRacesDirect(): Promise<SyncRaceSummary[]> {
       has_bundle: Boolean(race.has_bundle),
       bundle_checksum: (preparation.bundle_checksum as string | undefined) ?? null,
       bundle_schema_version: (preparation.bundle_schema_version as number | undefined) ?? null,
+      significant_climb_count: (preparation.significant_climb_count as number | undefined) ?? null,
+      gpx_fingerprint: (preparation.gpx_fingerprint as string | undefined) ?? null,
     };
   });
 }
@@ -145,14 +224,20 @@ export async function fetchCompanionBundleDirect(
   }
 
   const parsed: unknown = JSON.parse(await data.text());
-  if (!isCompanionBundle(parsed)) {
-    throw new Error("Invalid companion bundle from cloud.");
+  const prepared = prepareCompanionBundle(parsed);
+  if (!prepared.bundle) {
+    logSyncDebug("bundle-validation", "Cloud bundle rejected", {
+      raceId,
+      errors: prepared.errors,
+      diagnostics: prepared.diagnostics,
+      migrationNotes: prepared.migrationNotes,
+    });
+    throw new Error(formatBundlePrepareFailure(prepared));
   }
-  const validation = validateCompanionBundle(parsed);
-  if (!validation.valid) {
-    throw new Error(`Bundle validation failed: ${validation.errors.join(", ")}`);
+  if (prepared.migrated) {
+    logSyncDebug("bundle-migration", `Migrated cloud bundle for ${raceId}`, prepared.migrationNotes);
   }
-  return parsed;
+  return prepared.bundle;
 }
 
 /** Download original route GPX from Supabase Storage. */
@@ -213,10 +298,11 @@ export async function submitCompanionVerificationsDirect(
       throw new Error(bundleError.message);
     }
     const parsed: unknown = JSON.parse(await bundleBlob.text());
-    if (!isCompanionBundle(parsed)) {
-      throw new Error("Invalid companion bundle from cloud.");
+    const prepared = prepareCompanionBundle(parsed);
+    if (!prepared.bundle) {
+      throw new Error(formatBundlePrepareFailure(prepared));
     }
-    const patched = patchBundleFromPreparation(parsed, preparation, nextRevision);
+    const patched = patchBundleFromPreparation(prepared.bundle, preparation, nextRevision);
     const { error: uploadError } = await supabase.storage
       .from("race-assets")
       .upload(bundlePath, JSON.stringify(patched), {

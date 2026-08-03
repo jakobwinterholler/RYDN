@@ -71,7 +71,7 @@ export default function ResupplyHubDetailContent({
           onClick={onBackToZone}
           className="text-sm font-medium text-accent hover:text-accent/80"
         >
-          ← Back to hub
+          ← Back to stop
         </button>
       )}
 

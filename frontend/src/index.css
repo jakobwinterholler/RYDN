@@ -1,3 +1,5 @@
+@import "../../shared/ui/design/motion.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -58,6 +60,31 @@
       opacity: 1;
       transform: translateY(0);
     }
+  }
+
+  @keyframes discover-marker-in {
+    from {
+      opacity: 0;
+      transform: scale(0.4);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .discover-marker {
+    background: transparent !important;
+    border: none !important;
+  }
+
+  .discover-marker-pin {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: discover-marker-in 0.45s ease-out both;
+    cursor: pointer;
   }
 
   .dashboard-challenge-marker {

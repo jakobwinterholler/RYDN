@@ -1,78 +1,123 @@
 import type { CompanionBundle } from "@shared/types/sync";
+import { deleteCloudRace } from "@shared/api/sync";
+import { importApiAvailable } from "@shared/api/importGpx";
 import { useAuth } from "@shared/auth/AuthProvider";
-import { getGreeting, getDisplayName, getAvatarUrl } from "@shared/auth/profile";
+import { getDisplayName, getAvatarUrl } from "@shared/auth/profile";
+import {
+  importOfflineUserMessage,
+  importUnavailableUserMessage,
+  toUserFacingError,
+} from "@shared/companion/userFacingErrors";
 import { Avatar } from "@shared/ui/AuthScreens";
+import { Button } from "@shared/ui/Button";
+import { EmptyState } from "@shared/ui/EmptyState";
+import { RaceCardSkeleton } from "@shared/ui/Skeleton";
+import { ImportGpxIllustration, NoInternetIllustration, NoRacesIllustration } from "@shared/ui/design/illustrations";
+import { useEffect, useRef, useState } from "react";
+import CompanionDeleteRaceDialog from "../components/CompanionDeleteRaceDialog";
+import CompanionRaceCard from "../components/CompanionRaceCard";
+import CompanionSyncToast from "../components/CompanionSyncToast";
+import GpxImportFlow from "../components/GpxImportFlow";
 import {
-  getCompanionRaceSyncStatus,
-  SyncStatusBadge,
-} from "@shared/ui/SyncStatusBadge";
-import { ReadinessScoreBadge } from "@shared/ui/RaceReadinessDisplay";
-import { useState } from "react";
-import {
+  deleteCompanionRace,
   loadCompanionBundle,
   setActiveRaceId,
   type StoredRaceListItem,
 } from "../db";
+import { acceptGpxFile, onIncomingGpxFile } from "../lib/incomingGpx";
+import { haptic } from "../lib/haptics";
+import { buildRaceListSections } from "../lib/raceListSections";
 import { downloadRaceAssets } from "../lib/downloadRaceAssets";
 import { useCloudRaceList } from "../sync/useCloudRaceList";
-import { useCompanionSync } from "../sync/useCompanionSync";
+import { useAutoCloudSync } from "../sync/useAutoCloudSync";
+import type { CompanionTab } from "../components/BottomNav";
 
 interface HomeScreenProps {
-  onOpenRace: (bundle: CompanionBundle) => void;
+  onOpenRace: (bundle: CompanionBundle, options?: { tab?: CompanionTab; autoExport?: "coros" | "garmin" | "wahoo" }) => void;
   onOpenAccount: () => void;
+  deepLink?: {
+    raceId: string;
+    tab?: CompanionTab;
+    autoExport?: "coros" | "garmin" | "wahoo";
+  } | null;
 }
 
-function RaceCardSkeleton() {
-  return (
-    <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-5">
-      <div className="h-5 w-2/3 animate-pulse rounded-lg bg-white/10" />
-      <div className="mt-3 h-4 w-1/3 animate-pulse rounded-lg bg-white/8" />
-    </div>
-  );
-}
-
-function EmptyRaces() {
-  return (
-    <div className="rounded-2xl border border-dashed border-white/12 bg-white/[0.02] px-6 py-12 text-center">
-      <p className="text-base font-medium text-white">No races yet</p>
-      <p className="mx-auto mt-2 max-w-xs text-sm leading-relaxed text-white/50">
-        Import and analyze a route in Ultra Roadbook on your computer while signed in. Your races
-        will appear here automatically.
-      </p>
-    </div>
-  );
-}
-
-export default function HomeScreen({ onOpenRace, onOpenAccount }: HomeScreenProps) {
+export default function HomeScreen({ onOpenRace, onOpenAccount, deepLink }: HomeScreenProps) {
   const { accessToken, user } = useAuth();
-  const { races, loading, error, refresh } = useCloudRaceList();
-  const {
-    checking,
-    updatesAvailable,
-    checkMessage,
-    checkForUpdates,
-    lastCheckLabel,
-    syncError,
-    syncDebugLog,
-    updateResults,
-  } = useCompanionSync();
+  const { races, loading, error, refresh, removeRace } = useCloudRaceList();
+  const { autoSyncing, syncToast, dismissSyncToast, retrySync } = useAutoCloudSync();
   const [busyRaceId, setBusyRaceId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<StoredRaceListItem | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [dismissingRaceId, setDismissingRaceId] = useState<string | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const deepLinkHandledRef = useRef(false);
 
-  const greeting = getGreeting(getDisplayName(user));
+  const sections = buildRaceListSections(races);
+  const canImport = importApiAvailable();
 
-  async function handleOpenRace(race: StoredRaceListItem) {
+  useEffect(() => {
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    onIncomingGpxFile((file) => setImportFile(file));
+    return () => onIncomingGpxFile(null);
+  }, []);
+
+  useEffect(() => {
+    if (!deepLink?.raceId || loading || races.length === 0 || deepLinkHandledRef.current) {
+      return;
+    }
+    const target = races.find((race) => race.id === deepLink.raceId);
+    if (!target) {
+      return;
+    }
+    deepLinkHandledRef.current = true;
+    void handleOpenRace(target, {
+      tab: deepLink.tab ?? "share",
+      autoExport: deepLink.autoExport,
+    });
+  }, [deepLink, loading, races]);
+
+  async function handleOpenRace(
+    race: StoredRaceListItem,
+    options?: { tab?: CompanionTab; autoExport?: "coros" | "garmin" | "wahoo" },
+  ) {
     setActionError(null);
-    const needsDownload =
-      !race.offlineReady ||
-      (race.downloadedRevision !== null && race.companion_revision > race.downloadedRevision);
 
-    if (!needsDownload) {
+    const openLocal = async (): Promise<boolean> => {
+      if (!race.offlineReady) {
+        return false;
+      }
       const bundle = await loadCompanionBundle(race.id);
-      if (bundle) {
-        await setActiveRaceId(race.id);
-        onOpenRace(bundle);
+      if (!bundle) {
+        return false;
+      }
+      await setActiveRaceId(race.id);
+      onOpenRace(bundle, options);
+      return true;
+    };
+
+    const hasCloudUpdate =
+      race.downloadedRevision !== null && race.companion_revision > race.downloadedRevision;
+
+    // Prefer the working offline copy when it's current, OR when we can't fetch the
+    // update (offline / no session). A rider must never be locked out of a race they
+    // have already downloaded just because Desktop pushed a newer revision.
+    if (!hasCloudUpdate || !online || !accessToken) {
+      if (await openLocal()) {
         return;
       }
     }
@@ -82,7 +127,7 @@ export default function HomeScreen({ onOpenRace, onOpenAccount }: HomeScreenProp
       return;
     }
     if (!race.has_bundle) {
-      setActionError("Analyze this race in Ultra Roadbook on your computer, then tap Sync now in Account.");
+      setActionError("This race has not been analyzed yet.");
       return;
     }
 
@@ -102,8 +147,13 @@ export default function HomeScreen({ onOpenRace, onOpenAccount }: HomeScreenProp
       setDownloadProgress(100);
       await refresh();
       await setActiveRaceId(race.id);
-      onOpenRace(bundle);
+      onOpenRace(bundle, options);
     } catch (err) {
+      // The update download failed — fall back to a working offline copy if we have
+      // one so the rider can still open the race with slightly older data.
+      if (await openLocal()) {
+        return;
+      }
       setActionError(err instanceof Error ? err.message : "Download failed.");
     } finally {
       window.clearInterval(progressTimer);
@@ -112,137 +162,190 @@ export default function HomeScreen({ onOpenRace, onOpenAccount }: HomeScreenProp
     }
   }
 
+  function handleFileSelection(fileList: FileList | null) {
+    const file = fileList?.[0];
+    if (!acceptGpxFile(file)) {
+      setActionError("Please choose a .gpx file.");
+      return;
+    }
+    setActionError(null);
+    setImportFile(file!);
+  }
+
+  function handleImportComplete(bundle: CompanionBundle) {
+    setImportFile(null);
+    void refresh().then(() => {
+      void setActiveRaceId(bundle.race.id);
+      onOpenRace(bundle);
+    });
+  }
+
+  async function confirmDeleteRace() {
+    if (!deleteTarget) {
+      return;
+    }
+    const raceId = deleteTarget.id;
+    const raceSnapshot = deleteTarget;
+    setDeleteBusy(true);
+    setActionError(null);
+    setDeleteTarget(null);
+    haptic("warning");
+    setDismissingRaceId(raceId);
+    await new Promise((resolve) => window.setTimeout(resolve, 280));
+
+    removeRace(raceId);
+
+    try {
+      if (accessToken && raceSnapshot.source !== "local-import" && raceSnapshot.has_bundle) {
+        await deleteCloudRace(accessToken, raceId, user?.id);
+      }
+      await deleteCompanionRace(raceId);
+      await refresh();
+    } catch (err) {
+      setActionError(toUserFacingError(err, "Couldn't delete this race. Try again."));
+      await refresh();
+    } finally {
+      setDismissingRaceId(null);
+      setDeleteBusy(false);
+    }
+  }
+
+  function openImportPicker() {
+    if (!online) {
+      setActionError(importOfflineUserMessage());
+      return;
+    }
+    if (!canImport) {
+      setActionError(importUnavailableUserMessage());
+      return;
+    }
+    fileInputRef.current?.click();
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#0a0a0a]">
-      <header className="flex shrink-0 items-start justify-between gap-4 px-4 pb-3 pt-safe-top">
-        <div className="min-w-0 flex-1">
-          <p className="text-2xl font-semibold tracking-tight text-white">{greeting}</p>
-          <p className="mt-1 text-sm text-white/45">Your races</p>
-          {updatesAvailable > 0 ? (
-            <p className="mt-1 text-xs font-medium text-orange-300">
-              {updatesAvailable} update{updatesAvailable === 1 ? "" : "s"} available
-            </p>
-          ) : (
-            <p className="mt-1 text-xs text-white/30">Checked {lastCheckLabel}</p>
-          )}
+      <header className="urp-animate-fade-up flex shrink-0 items-center justify-between gap-4 px-6 pb-2 pt-safe-top">
+        <div className="min-w-0">
+          <h1 className="text-[2rem] font-semibold tracking-tight text-white">Races</h1>
+          {autoSyncing ? (
+            <p className="mt-1 text-sm text-white/35">Syncing…</p>
+          ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            disabled={checking}
-            onClick={() => void checkForUpdates().catch(() => undefined)}
-            className="min-h-[40px] rounded-full border border-white/15 bg-white/5 px-3 text-xs font-semibold text-white/85 disabled:opacity-50"
-          >
-            {checking ? "Checking…" : "Check for updates"}
-          </button>
-          <button type="button" onClick={onOpenAccount} className="shrink-0 rounded-full">
-            <Avatar
-              name={getDisplayName(user)}
-              imageUrl={getAvatarUrl(user)}
-              size="md"
-              variant="dark"
-            />
-          </button>
-        </div>
+        <button type="button" onClick={onOpenAccount} className="shrink-0 rounded-full">
+          <Avatar
+            name={getDisplayName(user)}
+            imageUrl={getAvatarUrl(user)}
+            size="md"
+            variant="dark"
+          />
+        </button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        {error ? <p className="mb-3 text-sm text-red-300">{error}</p> : null}
-        {syncError ? <p className="mb-3 text-sm text-red-300">{syncError}</p> : null}
-        {actionError ? <p className="mb-3 text-sm text-red-300">{actionError}</p> : null}
-        {checkMessage ? (
-          <p className="mb-3 rounded-xl bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">
-            {checkMessage}
-          </p>
-        ) : null}
-        {syncDebugLog.length > 0 ? (
-          <details className="mb-3 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-white/55">
-            <summary className="cursor-pointer font-medium text-white/70">Sync debug log</summary>
-            <ul className="mt-2 space-y-1">
-              {syncDebugLog.map((entry) => (
-                <li key={`${entry.at}-${entry.stage}-${entry.detail}`}>
-                  <span className="text-white/35">{entry.stage}</span> {entry.detail}
-                </li>
-              ))}
-            </ul>
-            {updateResults.some((entry) => entry.reason) ? (
-              <ul className="mt-2 space-y-1 border-t border-white/8 pt-2">
-                {updateResults.map((entry) => (
-                  <li key={entry.raceId}>
-                    {entry.name}: {entry.status}
-                    {entry.reason ? ` — ${entry.reason}` : ""}
-                    {entry.error ? ` — ${entry.error}` : ""}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </details>
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".gpx,application/gpx+xml,application/xml,text/xml"
+          className="hidden"
+          onChange={(event) => {
+            handleFileSelection(event.target.files);
+            event.target.value = "";
+          }}
+        />
+
+        <Button
+          variant="primary"
+          size="lg"
+          dark
+          className="mb-8 mt-4 w-full"
+          onClick={openImportPicker}
+        >
+          <ImportGpxIllustration className="h-5 w-5" />
+          Import GPX
+        </Button>
+
+        {!online ? (
+          <EmptyState
+            dark
+            className="mb-6 rounded-2xl bg-white/[0.02] py-10"
+            illustration={<NoInternetIllustration />}
+            title="You're offline"
+            description="Downloaded races still work. Import and cloud sync need an internet connection."
+          />
         ) : null}
 
+        {error ? <p className="mb-4 text-sm text-red-300">{error}</p> : null}
+        {actionError ? <p className="mb-4 text-sm text-red-300">{actionError}</p> : null}
+
         {loading ? (
-          <div className="space-y-3">
-            <RaceCardSkeleton />
-            <RaceCardSkeleton />
+          <div className="space-y-5">
+            <RaceCardSkeleton dark />
+            <RaceCardSkeleton dark />
           </div>
-        ) : races.length === 0 ? (
-          <EmptyRaces />
+        ) : sections.length === 0 ? (
+          <EmptyState
+            dark
+            illustration={<NoRacesIllustration />}
+            title="No races yet"
+            description="Import a GPX from Files, AirDrop, Komoot, or Safari — full analysis runs in the cloud."
+            action={
+              online && canImport ? (
+                <Button variant="primary" dark onClick={openImportPicker}>
+                  <ImportGpxIllustration className="h-5 w-5" />
+                  Import GPX
+                </Button>
+              ) : null
+            }
+          />
         ) : (
-          <ul className="space-y-3">
-            {races.map((race) => {
-              const syncStatus = getCompanionRaceSyncStatus({
-                ...race,
-                busy: busyRaceId === race.id,
-              });
-              return (
-                <li key={race.id}>
-                  <button
-                    type="button"
-                    disabled={busyRaceId === race.id}
-                    onClick={() => void handleOpenRace(race)}
-                    className="w-full rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-left transition hover:border-emerald-400/25 hover:bg-white/[0.05]"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-lg font-semibold text-white">{race.name}</p>
-                        <p className="mt-1 text-sm tabular-nums text-white/45">
-                          {race.distance_km
-                            ? `${Math.round(race.distance_km)} km`
-                            : "Not analyzed"}
-                          {race.elevation_gain_m
-                            ? ` · +${Math.round(race.elevation_gain_m).toLocaleString()} m`
-                            : ""}
-                        </p>
-                        {race.readiness_score != null ? (
-                          <div className="mt-2">
-                            <ReadinessScoreBadge score={race.readiness_score} dark />
-                          </div>
-                        ) : null}
-                        {busyRaceId === race.id && downloadProgress !== null ? (
-                          <div className="mt-3">
-                            <div className="mb-1 flex items-center justify-between text-[11px] text-sky-200/80">
-                              <span>Downloading race…</span>
-                              <span>{downloadProgress}%</span>
-                            </div>
-                            <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-                              <div
-                                className="h-full rounded-full bg-sky-400 transition-all duration-200"
-                                style={{ width: `${downloadProgress}%` }}
-                              />
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                      {syncStatus ? (
-                        <SyncStatusBadge status={syncStatus} variant="dark" className="shrink-0" />
-                      ) : null}
-                    </div>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <div className="space-y-5">
+            {sections.map((section) => (
+              <section key={section.id}>
+                <ul className="space-y-5">
+                  {section.races.map((race, index) => (
+                    <li key={race.id} className={dismissingRaceId === race.id ? "race-card-dismiss" : undefined}>
+                      <CompanionRaceCard
+                        race={race}
+                        busy={busyRaceId === race.id}
+                        downloadProgress={busyRaceId === race.id ? downloadProgress : null}
+                        staggerIndex={Math.min(index + 1, 4)}
+                        onOpen={() => void handleOpenRace(race)}
+                        onDelete={() => setDeleteTarget(race)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+          </div>
         )}
       </div>
+
+      {importFile ? (
+        <GpxImportFlow
+          file={importFile}
+          online={online}
+          onClose={() => setImportFile(null)}
+          onComplete={handleImportComplete}
+        />
+      ) : null}
+
+      <CompanionDeleteRaceDialog
+        open={Boolean(deleteTarget)}
+        raceName={deleteTarget?.name ?? ""}
+        busy={deleteBusy}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => void confirmDeleteRace()}
+      />
+
+      {syncToast ? (
+        <CompanionSyncToast
+          message={syncToast.message}
+          variant={syncToast.variant}
+          onDismiss={dismissSyncToast}
+          onRetry={syncToast.variant === "error" ? retrySync : undefined}
+        />
+      ) : null}
     </div>
   );
 }

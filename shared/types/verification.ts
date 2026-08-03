@@ -27,6 +27,8 @@ export interface CompanionVerificationSubmission {
   id: string;
   raceId: string;
   zoneId: number;
+  /** Permanent POI identity when available. */
+  poiId?: string;
   stopName: string;
   submittedAt: string;
   source: "companion";

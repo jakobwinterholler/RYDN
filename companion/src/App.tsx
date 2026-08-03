@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@shared/auth/AuthProvider";
+import { cloudSyncUnavailableUserMessage } from "@shared/companion/userFacingErrors";
 import { getAvatarUrl, getDisplayName } from "@shared/auth/profile";
 import type { CompanionBundle, CompanionStop } from "@shared/types/sync";
 import { Avatar, SessionRestoreScreen, SigningInScreen } from "@shared/ui/AuthScreens";
@@ -9,15 +10,24 @@ import BottomNav, { type CompanionTab } from "./components/BottomNav";
 import AppUpdateBanner from "./components/AppUpdateBanner";
 import ExecutionHeader from "./components/ExecutionHeader";
 import RaceDataBanner from "./components/RaceDataBanner";
+import RaceWorkspaceHeader from "./components/RaceWorkspaceHeader";
 import AccountScreen from "./screens/AccountScreen";
 import HomeScreen from "./screens/HomeScreen";
-import MapScreen from "./screens/MapScreen";
+import RaceScreen from "./screens/RaceScreen";
 import ResupplyScreen from "./screens/ResupplyScreen";
 import ShareScreen from "./screens/ShareScreen";
 import VerificationScreen from "./screens/VerificationScreen";
 import WelcomeScreen from "./screens/WelcomeScreen";
 import { saveCompanionBundle } from "./db";
+import { liveBundleRef } from "./lib/liveBundleRef";
+import { clearCompanionDeepLinkParams, parseCompanionDeepLink } from "./lib/deepLink";
+import {
+  consumeSharedGpxImport,
+  queueIncomingGpxFile,
+  registerLaunchQueueConsumer,
+} from "./lib/incomingGpx";
 import { useRaceGps } from "./lib/useRaceGps";
+import { useWakeLock } from "./lib/useWakeLock";
 import { useVerificationSync } from "./sync/useVerificationSync";
 
 type AppView = "welcome" | "home" | "race";
@@ -30,8 +40,29 @@ export default function App() {
   const [bundle, setBundle] = useState<CompanionBundle | null>(null);
   const [bootLoading, setBootLoading] = useState(true);
   const [tab, setTab] = useState<CompanionTab>("map");
+  const [autoExportDevice, setAutoExportDevice] = useState<"coros" | "garmin" | "wahoo" | null>(
+    null,
+  );
+  const [deepLink, setDeepLink] = useState<{
+    raceId: string;
+    tab?: CompanionTab;
+    autoExport?: "coros" | "garmin" | "wahoo";
+  } | null>(() => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    const link = parseCompanionDeepLink(window.location.search);
+    if (!link.raceId) {
+      return null;
+    }
+    return {
+      raceId: link.raceId,
+      tab: link.tab ?? undefined,
+      autoExport: link.autoExport ?? undefined,
+    };
+  });
   const [selectedStop, setSelectedStop] = useState<CompanionStop | null>(null);
-  const [showUnverified, setShowUnverified] = useState(false);
+  const [showUnverified, setShowUnverified] = useState(true);
   const [followGps, setFollowGps] = useState(true);
   const [online, setOnline] = useState(
     typeof navigator !== "undefined" ? navigator.onLine : true,
@@ -42,13 +73,19 @@ export default function App() {
     bundle,
   });
 
+  useWakeLock(view === "race" && bundle !== null);
+
   const updateBundle = useCallback((next: CompanionBundle) => {
     setBundle(next);
-    void saveCompanionBundle(next);
+    void saveCompanionBundle(next).catch((err) => {
+      console.error("Failed to persist companion bundle:", err);
+    });
   }, []);
 
+  liveBundleRef.current = bundle;
+
   useVerificationSync(online, user?.id ?? null, {
-    bundle,
+    getBundle: () => liveBundleRef.current,
     onBundleUpdate: updateBundle,
   });
 
@@ -82,7 +119,63 @@ export default function App() {
     setBootLoading(false);
   }, [isRestoring, session]);
 
+  useEffect(() => {
+    registerLaunchQueueConsumer();
+    void consumeSharedGpxImport().then((file) => {
+      if (!file) {
+        return;
+      }
+      queueIncomingGpxFile(file);
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("import");
+        url.searchParams.delete("shared");
+        url.searchParams.delete("url");
+        url.searchParams.delete("text");
+        url.searchParams.delete("title");
+        window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const link = parseCompanionDeepLink(window.location.search);
+    if (link.raceId) {
+      setDeepLink({
+        raceId: link.raceId,
+        tab: link.tab ?? undefined,
+        autoExport: link.autoExport ?? undefined,
+      });
+    }
+    if (link.tab) {
+      setTab(link.tab);
+    }
+    if (link.autoExport) {
+      setAutoExportDevice(link.autoExport);
+    }
+    if (link.raceId || link.tab || link.autoExport) {
+      clearCompanionDeepLinkParams();
+    }
+  }, []);
+
+  function openRace(
+    next: CompanionBundle,
+    options?: { tab?: CompanionTab; autoExport?: "coros" | "garmin" | "wahoo" },
+  ) {
+    setBundle(next);
+    setSelectedStop(null);
+    setTab(options?.tab ?? "map");
+    if (options?.autoExport) {
+      setAutoExportDevice(options.autoExport);
+    }
+    setView("race");
+  }
+
   const clearRace = useCallback(async () => {
+    setAutoExportDevice(null);
     setBundle(null);
     setSelectedStop(null);
     setTab("map");
@@ -119,15 +212,6 @@ export default function App() {
     ],
   );
 
-  const headerTrailing = bundle ? (
-    <button
-      type="button"
-      onClick={() => void clearRace()}
-      className="min-h-[44px] rounded-xl px-3 py-2 text-sm font-medium text-white/55 hover:bg-white/10 hover:text-white"
-    >
-      Races
-    </button>
-  ) : null;
 
   if (isRestoring || bootLoading) {
     return <SessionRestoreScreen variant="dark" />;
@@ -140,7 +224,7 @@ export default function App() {
   if (!configured) {
     return (
       <div className="flex h-full items-center justify-center px-4 text-center text-sm text-red-300">
-        Cloud sync is not configured for this build.
+        {cloudSyncUnavailableUserMessage()}
       </div>
     );
   }
@@ -167,67 +251,84 @@ export default function App() {
               <Avatar name={displayName} imageUrl={avatarUrl} size="md" variant="dark" />
             </div>
           </header>
-          <AccountScreen embedded />
+          <AccountScreen />
         </div>
       );
     }
 
     return (
-      <HomeScreen
-        onOpenAccount={() => setHomeTab("account")}
-        onOpenRace={(next) => {
-          setBundle(next);
-          setSelectedStop(null);
-          setTab("map");
-          setView("race");
-        }}
-      />
+      <div key="home" className="urp-animate-fade-up">
+        <HomeScreen
+          onOpenAccount={() => setHomeTab("account")}
+          onOpenRace={openRace}
+          deepLink={deepLink}
+        />
+      </div>
     );
   }
 
   if (!bundle || !contextValue) {
     return (
-      <HomeScreen
-        onOpenAccount={() => setHomeTab("account")}
-        onOpenRace={(next) => {
-          setBundle(next);
-          setSelectedStop(null);
-          setTab("map");
-          setView("race");
-        }}
-      />
+      <div key="home-fallback" className="urp-animate-fade-up">
+        <HomeScreen
+          onOpenAccount={() => setHomeTab("account")}
+          onOpenRace={openRace}
+          deepLink={deepLink}
+        />
+      </div>
     );
   }
 
-  const showExecutionHeader = tab !== "account" && tab !== "verify" && tab !== "share";
+  const showExecutionHeader = tab === "map" || tab === "resupply";
   const showRaceDataBanner = tab === "map" || tab === "resupply" || tab === "share";
 
   return (
     <CompanionContext.Provider value={contextValue}>
-      <div className="flex h-full min-h-0 flex-col bg-[#0a0a0a]">
+      <div key="race" className="urp-animate-workspace-enter flex h-full min-h-0 flex-col bg-[#0a0a0a]">
         <AppUpdateBanner />
-        {showExecutionHeader ? (
-          <ExecutionHeader trailing={headerTrailing} />
-        ) : null}
+        <RaceWorkspaceHeader
+          raceName={bundle.race.name}
+          onBackToLibrary={() => void clearRace()}
+        />
+        {showExecutionHeader ? <ExecutionHeader /> : null}
         {showRaceDataBanner ? (
           <RaceDataBanner bundle={bundle} onBundleUpdate={updateBundle} />
         ) : null}
 
-        <main className="min-h-0 flex-1 animate-tab-in" key={tab}>
-          {tab === "map" ? (
-            <MapScreen />
-          ) : tab === "resupply" ? (
-            <ResupplyScreen />
-          ) : tab === "verify" ? (
-            <VerificationScreen />
-          ) : tab === "share" ? (
-            <ShareScreen />
-          ) : (
-            <AccountScreen />
-          )}
+        <main className="relative min-h-0 flex-1">
+          {/* The map stays mounted for the entire race session so returning to it is
+              instant — no remount, no tile reload, no white frame. We hide it with
+              `visibility` (not display:none) so its layout box, and therefore the
+              MapLibre canvas size, is preserved while another tab is on top. GPS,
+              zoom/bearing/pitch, route rendering and the selected stop all persist. */}
+          <div
+            className="absolute inset-0"
+            style={{ visibility: tab === "map" ? "visible" : "hidden" }}
+            aria-hidden={tab !== "map"}
+          >
+            <RaceScreen active={tab === "map"} />
+          </div>
+          {tab !== "map" ? (
+            <div key={tab} className="urp-animate-fade-in absolute inset-0 bg-[#0a0a0a]">
+              {tab === "resupply" ? (
+                <ResupplyScreen />
+              ) : tab === "verify" ? (
+                <VerificationScreen />
+              ) : (
+                <ShareScreen
+                  autoExportDevice={autoExportDevice}
+                  onAutoExportHandled={() => setAutoExportDevice(null)}
+                />
+              )}
+            </div>
+          ) : null}
         </main>
 
-        <BottomNav active={tab} onChange={setTab} />
+        <BottomNav
+          active={tab}
+          onChange={setTab}
+          onBackToLibrary={() => void clearRace()}
+        />
       </div>
     </CompanionContext.Provider>
   );

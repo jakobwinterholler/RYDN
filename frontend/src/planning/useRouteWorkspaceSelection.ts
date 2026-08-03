@@ -33,6 +33,7 @@ export interface RouteWorkspaceSelection {
   handleSelectPoi: (selection: StopSelection) => void;
   handleSelectKmRange: (range: KmRangeSelection) => void;
   handleFocusKmRangeOnMap: () => void;
+  handleFocusZoneOnMap: (zoneId: number) => void;
   mapFocusKmRange: KmRangeSelection | null;
   handleCloseDetail: () => void;
   handleClearEntitySelection: () => void;
@@ -169,6 +170,26 @@ export function useRouteWorkspaceSelection(
     }
   }, [kmRange]);
 
+  const handleFocusZoneOnMap = useCallback(
+    (zoneId: number) => {
+      const zone = presentedZones.find((item) => item.zone_id === zoneId);
+      if (!zone) {
+        return;
+      }
+      const segment = resolveResupplySegmentEndingAtZone(zone, presentedZones, verifiedStops);
+      const range = kmRangeFromSegment(segment);
+      setSelectedClimbId(null);
+      setSelectedCandidateId(null);
+      setKmRange(range);
+      setSelectedZoneId(zoneId);
+      setDetailSelection({ kind: "zone", zone });
+      setHoveredZoneId(null);
+      setMapFocusKmRange({ ...range });
+      jumpToKm(zone.distance_along_km);
+    },
+    [presentedZones, verifiedStops, jumpToKm],
+  );
+
   const handleCloseDetail = useCallback(() => {
     setDetailSelection(null);
     setSelectedZoneId(null);
@@ -216,6 +237,7 @@ export function useRouteWorkspaceSelection(
     handleSelectPoi,
     handleSelectKmRange,
     handleFocusKmRangeOnMap,
+    handleFocusZoneOnMap,
     handleCloseDetail,
     handleClearEntitySelection,
     setActiveIndex,

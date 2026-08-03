@@ -16,7 +16,13 @@ export function logSyncDebug(stage: string, detail: string, data?: unknown): voi
     data,
   };
   entries = [...entries.slice(-(MAX_ENTRIES - 1)), entry];
-  if (typeof console !== "undefined" && console.info) {
+  // Keep the in-memory ring buffer always (powers the in-app sync log), but only
+  // mirror to the console in dev so a rider's console stays quiet in production.
+  if (
+    (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true &&
+    typeof console !== "undefined" &&
+    console.info
+  ) {
     console.info(`[sync] ${stage}: ${detail}`, data ?? "");
   }
 }

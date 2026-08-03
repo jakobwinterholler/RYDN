@@ -67,6 +67,26 @@ export default function DeveloperDiagnostics({
       )}
 
       {settings && (
+        <section className="space-y-3 rounded-2xl bg-card p-5 shadow-soft">
+          <h3 className="text-sm font-semibold text-ink">Developer mode</h3>
+          <p className="text-sm text-muted">
+            Enable debug tools on the Route page (POI debug, climb debug, map evaluation).
+          </p>
+          <label className="flex items-center gap-3 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={settings.planning.developer_mode_enabled ?? false}
+              onChange={(event) =>
+                void updatePlanning({ developer_mode_enabled: event.target.checked })
+              }
+              className="h-4 w-4 rounded border-line"
+            />
+            Show developer tools in Route view
+          </label>
+        </section>
+      )}
+
+      {settings && (
         <section className="space-y-3">
           <h3 className="text-sm font-semibold text-ink">Climb detection sensitivity</h3>
           <p className="text-sm text-muted">

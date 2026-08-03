@@ -1,10 +1,12 @@
-import { apiFetch, getAuthAccessToken } from "../api/authFetch";
+import { apiFetch } from "../api/authFetch";
+import { getFreshAccessToken } from "@shared/auth/accessToken";
+import { fetchSyncRaces, pushRaceNow } from "@shared/api/sync";
+import { addPendingSyncRace, removePendingSyncRace } from "@shared/sync/pendingSync";
+import { isDesktopCloudCurrent, resolveCloudRaceForLocal } from "@shared/sync/raceVersion";
 import type {
   AnalysisStreamEvent,
   ProgressStepDefinition,
 } from "../progress";
-import { pushRaceNow } from "@shared/api/sync";
-import { addPendingSyncRace, removePendingSyncRace } from "@shared/sync/pendingSync";
 import type { PoiPlanningProfile, RoadbookResult } from "../api";
 import { getSyncUserId } from "../sync/syncUserContext";
 import { raceOpenTrace } from "../debug/raceOpenTrace";
@@ -48,6 +50,7 @@ export interface RaceSummary {
   distance_km: number | null;
   elevation_gain_m: number | null;
   climb_count: number | null;
+  gpx_fingerprint?: string | null;
   has_analysis: boolean;
   preparation_completed: number;
   preparation_total: number;
@@ -165,7 +168,7 @@ export async function updateRacePreparation(
   raceId: string,
   payload: {
     progress?: Partial<Record<PreparationMilestoneId, boolean>>;
-    verifiedStops?: Record<string, VerifiedStopRecord>;
+    verifiedStops?: Record<string, VerifiedStopRecord | { _delete: true }>;
   },
 ): Promise<{ race: RaceSummary; preparation: RaceDetail["preparation"] }> {
   const body: {
@@ -178,28 +181,33 @@ export async function updateRacePreparation(
   }
   if (payload.verifiedStops) {
     body.verified_stops = Object.fromEntries(
-      Object.entries(payload.verifiedStops).map(([key, record]) => [
-        key,
-        {
-          status: record.status,
-          reject_reason: record.rejectReason,
-          reject_notes: record.rejectNotes,
-          feedback_context: record.feedbackContext
-            ? {
-                zone_id: record.feedbackContext.zoneId,
-                poi_category: record.feedbackContext.poiCategory,
-                category_key: record.feedbackContext.categoryKey,
-                distance_along_km: record.feedbackContext.distanceAlongKm,
-                distance_off_route_m: record.feedbackContext.distanceOffRouteM,
-                fuel_shop_confidence: record.feedbackContext.fuelShopConfidence,
-                poi_name: record.feedbackContext.poiName,
-                algorithm_targets: record.feedbackContext.algorithmTargets,
-              }
-            : undefined,
-          poi_key: record.poiKey,
-          updated_at: record.updatedAt,
-        },
-      ]),
+      Object.entries(payload.verifiedStops).map(([key, record]) => {
+        if ("_delete" in record) {
+          return [key, { _delete: true }];
+        }
+        return [
+          key,
+          {
+            status: record.status,
+            reject_reason: record.rejectReason,
+            reject_notes: record.rejectNotes,
+            feedback_context: record.feedbackContext
+              ? {
+                  zone_id: record.feedbackContext.zoneId,
+                  poi_category: record.feedbackContext.poiCategory,
+                  category_key: record.feedbackContext.categoryKey,
+                  distance_along_km: record.feedbackContext.distanceAlongKm,
+                  distance_off_route_m: record.feedbackContext.distanceOffRouteM,
+                  fuel_shop_confidence: record.feedbackContext.fuelShopConfidence,
+                  poi_name: record.feedbackContext.poiName,
+                  algorithm_targets: record.feedbackContext.algorithmTargets,
+                }
+              : undefined,
+            poi_key: record.poiKey,
+            updated_at: record.updatedAt,
+          },
+        ];
+      }),
     );
   }
 
@@ -220,6 +228,58 @@ export async function updateRacePreparation(
       verified_stops: parseVerifiedStops(result.preparation.verified_stops),
     },
   };
+}
+
+export async function promoteDiscoveredStop(
+  raceId: string,
+  payload: {
+    suggestedStop: import("../api").SuggestedStop;
+    verifiedStop?: { zoneId: number; record: VerifiedStopRecord };
+  },
+): Promise<import("../api").RoadbookResult> {
+  const body: {
+    suggested_stop: Record<string, unknown>;
+    verified_stop?: Record<string, unknown>;
+  } = {
+    suggested_stop: {
+      zone_id: payload.suggestedStop.zone_id,
+      osm_id: payload.suggestedStop.osm_id,
+      osm_type: payload.suggestedStop.osm_type,
+      name: payload.suggestedStop.name,
+      poi_category: payload.suggestedStop.poi_category,
+      category_key: payload.suggestedStop.category_key,
+      category_label: payload.suggestedStop.category_label,
+      distance_along_km: payload.suggestedStop.distance_along_km,
+      distance_off_route_m: payload.suggestedStop.distance_off_route_m,
+      lat: payload.suggestedStop.lat,
+      lon: payload.suggestedStop.lon,
+      score: payload.suggestedStop.score,
+      reason: payload.suggestedStop.reason,
+    },
+  };
+
+  if (payload.verifiedStop) {
+    const { zoneId, record } = payload.verifiedStop;
+    body.verified_stop = {
+      zone_id: zoneId,
+      record: {
+        status: record.status,
+        poi_key: record.poiKey,
+        updated_at: record.updatedAt,
+      },
+    };
+  }
+
+  const response = await apiFetch(`/api/races/${raceId}/promote-discovery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response, "Failed to promote discovered stop."));
+  }
+  const result = await response.json();
+  return result.roadbook as import("../api").RoadbookResult;
 }
 
 function parseVerifiedStops(
@@ -354,19 +414,28 @@ export async function analyzeRaceStream(
     throw new Error("Analysis finished without a result.");
   }
 
-  const token = getAuthAccessToken();
-  if (token) {
+  const userId = getSyncUserId();
+  const token = await getFreshAccessToken();
+  if (userId) {
     try {
-      await pushRaceNow(token, raceId);
-      const userId = getSyncUserId();
-      if (userId) {
-        removePendingSyncRace(userId, raceId);
-      }
+      await pushRaceNow(token, raceId, userId);
+      removePendingSyncRace(userId, raceId);
     } catch (err) {
-      const userId = getSyncUserId();
-      if (userId) {
-        addPendingSyncRace(userId, raceId);
+      try {
+        const [localRaces, cloudRaces] = await Promise.all([
+          fetchRaces(),
+          fetchSyncRaces(token ?? ""),
+        ]);
+        const local = localRaces.find((race) => race.id === raceId);
+        const cloud = local ? resolveCloudRaceForLocal(local, cloudRaces) : undefined;
+        if (local && isDesktopCloudCurrent(local, cloud)) {
+          removePendingSyncRace(userId, raceId);
+          return result;
+        }
+      } catch {
+        // Ignore reconcile errors — fall through to pending + user message.
       }
+      addPendingSyncRace(userId, raceId);
       const message = err instanceof Error ? err.message : "Cloud upload failed.";
       throw new Error(`Analysis saved locally but cloud upload failed: ${message}`);
     }
@@ -616,6 +685,7 @@ export interface RaceGpsExportQuery {
   verifiedOnly: boolean;
   includeHighConfidence: boolean;
   includeAlternatives: boolean;
+  includeOptional: boolean;
 }
 
 export function raceGpsExportEndpoint(raceId: string, options: RaceGpsExportQuery): string {
@@ -624,8 +694,20 @@ export function raceGpsExportEndpoint(raceId: string, options: RaceGpsExportQuer
     verified_only: options.verifiedOnly ? "true" : "false",
     include_high_confidence: options.includeHighConfidence ? "true" : "false",
     include_alternatives: options.includeAlternatives ? "true" : "false",
+    include_optional: options.includeOptional ? "true" : "false",
   });
   return `/api/races/${raceId}/exports/gps-gpx?${params.toString()}`;
+}
+
+export function raceGpsExportPreviewEndpoint(raceId: string, options: RaceGpsExportQuery): string {
+  const params = new URLSearchParams({
+    device: options.device,
+    verified_only: options.verifiedOnly ? "true" : "false",
+    include_high_confidence: options.includeHighConfidence ? "true" : "false",
+    include_alternatives: options.includeAlternatives ? "true" : "false",
+    include_optional: options.includeOptional ? "true" : "false",
+  });
+  return `/api/races/${raceId}/exports/gps-gpx/preview?${params.toString()}`;
 }
 
 export function formatRaceDate(iso: string): string {

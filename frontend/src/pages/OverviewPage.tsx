@@ -2,19 +2,17 @@ import { useMemo } from "react";
 import type { AppTab, RoadbookResult } from "../api";
 import { useRenderTrace } from "../debug/raceOpenTrace";
 import DashboardBriefingCards from "../components/dashboard/DashboardBriefingCards";
-import DashboardKeyClimbsSection from "../components/dashboard/DashboardKeyClimbsSection";
 import DashboardRouteOverviewMap from "../components/dashboard/DashboardRouteOverviewMap";
 import { useHighlightHoverSync } from "../components/dashboard/useHighlightHoverSync";
-import ExportSection from "../components/ExportSection";
 import { formatKm } from "../components/routeInsights";
 import { usePlanning } from "../planning/PlanningContext";
 import { analyzeClimbs, selectKeyClimbs } from "../planning/climbAnalysis";
-import { briefingHighlightIntent, selectClimbIntent } from "../planning/planningIntent";
+import { briefingHighlightIntent } from "../planning/planningIntent";
 import {
   buildRouteHighlights,
   dashboardOverviewHighlights,
 } from "../planning/routeHighlights";
-import { presentZones } from "../planning/zonePresentation";
+import { presentSuggestedStops } from "../planning/suggestedStops";
 import CompanionVerificationReview from "../components/verification/CompanionVerificationReview";
 import { PreparationProgress } from "../components/races/RaceCard";
 import { useRace } from "../races/RaceContext";
@@ -95,7 +93,7 @@ export default function DashboardPage({ result, raceId, onNavigate }: DashboardP
   useRenderTrace("render.dashboard.start", "render.dashboard.done");
   const { activeRace, refreshRaces, verifiedStops } = useRace();
   const { settings } = useSettings();
-  const { timeMode, zoneDensity, setPlanningIntent } = usePlanning();
+  const { timeMode, setPlanningIntent } = usePlanning();
   const { hoveredHighlightId, setHoveredHighlightId } = useHighlightHoverSync();
 
   const dashboardStats = useMemo(() => {
@@ -112,15 +110,8 @@ export default function DashboardPage({ result, raceId, onNavigate }: DashboardP
   }, [result, settings?.planning, verifiedStops]);
 
   const presentedZones = useMemo(
-    () =>
-      presentZones(
-        result.resupply_zones,
-        timeMode,
-        zoneDensity,
-        result.summary.distance_km,
-        result.route,
-      ),
-    [result.resupply_zones, timeMode, zoneDensity, result.summary.distance_km, result.route],
+    () => presentSuggestedStops(result, timeMode),
+    [result, timeMode],
   );
 
   const highlights = useMemo(
@@ -150,8 +141,8 @@ export default function DashboardPage({ result, raceId, onNavigate }: DashboardP
   );
 
   const stopConfidence = useMemo(
-    () => stopConfidenceInputs(result.resupply_zones, verifiedStops),
-    [result.resupply_zones, verifiedStops],
+    () => stopConfidenceInputs(presentedZones, verifiedStops),
+    [presentedZones, verifiedStops],
   );
 
   const hardestClimb = keyClimbs[0] ?? null;
@@ -159,15 +150,6 @@ export default function DashboardPage({ result, raceId, onNavigate }: DashboardP
   function handleSelectHighlight(highlight: (typeof highlights)[number]) {
     setPlanningIntent(briefingHighlightIntent(highlight.id, "route"));
     onNavigate("route");
-  }
-
-  function handleSelectClimb(climbId: string) {
-    setPlanningIntent(selectClimbIntent(climbId, "route"));
-    onNavigate("route");
-  }
-
-  function handleViewAllClimbs() {
-    onNavigate("climbs");
   }
 
   return (
@@ -257,15 +239,6 @@ export default function DashboardPage({ result, raceId, onNavigate }: DashboardP
         />
       </section>
 
-      <section className="mb-16 rounded-2xl bg-canvas/50 px-5 py-6 md:px-6">
-        <DashboardKeyClimbsSection
-          climbs={keyClimbs}
-          totalClimbCount={result.climbs.length}
-          onSelectClimb={handleSelectClimb}
-          onViewAllClimbs={handleViewAllClimbs}
-        />
-      </section>
-
       <section className="mb-16">
         <div className="rounded-2xl border border-accent/20 bg-accent/[0.04] p-5 shadow-card">
           <h2 className="text-sm font-medium text-ink">Build your trusted race plan</h2>
@@ -312,16 +285,6 @@ export default function DashboardPage({ result, raceId, onNavigate }: DashboardP
           </button>
         </div>
       </section>
-
-      <footer className="border-t border-line/60 pt-8">
-        <ExportSection
-          raceId={raceId}
-          raceName={activeRace?.name ?? "race"}
-          result={result}
-          verifiedStops={verifiedStops}
-          onExported={() => void refreshRaces()}
-        />
-      </footer>
     </div>
   );
 }

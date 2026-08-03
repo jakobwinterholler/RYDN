@@ -1,3 +1,5 @@
+@import "../../shared/ui/design/motion.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -32,6 +34,15 @@ body {
     padding-top: max(12px, env(safe-area-inset-top, 0px));
   }
 
+  .pb-safe-bottom {
+    padding-bottom: max(0px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .px-safe-x {
+    padding-left: max(0px, env(safe-area-inset-left, 0px));
+    padding-right: max(0px, env(safe-area-inset-right, 0px));
+  }
+
   @media (display-mode: standalone) {
     .pt-safe-top {
       padding-top: max(54px, env(safe-area-inset-top, 0px));
@@ -40,6 +51,25 @@ body {
 
   .touch-target {
     @apply min-h-[44px] min-w-[44px];
+  }
+
+  .swipe-race-card__content {
+    touch-action: pan-y;
+  }
+
+  .race-card-dismiss {
+    animation: race-card-dismiss 0.28s ease-in forwards;
+    overflow: hidden;
+  }
+
+  @keyframes race-card-dismiss {
+    to {
+      opacity: 0;
+      transform: translateX(-24px);
+      max-height: 0;
+      margin-top: 0;
+      margin-bottom: 0;
+    }
   }
 
   .animate-fade-in {
@@ -72,6 +102,32 @@ body {
     }
   }
 
+  @keyframes discover-marker-in {
+    from {
+      opacity: 0;
+      transform: scale(0.4);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .discover-marker {
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  .discover-marker-pin {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: discover-marker-in 0.45s ease-out both;
+  }
+
   @keyframes gps-pulse {
     0%,
     100% {
@@ -82,30 +138,6 @@ body {
       transform: scale(1.35);
       opacity: 0.08;
     }
-  }
-
-  .stop-detail-sheet {
-    @apply fixed inset-0 z-50 flex flex-col;
-  }
-
-  .stop-detail-sheet__backdrop {
-    @apply absolute inset-0 bg-black/80;
-  }
-
-  .stop-detail-sheet__panel {
-    @apply relative mt-auto flex max-h-[100dvh] min-h-[92dvh] flex-col rounded-t-3xl border border-white/10 bg-[#0f0f0f];
-  }
-
-  .stop-detail-sheet__handle {
-    @apply mx-auto mt-3 h-1 w-10 shrink-0 rounded-full bg-white/20;
-  }
-
-  .stop-detail-sheet__content {
-    @apply min-h-0 flex-1 overflow-y-auto px-5 pb-4 pt-10;
-  }
-
-  .stop-detail-sheet__footer {
-    @apply shrink-0 border-t border-white/10 px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))];
   }
 
   .verification-flow-overlay {
@@ -182,6 +214,46 @@ body {
 
   .verification-primary-btn--skip {
     @apply border border-white/15 bg-white/[0.08] text-white/80;
+  }
+
+  .poi-sheet__title {
+    letter-spacing: -0.02em;
+  }
+
+  .poi-sheet__meta dt {
+    @apply min-h-[14px];
+  }
+
+  .poi-sheet__meta dd {
+    @apply min-h-[20px];
+  }
+
+  .poi-quick-actions {
+    @apply grid grid-cols-2 gap-2;
+  }
+
+  .poi-quick-actions__btn {
+    @apply flex min-h-[56px] items-center justify-center rounded-2xl px-3 py-3.5 text-center text-base font-bold transition active:scale-[0.97];
+  }
+
+  .poi-quick-actions__btn--verify {
+    @apply bg-emerald-500 text-white shadow-lg shadow-emerald-500/25;
+  }
+
+  .poi-quick-actions__btn--skip {
+    @apply border border-white/15 bg-white/[0.08] text-white/85;
+  }
+
+  .poi-quick-actions__btn--maps {
+    @apply border border-white/15 bg-white/[0.06] text-white/90;
+  }
+
+  .poi-quick-actions__btn--streetview {
+    @apply bg-sky-500 text-white shadow-lg shadow-sky-500/20;
+  }
+
+  .poi-quick-actions__btn--disabled {
+    @apply border border-white/10 bg-white/[0.03] text-sm font-semibold text-white/35;
   }
 
   .verification-swipe-card__photo {

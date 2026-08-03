@@ -25,7 +25,11 @@ const SOLO_STOP_RADIUS_KM = 30;
 const AREA_CLUSTER_KM = 12;
 
 export function isStopDecided(record: VerifiedStopRecord | undefined): boolean {
-  return record?.status === "verified" || record?.status === "rejected";
+  return (
+    record?.status === "verified" ||
+    record?.status === "rejected" ||
+    record?.status === "deferred"
+  );
 }
 
 export function isStopPending(
@@ -243,7 +247,7 @@ export function nextPendingIndex(
 export function verificationProgress(
   planningHubs: ResupplyZone[],
   verifiedStops: Record<string, VerifiedStopRecord>,
-): { verified: number; total: number; remaining: number; estimatedMinutes: number } {
+): { verified: number; total: number; remaining: number; estimatedMinutes: number; verifiedPercent: number } {
   const total = planningHubs.length;
   let verified = 0;
   let remaining = 0;
@@ -251,12 +255,13 @@ export function verificationProgress(
     const record = verifiedStops[verifiedStopKey(zone.zone_id)];
     if (record?.status === "verified") {
       verified += 1;
-    } else if (record?.status !== "rejected") {
+    } else if (!isStopDecided(record)) {
       remaining += 1;
     }
   }
   const estimatedMinutes = Math.max(1, Math.ceil((remaining * 25) / 60));
-  return { verified, total, remaining, estimatedMinutes };
+  const verifiedPercent = total > 0 ? Math.round((verified / total) * 100) : 0;
+  return { verified, total, remaining, estimatedMinutes, verifiedPercent };
 }
 
 export function allStopsReviewed(

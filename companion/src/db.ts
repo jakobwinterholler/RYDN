@@ -1,5 +1,8 @@
 import type { CompanionBundle, SyncRaceSummary } from "@shared/types/sync";
+import { migrateCachedBundle } from "@shared/sync/bundleMigration";
 import { validateCompanionBundle, verifyStoredChecksum } from "@shared/sync/bundleValidation";
+import { computeBundleChecksumSync } from "@shared/sync/bundleChecksum";
+import { deleteVerificationsForRace } from "./lib/verificationQueue";
 
 const DB_NAME = "race-companion";
 const DB_VERSION = 5;
@@ -13,10 +16,26 @@ const RESUPPLY_FILTER_KEY = "companion-resupply-filter";
 export interface StoredRaceListItem extends SyncRaceSummary {
   downloadedRevision: number | null;
   downloadedChecksum: string | null;
+  downloadedClimbCount?: number | null;
   offlineReady: boolean;
+  /** Where this race entry came from — cloud sync or on-device import. */
+  source?: "cloud" | "local-import";
+  lastOpenedAt?: string | null;
+  verified_percent?: number | null;
+  verified_stops_count?: number | null;
 }
 
-function openDb(): Promise<IDBDatabase> {
+function computeVerifiedPercent(bundle: CompanionBundle): number | null {
+  const verified = bundle.dashboardStats?.verifiedStops ?? 0;
+  const unverified = bundle.dashboardStats?.unverifiedStops ?? 0;
+  const total = verified + unverified;
+  if (total <= 0) {
+    return 0;
+  }
+  return Math.round((verified / total) * 100);
+}
+
+export function openCompanionDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
@@ -45,7 +64,7 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 export async function saveRaceList(races: StoredRaceListItem[]): Promise<void> {
-  const db = await openDb();
+  const db = await openCompanionDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(LIST_STORE, "readwrite");
     const store = tx.objectStore(LIST_STORE);
@@ -60,7 +79,7 @@ export async function saveRaceList(races: StoredRaceListItem[]): Promise<void> {
 }
 
 export async function loadRaceList(): Promise<StoredRaceListItem[]> {
-  const db = await openDb();
+  const db = await openCompanionDb();
   const races = await new Promise<StoredRaceListItem[]>((resolve, reject) => {
     const tx = db.transaction(LIST_STORE, "readonly");
     const request = tx.objectStore(LIST_STORE).getAll();
@@ -79,59 +98,97 @@ export async function loadRaceList(): Promise<StoredRaceListItem[]> {
   );
 }
 
-export async function saveCompanionBundle(bundle: CompanionBundle): Promise<void> {
-  const validation = validateCompanionBundle(bundle);
+export async function saveCompanionBundle(
+  bundle: CompanionBundle,
+  options?: {
+    /** Set when replacing cache from a cloud download (before local verification patches). */
+    syncFromCloud?: {
+      revision: number;
+      checksum: string | null;
+      climbCount: number | null;
+    };
+  },
+): Promise<void> {
+  const prepared = migrateCachedBundle(bundle) ?? bundle;
+  const validation = validateCompanionBundle(prepared);
   if (!validation.valid) {
     throw new Error(`Invalid bundle: ${validation.errors.join(", ")}`);
   }
-  if (!verifyStoredChecksum(bundle)) {
+  if (!prepared.bundleChecksum) {
+    prepared.bundleChecksum = computeBundleChecksumSync(prepared);
+  }
+  if (!verifyStoredChecksum(prepared)) {
+    prepared.bundleChecksum = computeBundleChecksumSync(prepared);
+  }
+  if (!verifyStoredChecksum(prepared)) {
     throw new Error("Bundle checksum mismatch — refusing to cache stale data.");
   }
 
-  const db = await openDb();
+  const db = await openCompanionDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction([BUNDLE_STORE, LIST_STORE], "readwrite");
-    tx.objectStore(BUNDLE_STORE).put(bundle);
+    tx.objectStore(BUNDLE_STORE).put(prepared);
 
     const listStore = tx.objectStore(LIST_STORE);
-    const getRequest = listStore.get(bundle.race.id);
+    const getRequest = listStore.get(prepared.race.id);
     getRequest.onsuccess = () => {
       const existing = getRequest.result as StoredRaceListItem | undefined;
-      const revision = bundle.revision ?? bundle.bundle_version ?? existing?.companion_revision ?? 0;
-      const checksum = bundle.bundleChecksum ?? null;
+      const revision = prepared.revision ?? prepared.bundle_version ?? existing?.companion_revision ?? 0;
+      const checksum = prepared.bundleChecksum ?? null;
+      const climbCount = prepared.climbs?.length ?? null;
+      const downloadedRevision =
+        options?.syncFromCloud?.revision ??
+        existing?.downloadedRevision ??
+        revision;
+      const downloadedChecksum =
+        options?.syncFromCloud?.checksum ??
+        existing?.downloadedChecksum ??
+        checksum;
+      const downloadedClimbCount =
+        options?.syncFromCloud?.climbCount ??
+        existing?.downloadedClimbCount ??
+        climbCount;
       if (existing) {
         listStore.put({
           ...existing,
-          downloadedRevision: revision,
-          downloadedChecksum: checksum,
+          downloadedRevision,
+          downloadedChecksum,
+          downloadedClimbCount,
           offlineReady: true,
-          readiness_score: bundle.dashboardStats?.readinessScore ?? existing.readiness_score ?? null,
+          readiness_score: prepared.dashboardStats?.readinessScore ?? existing.readiness_score ?? null,
+          verified_percent: computeVerifiedPercent(prepared),
+          verified_stops_count: prepared.dashboardStats?.verifiedStops ?? null,
         });
         return;
       }
       listStore.put({
-        id: bundle.race.id,
-        name: bundle.race.name,
-        distance_km: bundle.race.distanceKm,
-        elevation_gain_m: bundle.race.elevationGainM,
+        id: prepared.race.id,
+        name: prepared.race.name,
+        distance_km: prepared.race.distanceKm,
+        elevation_gain_m: prepared.race.elevationGainM,
         companion_revision: revision,
         version: revision,
         bundle_version: revision,
         bundle_checksum: checksum,
-        updated_at: bundle.syncedAt ?? bundle.exportedAt,
-        analyzed_at: bundle.race.analyzedAt ?? null,
+        updated_at: prepared.syncedAt ?? prepared.exportedAt,
+        analyzed_at: prepared.race.analyzedAt ?? null,
         has_bundle: true,
-        downloadedRevision: revision,
-        downloadedChecksum: checksum,
+        downloadedRevision,
+        downloadedChecksum,
+        downloadedClimbCount,
         offlineReady: true,
-        readiness_score: bundle.dashboardStats?.readinessScore ?? null,
+        readiness_score: prepared.dashboardStats?.readinessScore ?? null,
+        verified_percent: computeVerifiedPercent(prepared),
+        verified_stops_count: prepared.dashboardStats?.verifiedStops ?? null,
+        source: "local-import",
+        lastOpenedAt: new Date().toISOString(),
       });
     };
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error("Failed to save race."));
   });
-  localStorage.setItem(ACTIVE_KEY, bundle.race.id);
+  localStorage.setItem(ACTIVE_KEY, prepared.race.id);
   db.close();
 }
 
@@ -144,7 +201,7 @@ export async function loadActiveCompanionBundle(): Promise<CompanionBundle | nul
 }
 
 export async function loadCompanionBundle(raceId: string): Promise<CompanionBundle | null> {
-  const db = await openDb();
+  const db = await openCompanionDb();
   const bundle = await new Promise<CompanionBundle | null>((resolve, reject) => {
     const tx = db.transaction(BUNDLE_STORE, "readonly");
     const request = tx.objectStore(BUNDLE_STORE).get(raceId);
@@ -155,11 +212,19 @@ export async function loadCompanionBundle(raceId: string): Promise<CompanionBund
   if (!bundle) {
     return null;
   }
-  const validation = validateCompanionBundle(bundle);
-  if (!validation.valid || !verifyStoredChecksum(bundle)) {
+  const migrated = migrateCachedBundle(bundle);
+  if (!migrated) {
     return null;
   }
-  return bundle;
+  if (migrated !== bundle) {
+    await saveCompanionBundle(migrated);
+    return migrated;
+  }
+  const validation = validateCompanionBundle(migrated);
+  if (!validation.valid || !verifyStoredChecksum(migrated)) {
+    return null;
+  }
+  return migrated;
 }
 
 export async function hasValidCompanionBundle(raceId: string): Promise<boolean> {
@@ -167,8 +232,62 @@ export async function hasValidCompanionBundle(raceId: string): Promise<boolean> 
   return bundle !== null;
 }
 
+/** Remove a stale cached bundle and mark the race as not offline-ready. */
+export async function invalidateStaleBundle(raceId: string): Promise<void> {
+  const db = await openCompanionDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction([BUNDLE_STORE, LIST_STORE, GPX_STORE], "readwrite");
+    tx.objectStore(BUNDLE_STORE).delete(raceId);
+    tx.objectStore(GPX_STORE).delete(raceId);
+
+    const listStore = tx.objectStore(LIST_STORE);
+    const getRequest = listStore.get(raceId);
+    getRequest.onsuccess = () => {
+      const existing = getRequest.result as StoredRaceListItem | undefined;
+      if (existing) {
+        listStore.put({
+          ...existing,
+          offlineReady: false,
+          downloadedRevision: null,
+          downloadedChecksum: null,
+          downloadedClimbCount: null,
+        });
+      }
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error("Failed to invalidate stale bundle."));
+  });
+  const activeId = localStorage.getItem(ACTIVE_KEY);
+  if (activeId === raceId) {
+    localStorage.removeItem(ACTIVE_KEY);
+  }
+  db.close();
+}
+
+/** Remove all local data for a race (bundle, GPX, list entry, verifications). */
+export async function deleteCompanionRace(raceId: string): Promise<void> {
+  await deleteVerificationsForRace(raceId);
+
+  const db = await openCompanionDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction([BUNDLE_STORE, LIST_STORE, GPX_STORE], "readwrite");
+    tx.objectStore(BUNDLE_STORE).delete(raceId);
+    tx.objectStore(GPX_STORE).delete(raceId);
+    tx.objectStore(LIST_STORE).delete(raceId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error("Failed to delete race."));
+  });
+  db.close();
+
+  const activeId = localStorage.getItem(ACTIVE_KEY);
+  if (activeId === raceId) {
+    localStorage.removeItem(ACTIVE_KEY);
+  }
+}
+
 export async function saveOriginalGpx(raceId: string, bytes: ArrayBuffer): Promise<void> {
-  const db = await openDb();
+  const db = await openCompanionDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(GPX_STORE, "readwrite");
     tx.objectStore(GPX_STORE).put({
@@ -183,7 +302,7 @@ export async function saveOriginalGpx(raceId: string, bytes: ArrayBuffer): Promi
 }
 
 export async function loadOriginalGpx(raceId: string): Promise<ArrayBuffer | null> {
-  const db = await openDb();
+  const db = await openCompanionDb();
   const record = await new Promise<{ bytes: ArrayBuffer } | undefined>((resolve, reject) => {
     const tx = db.transaction(GPX_STORE, "readonly");
     const request = tx.objectStore(GPX_STORE).get(raceId);
@@ -197,7 +316,7 @@ export async function loadOriginalGpx(raceId: string): Promise<ArrayBuffer | nul
 export async function clearCompanionData(): Promise<void> {
   localStorage.removeItem(ACTIVE_KEY);
   localStorage.removeItem(RESUPPLY_FILTER_KEY);
-  const db = await openDb();
+  const db = await openCompanionDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(
       [BUNDLE_STORE, LIST_STORE, META_STORE, GPX_STORE, "verifications"],
@@ -233,6 +352,15 @@ export async function resetLocalRaceCache(): Promise<void> {
 
 export async function setActiveRaceId(raceId: string): Promise<void> {
   localStorage.setItem(ACTIVE_KEY, raceId);
+  const list = await loadRaceList();
+  const updated = list.map((race) =>
+    race.id === raceId
+      ? { ...race, lastOpenedAt: new Date().toISOString() }
+      : race,
+  );
+  if (updated.some((race, index) => race.lastOpenedAt !== list[index]?.lastOpenedAt)) {
+    await saveRaceList(updated);
+  }
 }
 
 export async function estimateCompanionStorageBytes(): Promise<number | null> {

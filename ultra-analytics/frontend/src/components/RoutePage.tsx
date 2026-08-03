@@ -1,0 +1,1960 @@
+/** Planned Route — map-first planning workspace (Analytics untouched). */
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  deleteRoute,
+  getRoute,
+  getRouteAnalysis,
+  patchRoute,
+  preloadRoutePois,
+  searchRouteViewportPois,
+} from "../api";
+import ProGate from "./account/ProGate";
+import type {
+  CriticalDecision,
+  PlannedRouteDetail,
+  RecommendedStop,
+  RouteAnalysis,
+  RouteClimb,
+  RoutePreparation,
+  RouteRemoteGap,
+} from "../types";
+import { fmtDuration } from "./ui/format";
+import Icon from "./ui/Icon";
+import RydnLoader from "./ui/RydnLoader";
+import ScoreLine from "./ui/ScoreLine";
+import PlanMap, { type PlanMapBBox, type PlanMapViewApi } from "./plan/PlanMap";
+import StreetViewLink from "./plan/StreetViewLink";
+import { useRideLocation } from "./plan/useRideLocation";
+import { RydnPlanIcon, iconForCategory, iconForQuickAction } from "./plan/icons";
+import { saveActiveRouteId } from "../prefs/quickResume";
+import {
+  DEFAULT_LAYERS,
+  QA_NEAREST_N,
+  QUICK_ACTIONS,
+  RIDE_LAYERS,
+  applyQuickActionEmphasis,
+  markerVisible,
+  nearestOf,
+  pointAlongRoute,
+  searchLimitForQa,
+  stopMatchesLayer,
+  type PlanLayerId,
+  type PlanMarker,
+  type QuickActionId,
+} from "./plan/planLayers";
+import {
+  bboxSpanTooLarge,
+  isDegeneratePlanSearchBBox,
+  isZoomInSearchError,
+  normalizePlanSearchBBox,
+  resolvePlanSearchChip,
+} from "./plan/planSearchUi";
+import {
+  isAbortError,
+  resolveSearchOutcome,
+  SEARCH_EMPTY_TOAST,
+  SEARCH_FAIL_TOAST,
+  SEARCH_TIMEOUT_MS,
+} from "./plan/planSearchLifecycle";
+import {
+  promoteToVerified,
+  removeFromSearchResults,
+  replaceSearchResults,
+  verifiedIdSet,
+} from "./plan/workspaceLayers";
+import RidePanel from "./plan/RidePanel";
+import { mergeVerifiedStops } from "./plan/rideStops";
+import CustomPoiSheet from "./plan/CustomPoiSheet";
+import {
+  buildCustomStop,
+  isCustomStop,
+  kindFromStop,
+  projectOntoRoute,
+  type CustomPoiKind,
+} from "./plan/customPoi";
+
+import {
+  CHECKS,
+  REVIEW_EXIT_MS,
+  REVIEW_FEEDBACK_MS,
+  REVIEW_LABELS,
+  applyStopReview,
+  externalHref,
+  fmtHotelStars,
+  mapViewportPoi,
+  mapsLinks,
+  qaToOverpassGroup,
+  recommendWhy,
+  searchStatusForQa,
+  telHref,
+  type BriefingTab,
+  type ReviewMotion,
+  type ReviewStatus,
+} from "./plan/routePageUtils";
+
+
+type Mode = "plan" | "ride";
+
+interface Props {
+  routeId: string;
+  onBack: () => void;
+  onDeleted?: () => void;
+  onOpenAccount?: () => void;
+  /** Open Ride mode immediately (Quick Resume / deep link). */
+  initialMode?: Mode;
+}
+
+type PeekPayload =
+  | { kind: "climb"; climb: RouteClimb }
+  | { kind: "remote"; gap: RouteRemoteGap }
+  | { kind: "decision"; decision: CriticalDecision };
+
+export default function RoutePage({
+  routeId,
+  onBack,
+  onDeleted,
+  onOpenAccount,
+  initialMode = "plan",
+}: Props) {
+  const [route, setRoute] = useState<PlannedRouteDetail | null>(null);
+  const [analysis, setAnalysis] = useState<RouteAnalysis | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showExportGate, setShowExportGate] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [analyzing, setAnalyzing] = useState(true);
+  const [name, setName] = useState("");
+  const [notes, setNotes] = useState("");
+  const [dateStart, setDateStart] = useState("");
+  const [dateEnd, setDateEnd] = useState("");
+  const [mode, setMode] = useState<Mode>(initialMode === "ride" ? "ride" : "plan");
+  const [layers, setLayers] = useState<Record<PlanLayerId, boolean>>(DEFAULT_LAYERS);
+  const [qa, setQa] = useState<QuickActionId | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [verifyIndex, setVerifyIndex] = useState(0);
+  const [targetKm, setTargetKm] = useState(250);
+  const [rideKm, setRideKm] = useState(0);
+  const liveLoc = useRideLocation(mode === "ride", route?.points);
+  const liveTracking =
+    liveLoc.status === "tracking" || liveLoc.status === "off_route";
+
+  // Drive Ride progress from GPS when available (scroll timeline stays secondary).
+  useEffect(() => {
+    if (!liveTracking || liveLoc.km == null) return;
+    setRideKm((prev) => (Math.abs(prev - liveLoc.km!) < 0.03 ? prev : liveLoc.km!));
+  }, [liveTracking, liveLoc.km]);
+
+  // Persist active route for Quick Resume while in Ride mode.
+  useEffect(() => {
+    if (mode === "ride") saveActiveRouteId(routeId);
+  }, [mode, routeId]);
+
+  const [reviewMotion, setReviewMotion] = useState<ReviewMotion | null>(null);
+  const [briefingOpen, setBriefingOpen] = useState(false);
+  const [briefingTab, setBriefingTab] = useState<BriefingTab>("critical");
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number } | null>(null);
+  const [mapBbox, setMapBbox] = useState<PlanMapBBox | null>(null);
+  /** User moved map since last finished search — gates Google Maps-style chip. */
+  const [searchPrompted, setSearchPrompted] = useState(false);
+  const [searchingArea, setSearchingArea] = useState(false);
+  const [searchStatus, setSearchStatus] = useState<string | null>(null);
+  /** TEMPORARY search workspace — replaced on every new search. */
+  const [searchResults, setSearchResults] = useState<RecommendedStop[]>([]);
+  /** PERMANENT verified layer — survives every search. */
+  const [verifiedStops, setVerifiedStops] = useState<RecommendedStop[]>([]);
+  /** Tap-to-place custom POI on the planning map. */
+  const [placeMode, setPlaceMode] = useState(false);
+  const [customDraft, setCustomDraft] = useState<{
+    mode: "create" | "edit" | "move";
+    id?: string;
+    lat: number;
+    lon: number;
+    name: string;
+    kind: CustomPoiKind;
+  } | null>(null);
+  const [customSaving, setCustomSaving] = useState(false);
+  /** Transient toast (errors) — never a permanent banner for search. */
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  const reviewTimers = useRef<number[]>([]);
+  const analysisRef = useRef<RouteAnalysis | null>(null);
+  const routeRef = useRef<PlannedRouteDetail | null>(null);
+  const searchGenRef = useRef(0);
+  const searchStatusTimerRef = useRef<number | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  /** In-flight corridor preload — Search may wait briefly so cold path hits cache. */
+  const preloadPromiseRef = useRef<Promise<{ ok: boolean; poiCount?: number }> | null>(null);
+  /** Live MapLibre camera — Search reads this so desktop resize can't leave a stale bbox. */
+  const planMapViewRef = useRef<PlanMapViewApi | null>(null);
+  const mapBboxRef = useRef<PlanMapBBox | null>(null);
+
+  const showToast = (message: string) => {
+    setToast(message);
+    if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 3200);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    setAnalyzing(true);
+    Promise.all([getRoute(routeId), getRouteAnalysis(routeId)])
+      .then(([r, a]) => {
+        if (cancelled) return;
+        setRoute(r);
+        setName(r.name);
+        setNotes(r.preparation?.notes || "");
+        setDateStart(r.dateStart || "");
+        setDateEnd(r.dateEnd || "");
+        setAnalysis(a);
+        if (a.targetStageKm) setTargetKm(Math.round(a.targetStageKm));
+        // Restore permanently saved verified finds (never disappear on re-search).
+        const saved = Object.values(r.savedStops || {}) as RecommendedStop[];
+        const fromRec = (a.recommendedStops || []).filter((s) => s.reviewStatus === "verified");
+        const byId = new Map<string, RecommendedStop>();
+        for (const s of [...fromRec, ...saved]) {
+          byId.set(s.id, { ...s, reviewStatus: "verified" });
+        }
+        setVerifiedStops(Array.from(byId.values()));
+        setSearchResults([]);
+        // Warm Search corridor in background (Option A) — never blocks UI.
+        const prePromise = preloadRoutePois(routeId);
+        preloadPromiseRef.current = prePromise;
+        void prePromise.then((pre) => {
+          if (cancelled || !pre.ok) return;
+          console.info("[rydn.search.preload]", {
+            poiCount: pre.poiCount,
+            cache: pre.cache,
+            ms: pre.timings?.totalMs,
+          });
+        });
+      })
+      .catch((e) => !cancelled && setError((e as Error).message))
+      .finally(() => !cancelled && setAnalyzing(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [routeId]);
+
+  useEffect(() => {
+    analysisRef.current = analysis;
+  }, [analysis]);
+
+  useEffect(() => {
+    routeRef.current = route;
+  }, [route]);
+
+  useEffect(() => {
+    return () => {
+      for (const id of reviewTimers.current) window.clearTimeout(id);
+      reviewTimers.current = [];
+      if (searchStatusTimerRef.current != null) {
+        window.clearInterval(searchStatusTimerRef.current);
+        searchStatusTimerRef.current = null;
+      }
+      searchAbortRef.current?.abort();
+      searchAbortRef.current = null;
+      if (toastTimerRef.current != null) {
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setLayers(mode === "ride" ? RIDE_LAYERS : DEFAULT_LAYERS);
+    setQa(null);
+    setSelectedId(null);
+    setOverflowOpen(false);
+    setSearchPrompted(false);
+    if (mode === "ride") {
+      setSearchResults([]);
+      setBriefingOpen(false);
+    }
+  }, [mode]);
+
+  const loadAnalysis = async (opts: { refresh?: boolean; targetStageKm?: number } = {}) => {
+    setAnalyzing(true);
+    setError(null);
+    try {
+      const a = await getRouteAnalysis(routeId, {
+        refresh: opts.refresh,
+        targetStageKm: opts.targetStageKm ?? targetKm,
+      });
+      setAnalysis(a);
+      if (a.targetStageKm) setTargetKm(Math.round(a.targetStageKm));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const saveName = async () => {
+    if (!route || !name.trim() || name.trim() === route.name) return;
+    setBusy(true);
+    try {
+      setRoute(await patchRoute(route.id, { name: name.trim() }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveDates = async () => {
+    if (!route) return;
+    const nextStart = dateStart || null;
+    const nextEnd = dateEnd || null;
+    if ((route.dateStart || null) === nextStart && (route.dateEnd || null) === nextEnd) return;
+    setBusy(true);
+    try {
+      setRoute(await patchRoute(route.id, { dateStart: nextStart, dateEnd: nextEnd }));
+      await loadAnalysis({ refresh: true });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveNotes = async () => {
+    if (!route) return;
+    if ((route.preparation?.notes || "") === notes) return;
+    setBusy(true);
+    try {
+      setRoute(await patchRoute(route.id, { notes }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleCheck = async (key: keyof Omit<RoutePreparation, "notes">) => {
+    if (!route) return;
+    setBusy(true);
+    try {
+      setRoute(await patchRoute(route.id, { preparation: { [key]: !route.preparation[key] } }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reviewStop = (stopId: string, status: ReviewStatus) => {
+    const currentRoute = routeRef.current;
+    const currentAnalysis = analysisRef.current;
+    if (!currentRoute || !currentAnalysis || reviewMotion) return;
+
+    const list = currentAnalysis.recommendedStops || [];
+    const currentIdx = list.findIndex((s) => s.id === stopId);
+    const tempStop = searchResults.find((s) => s.id === stopId);
+    const alreadyVerified = verifiedStops.find((s) => s.id === stopId);
+    // Temp search finds can be verified before they are in recommendedStops.
+    if (currentIdx < 0 && !tempStop && !alreadyVerified) return;
+
+    const fromList =
+      currentIdx >= 0 ? list[currentIdx] : tempStop || alreadyVerified!;
+    const rawPrev = fromList?.reviewStatus || "unreviewed";
+    const previousStatus: ReviewStatus | "unreviewed" =
+      rawPrev === "verified" || rawPrev === "rejected" || rawPrev === "skipped"
+        ? rawPrev
+        : "unreviewed";
+    const previousReviews = { ...(currentRoute.stopReviews || {}) };
+    const previousSaved = { ...(currentRoute.savedStops || {}) };
+    const previousVerified = verifiedStops;
+    const previousSearch = searchResults;
+    const snapshotAnalysis = currentAnalysis;
+    const hasNext = currentIdx >= 0 && currentIdx < list.length - 1;
+    const advanceTo = currentIdx >= 0 ? Math.min(currentIdx + 1, Math.max(0, list.length - 1)) : 0;
+    const nextStopId = hasNext ? list[advanceTo]?.id ?? null : null;
+
+    setError(null);
+    if (currentIdx >= 0) {
+      setAnalysis(applyStopReview(currentAnalysis, stopId, status));
+    }
+
+    const snap = tempStop || alreadyVerified || fromList;
+    if (status === "verified" && snap) {
+      // Promote out of temp workspace into permanent verified layer.
+      setSearchResults((prev) => removeFromSearchResults(prev, stopId));
+      setVerifiedStops((prev) => promoteToVerified(snap, prev));
+      if (currentIdx < 0 && tempStop) {
+        setAnalysis(
+          applyStopReview(
+            {
+              ...currentAnalysis,
+              recommendedStops: [
+                ...(currentAnalysis.recommendedStops || []),
+                { ...tempStop, reviewStatus: "verified" },
+              ],
+            },
+            stopId,
+            "verified",
+          ),
+        );
+      }
+    } else {
+      setVerifiedStops((prev) => prev.filter((s) => s.id !== stopId));
+      setSearchResults((prev) =>
+        prev.map((s) => (s.id === stopId ? { ...s, reviewStatus: status } : s)),
+      );
+    }
+
+    setRoute({
+      ...currentRoute,
+      stopReviews: { ...previousReviews, [stopId]: status },
+    });
+    setReviewMotion({ stopId, status, phase: "confirming" });
+
+    for (const id of reviewTimers.current) window.clearTimeout(id);
+    reviewTimers.current = [];
+
+    const exitTimer = window.setTimeout(() => {
+      setReviewMotion({ stopId, status, phase: hasNext ? "exiting" : "done" });
+    }, REVIEW_FEEDBACK_MS);
+
+    const advanceTimer = window.setTimeout(() => {
+      if (hasNext && briefingOpen && briefingTab === "verify") {
+        setVerifyIndex(advanceTo);
+        setSelectedId(nextStopId);
+        setReviewMotion(null);
+      } else {
+        setReviewMotion(null);
+      }
+    }, hasNext && briefingOpen && briefingTab === "verify"
+      ? REVIEW_FEEDBACK_MS + REVIEW_EXIT_MS
+      : REVIEW_FEEDBACK_MS + 160);
+
+    reviewTimers.current = [exitTimer, advanceTimer];
+
+    const patchBody: Parameters<typeof patchRoute>[1] = {
+      stopReviews: { [stopId]: status },
+    };
+    if (status === "verified" && snap) {
+      patchBody.savedStops = { [stopId]: { ...snap, reviewStatus: "verified" } };
+    } else if (status !== "verified") {
+      patchBody.savedStops = { [stopId]: null };
+    }
+
+    void patchRoute(currentRoute.id, patchBody)
+      .then((updated) => {
+        setRoute((prev) => {
+          if (!prev || prev.id !== updated.id) return prev;
+          return {
+            ...prev,
+            stopReviews: updated.stopReviews ?? prev.stopReviews,
+            savedStops: updated.savedStops ?? prev.savedStops,
+            preparation: updated.preparation ?? prev.preparation,
+            status: updated.status ?? prev.status,
+            updatedAt: updated.updatedAt ?? prev.updatedAt,
+          };
+        });
+      })
+      .catch(() => {
+        for (const id of reviewTimers.current) window.clearTimeout(id);
+        reviewTimers.current = [];
+        setReviewMotion(null);
+        const latest = analysisRef.current || snapshotAnalysis;
+        if (currentIdx >= 0) setAnalysis(applyStopReview(latest, stopId, previousStatus));
+        setVerifiedStops(previousVerified);
+        setSearchResults(previousSearch);
+        setRoute((prev) => {
+          if (!prev) return prev;
+          const next = { ...(prev.stopReviews || {}) };
+          if (previousStatus === "unreviewed") delete next[stopId];
+          else next[stopId] = previousStatus;
+          return { ...prev, stopReviews: next, savedStops: previousSaved };
+        });
+        if (currentIdx >= 0) setVerifyIndex(currentIdx);
+        setSelectedId(stopId);
+        showToast("Couldn't save verification. Please try again.");
+      });
+  };
+
+  const onDelete = async () => {
+    if (!route) return;
+    if (!window.confirm("Delete this planned route? Completed rides are unaffected.")) return;
+    setBusy(true);
+    try {
+      await deleteRoute(route.id);
+      (onDeleted || onBack)();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  const recommended = analysis?.recommendedStops || [];
+  const decisions = analysis?.criticalDecisions || [];
+  const verifiedCount = recommended.filter((s) => s.reviewStatus === "verified").length;
+  const pendingCount = recommended.filter(
+    (s) => s.reviewStatus === "unreviewed" || s.reviewStatus === "skipped",
+  ).length;
+
+  useEffect(() => {
+    if (verifyIndex >= recommended.length && recommended.length > 0) {
+      setVerifyIndex(recommended.length - 1);
+    }
+  }, [recommended.length, verifyIndex]);
+
+  const verifyStop = recommended[Math.min(verifyIndex, Math.max(0, recommended.length - 1))] || null;
+
+  const allMarkers: PlanMarker[] = useMemo(() => {
+    if (!analysis) return [];
+    const out: PlanMarker[] = [];
+    const seen = new Set<string>();
+
+    const push = (m: PlanMarker) => {
+      if (seen.has(m.id)) return;
+      seen.add(m.id);
+      out.push(m);
+    };
+
+    // Permanent verified layer (survives every search).
+    for (const s of verifiedStops) {
+      push({
+        id: s.id,
+        lat: s.lat,
+        lon: s.lon,
+        kind: s.group === "sleep" ? "sleep" : "poi",
+        layer: "verified",
+        group: s.group,
+        category: s.category,
+        status: "verified",
+        is24h: s.is24h,
+        hasShop: s.hasShop,
+        name: s.name,
+        qualityStars: s.qualityStars,
+        distanceOffRouteM: s.distanceOffRouteM,
+      });
+    }
+
+    // Analysis corridor recommendations (system layer; verified already covered above).
+    for (const s of recommended) {
+      if (s.reviewStatus === "verified") {
+        push({
+          id: s.id,
+          lat: s.lat,
+          lon: s.lon,
+          kind: s.group === "sleep" ? "sleep" : "poi",
+          layer: "verified",
+          group: s.group,
+          category: s.category,
+          status: "verified",
+          is24h: s.is24h,
+          hasShop: s.hasShop,
+          name: s.name,
+          qualityStars: s.qualityStars,
+          distanceOffRouteM: s.distanceOffRouteM,
+        });
+        continue;
+      }
+      push({
+        id: s.id,
+        lat: s.lat,
+        lon: s.lon,
+        kind: s.group === "sleep" ? "sleep" : "poi",
+        layer: "system",
+        group: s.group,
+        category: s.category,
+        status: s.reviewStatus,
+        is24h: s.is24h,
+        hasShop: s.hasShop,
+        name: s.name,
+        qualityStars: s.qualityStars,
+        distanceOffRouteM: s.distanceOffRouteM,
+      });
+    }
+
+    // Temporary search workspace — replaced on every new search.
+    for (const s of searchResults) {
+      push({
+        id: s.id,
+        lat: s.lat,
+        lon: s.lon,
+        kind: "area",
+        layer: "temp",
+        group: s.group,
+        category: s.category,
+        status: s.reviewStatus || "unreviewed",
+        is24h: s.is24h,
+        hasShop: s.hasShop,
+        name: s.name,
+        qualityStars: s.qualityStars,
+        distanceOffRouteM: s.distanceOffRouteM,
+      });
+    }
+
+    // Climbs stay in analysis / briefing — not plotted on the Plan/Ride map.
+    for (const g of analysis.remoteGaps) {
+      if (g.midLat != null && g.midLon != null) {
+        push({
+          id: g.id,
+          lat: g.midLat,
+          lon: g.midLon,
+          kind: "remote",
+          layer: "system",
+          name: g.label,
+        });
+      }
+    }
+    for (const s of (analysis.sleep || []).slice(0, 40)) {
+      push({
+        id: `sleep-${s.osmId}`,
+        lat: s.lat,
+        lon: s.lon,
+        kind: "sleep",
+        layer: "system",
+        group: "sleep",
+        category: s.category,
+        name: s.name,
+        distanceOffRouteM: s.distanceOffRouteM,
+      });
+    }
+    for (const st of analysis.stages.slice(0, -1)) {
+      const sleep = analysis.sleepPlan?.find((p) => p.stageIndex === st.index)?.suggestion;
+      if (sleep) {
+        push({
+          id: `stage-${st.index}`,
+          lat: sleep.lat,
+          lon: sleep.lon,
+          kind: "stage",
+          layer: "system",
+          name: st.label,
+        });
+      }
+    }
+    // Critical decisions (incl. major_climb / overnight-before-climb) stay in the
+    // briefing sheet only. Every decision glyph was the mountain/climb icon, so
+    // plotting any of them looked like a climb pin on Plan/Ride.
+    return out;
+  }, [analysis, recommended, searchResults, verifiedStops]);
+
+  const nearestRef = useMemo(() => {
+    if (mode === "ride" && route) {
+      return (
+        pointAlongRoute(route.points, rideKm, route.distanceKm) ||
+        mapCenter ||
+        (route.points?.[0] ? { lat: route.points[0][0], lon: route.points[0][1] } : null)
+      );
+    }
+    return (
+      mapCenter ||
+      (route?.points?.[0] ? { lat: route.points[0][0], lon: route.points[0][1] } : null)
+    );
+  }, [mode, route, rideKm, mapCenter]);
+
+  const nearestRefLive = useRef(nearestRef);
+  useEffect(() => {
+    nearestRefLive.current = nearestRef;
+  }, [nearestRef]);
+
+  const visibleMarkers = useMemo(() => {
+    const hideId =
+      customDraft && (customDraft.mode === "move" || customDraft.mode === "create")
+        ? customDraft.id
+        : null;
+    const base = allMarkers
+      .filter((m) => !hideId || m.id !== hideId)
+      .filter((m) => markerVisible(m, layers, qa, selectedId));
+    return applyQuickActionEmphasis(base, qa, nearestRef, selectedId);
+  }, [allMarkers, layers, qa, nearestRef, selectedId, customDraft]);
+
+  const draftProjection = useMemo(() => {
+    if (!customDraft || !route?.points?.length) return null;
+    return projectOntoRoute(route.points, customDraft.lat, customDraft.lon);
+  }, [customDraft, route?.points]);
+
+  /** Camera focus — snap once when Quick Action changes, not on every pan. */
+  const [focusIds, setFocusIds] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (!qa) {
+      setFocusIds(null);
+      return;
+    }
+    const ref = nearestRefLive.current;
+    const base = allMarkers.filter((m) => markerVisible(m, layers, qa, selectedId));
+    const ranked = applyQuickActionEmphasis(base, qa, ref, selectedId);
+    setFocusIds(
+      ranked
+        .filter((m) => m.emphasize)
+        .map((m) => m.id)
+        .slice(0, QA_NEAREST_N),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-focus on QA toggle
+  }, [qa]);
+
+  const selectedStop: RecommendedStop | null = useMemo(() => {
+    if (!selectedId) return null;
+    const fromRec = recommended.find((s) => s.id === selectedId);
+    if (fromRec) {
+      if (fromRec.reviewStatus === "verified") return fromRec;
+      const fromVerified = verifiedStops.find((s) => s.id === selectedId);
+      return fromVerified || fromRec;
+    }
+    const fromVerified = verifiedStops.find((s) => s.id === selectedId);
+    if (fromVerified) return fromVerified;
+    const fromSearch = searchResults.find((s) => s.id === selectedId);
+    if (fromSearch) return fromSearch;
+    // Analysis sleep markers use sleep-{osmId}; open the same compact sheet.
+    if (analysis?.sleep?.length) {
+      const sleep = analysis.sleep.find(
+        (s) =>
+          selectedId === `sleep-${s.osmId}` ||
+          selectedId === `area-${s.osmType}-${s.osmId}` ||
+          selectedId === (s as { id?: string }).id,
+      );
+      if (sleep) {
+        return mapViewportPoi({
+          id: selectedId,
+          osmId: sleep.osmId,
+          osmType: sleep.osmType,
+          name: sleep.name,
+          category: sleep.category,
+          group: sleep.group || "sleep",
+          lat: sleep.lat,
+          lon: sleep.lon,
+          distanceAlongKm: sleep.distanceAlongKm,
+          distanceOffRouteM: sleep.distanceOffRouteM,
+          openingHours: sleep.openingHours,
+          website: sleep.website,
+          phone: sleep.phone,
+          hotelStars: sleep.hotelStars,
+          googleMapsUrl: (sleep as { googleMapsUrl?: string | null }).googleMapsUrl,
+        });
+      }
+    }
+    return null;
+  }, [selectedId, recommended, searchResults, verifiedStops, analysis]);
+
+  const peek: PeekPayload | null = useMemo(() => {
+    if (!selectedId || !analysis || selectedStop) return null;
+    const climb = analysis.climbs.find((c) => c.id === selectedId);
+    if (climb) return { kind: "climb", climb };
+    const gap = analysis.remoteGaps.find((g) => g.id === selectedId);
+    if (gap) return { kind: "remote", gap };
+    const decision = decisions.find((d) => d.id === selectedId);
+    if (decision) return { kind: "decision", decision };
+    return null;
+  }, [selectedId, analysis, selectedStop, decisions]);
+
+  const nearest = useMemo(() => {
+    if (!nearestRef || !qa) return null;
+    // Nearest under active Quick Action — Plan: map center · Ride: route progress
+    return nearestOf(allMarkers, nearestRef.lat, nearestRef.lon, (m) => stopMatchesLayer(m, qa));
+  }, [allMarkers, nearestRef, qa]);
+
+  const rideVerified = useMemo(
+    () => mergeVerifiedStops(recommended, verifiedStops),
+    [recommended, verifiedStops],
+  );
+
+  const cancelCustomDraft = () => {
+    setPlaceMode(false);
+    setCustomDraft(null);
+    setCustomSaving(false);
+  };
+
+  const beginAddCustomPoi = () => {
+    setOverflowOpen(false);
+    setQa(null);
+    setSelectedId(null);
+    setCustomDraft(null);
+    setPlaceMode(true);
+    setSearchPrompted(false);
+  };
+
+  const saveCustomPoi = async (name: string, kind: CustomPoiKind) => {
+    const currentRoute = routeRef.current;
+    if (!currentRoute || !customDraft || customSaving) return;
+    setCustomSaving(true);
+    setError(null);
+    const stop = buildCustomStop({
+      id: customDraft.id,
+      name,
+      kind,
+      lat: customDraft.lat,
+      lon: customDraft.lon,
+      points: currentRoute.points || [],
+    });
+    const previousVerified = verifiedStops;
+    const previousSaved = { ...(currentRoute.savedStops || {}) };
+    setVerifiedStops((prev) => {
+      const others = prev.filter((s) => s.id !== stop.id);
+      return [...others, stop].sort((a, b) => a.distanceAlongKm - b.distanceAlongKm);
+    });
+    setRoute({
+      ...currentRoute,
+      stopReviews: { ...(currentRoute.stopReviews || {}), [stop.id]: "verified" },
+      savedStops: { ...(currentRoute.savedStops || {}), [stop.id]: stop },
+    });
+    setSelectedId(stop.id);
+    setPlaceMode(false);
+    setCustomDraft(null);
+    try {
+      const updated = await patchRoute(currentRoute.id, {
+        stopReviews: { [stop.id]: "verified" },
+        savedStops: { [stop.id]: stop },
+      });
+      setRoute((prev) => {
+        if (!prev || prev.id !== updated.id) return prev;
+        return {
+          ...prev,
+          stopReviews: updated.stopReviews ?? prev.stopReviews,
+          savedStops: updated.savedStops ?? prev.savedStops,
+          updatedAt: updated.updatedAt ?? prev.updatedAt,
+        };
+      });
+    } catch {
+      setVerifiedStops(previousVerified);
+      setRoute((prev) =>
+        prev ? { ...prev, savedStops: previousSaved, stopReviews: prev.stopReviews } : prev,
+      );
+      showToast("Couldn't save custom POI. Please try again.");
+    } finally {
+      setCustomSaving(false);
+    }
+  };
+
+  const deleteCustomPoi = async (stopId: string) => {
+    const currentRoute = routeRef.current;
+    if (!currentRoute || customSaving) return;
+    setCustomSaving(true);
+    const previousVerified = verifiedStops;
+    const previousSaved = { ...(currentRoute.savedStops || {}) };
+    const previousReviews = { ...(currentRoute.stopReviews || {}) };
+    const nextSaved = { ...previousSaved };
+    delete nextSaved[stopId];
+    const nextReviews = { ...previousReviews };
+    delete nextReviews[stopId];
+    setVerifiedStops((prev) => prev.filter((s) => s.id !== stopId));
+    setSelectedId(null);
+    setCustomDraft(null);
+    setPlaceMode(false);
+    setRoute({
+      ...currentRoute,
+      stopReviews: nextReviews,
+      savedStops: nextSaved,
+    });
+    try {
+      const updated = await patchRoute(currentRoute.id, {
+        stopReviews: { [stopId]: "unreviewed" },
+        savedStops: { [stopId]: null },
+      });
+      setRoute((prev) => {
+        if (!prev || prev.id !== updated.id) return prev;
+        return {
+          ...prev,
+          stopReviews: updated.stopReviews ?? prev.stopReviews,
+          savedStops: updated.savedStops ?? prev.savedStops,
+          updatedAt: updated.updatedAt ?? prev.updatedAt,
+        };
+      });
+    } catch {
+      setVerifiedStops(previousVerified);
+      setRoute((prev) =>
+        prev
+          ? { ...prev, savedStops: previousSaved, stopReviews: previousReviews }
+          : prev,
+      );
+      setSelectedId(stopId);
+      showToast("Couldn't delete custom POI. Please try again.");
+    } finally {
+      setCustomSaving(false);
+    }
+  };
+
+  const onSelectMarker = (id: string) => {
+    if (!id) {
+      if (placeMode && !customDraft) return;
+      setSelectedId(null);
+      if (customDraft?.mode === "edit") cancelCustomDraft();
+      return;
+    }
+    if (placeMode && !customDraft) {
+      // Selecting an existing marker exits empty place mode.
+      setPlaceMode(false);
+    }
+    const decision = decisions.find((d) => d.id === id);
+    if (decision?.relatedStopId) {
+      setSelectedId(decision.relatedStopId);
+      return;
+    }
+    setSelectedId(id);
+    const idx = recommended.findIndex((s) => s.id === id);
+    if (idx >= 0) setVerifyIndex(idx);
+    const custom =
+      verifiedStops.find((s) => s.id === id && isCustomStop(s)) ||
+      recommended.find((s) => s.id === id && isCustomStop(s));
+    if (custom) {
+      setCustomDraft({
+        mode: "edit",
+        id: custom.id,
+        lat: custom.lat,
+        lon: custom.lon,
+        name: custom.name || "",
+        kind: kindFromStop(custom),
+      });
+      setPlaceMode(false);
+    } else if (customDraft?.mode === "edit" || customDraft?.mode === "create") {
+      setCustomDraft(null);
+    }
+  };
+
+  const toggleQa = (id: QuickActionId) => {
+    if (placeMode || customDraft) cancelCustomDraft();
+    setQa((prev) => {
+      const next = prev === id ? null : id;
+      // Switching category replaces the question — clear stale temp workspace.
+      if (next !== prev) {
+        // Supersede any in-flight search so its finally cannot re-paint old results.
+        searchGenRef.current += 1;
+        searchAbortRef.current?.abort();
+        searchAbortRef.current = null;
+        if (searchStatusTimerRef.current != null) {
+          window.clearInterval(searchStatusTimerRef.current);
+          searchStatusTimerRef.current = null;
+        }
+        setSearchResults([]);
+        setSearchingArea(false);
+        setSearchStatus(null);
+        // Re-prompt Search this area so Shops isn't a dead empty map after Water.
+        if (next) setSearchPrompted(true);
+        else setSearchPrompted(false);
+      }
+      if (next && selectedId) {
+        const m = allMarkers.find((x) => x.id === selectedId);
+        if (m && !stopMatchesLayer(m, next)) setSelectedId(null);
+      }
+      if (!next) setSelectedId(null);
+      return next;
+    });
+  };
+
+  const onViewChange = (
+    center: { lat: number; lon: number },
+    bbox: PlanMapBBox,
+    userMoved: boolean,
+  ) => {
+    const norm = normalizePlanSearchBBox(bbox);
+    mapBboxRef.current = norm;
+    setMapCenter(center);
+    setMapBbox(norm);
+    // Chip appears only after the user moves the map (and a category is selected).
+    if (userMoved && mode === "plan" && !searchingArea) setSearchPrompted(true);
+  };
+
+  const searchChip = resolvePlanSearchChip({
+    mode,
+    searching: searchingArea,
+    prompted: searchPrompted,
+    hasCategory: Boolean(qa),
+    bbox: mapBbox,
+  });
+
+  const searchThisArea = async () => {
+    if (!route || searchingArea || !qa) return;
+    // Prefer live map bounds — React state can lag desktop layout resize / camera ease.
+    const live = planMapViewRef.current?.getBBox() ?? null;
+    const bbox = live || mapBboxRef.current || mapBbox;
+    if (!bbox || isDegeneratePlanSearchBBox(bbox)) return;
+    const norm = normalizePlanSearchBBox(bbox);
+    if (isDegeneratePlanSearchBBox(norm)) return;
+    mapBboxRef.current = norm;
+    setMapBbox(norm);
+    // Too zoomed out — never hit the API; exclusive zoomIn chip only.
+    if (bboxSpanTooLarge(norm)) {
+      setSearchPrompted(true);
+      return;
+    }
+
+    const gen = ++searchGenRef.current;
+    searchAbortRef.current?.abort();
+    const ac = new AbortController();
+    searchAbortRef.current = ac;
+
+    const SEARCH_BATCH = searchLimitForQa(qa, norm);
+    const activeQa = qa;
+    const verifiedIds = verifiedIdSet([
+      ...verifiedStops,
+      ...(analysisRef.current?.recommendedStops || []).filter((s) => s.reviewStatus === "verified"),
+    ]);
+
+    setSearchingArea(true);
+    // New search replaces the temp workspace immediately (verified untouched).
+    setSearchResults([]);
+    setError((prev) => (isZoomInSearchError(prev) ? null : prev));
+    let statusStep = 0;
+    setSearchStatus(searchStatusForQa(activeQa, 0));
+    if (searchStatusTimerRef.current != null) window.clearInterval(searchStatusTimerRef.current);
+    searchStatusTimerRef.current = window.setInterval(() => {
+      statusStep += 1;
+      if (gen !== searchGenRef.current) return;
+      setSearchStatus(searchStatusForQa(activeQa, statusStep));
+    }, 900);
+
+    const group = qaToOverpassGroup(activeQa);
+    const exclude = Array.from(verifiedIds);
+    const collected: RecommendedStop[] = [];
+    let hardError = false;
+    let thrown = false;
+    let searchOk = false;
+    let zoomInOnly = false;
+    const tClient = typeof performance !== "undefined" ? performance.now() : Date.now();
+    let timeoutId: number | null = null;
+
+    try {
+      // If preload is still building the corridor, wait briefly (≤1.2s) so Search
+      // hits analysis-hydrate/cache instead of a cold Overpass race past 5s abort.
+      const pending = preloadPromiseRef.current;
+      if (pending) {
+        await Promise.race([
+          pending.catch(() => ({ ok: false })),
+          new Promise<{ ok: boolean }>((resolve) => {
+            window.setTimeout(() => resolve({ ok: false }), 1200);
+          }),
+        ]);
+      }
+      if (gen !== searchGenRef.current) return;
+
+      // Abort clock starts at the network request — preload wait does not eat the 5s.
+      timeoutId = window.setTimeout(() => {
+        if (gen === searchGenRef.current) ac.abort();
+      }, SEARCH_TIMEOUT_MS);
+
+      // Single request — corridor cache / analysis hydrate makes tiling unnecessary.
+      const res = await searchRouteViewportPois(route.id, norm, {
+        group,
+        limit: SEARCH_BATCH,
+        exclude,
+        signal: ac.signal,
+      });
+      if (gen !== searchGenRef.current) return;
+      const mapped = (res.pois || [])
+        .map(mapViewportPoi)
+        .sort((a, b) => (b.resupplyScore || 0) - (a.resupplyScore || 0));
+      for (const s of mapped) {
+        if (collected.some((c) => c.id === s.id)) continue;
+        collected.push(s);
+      }
+      // Progressive: paint ASAP once we have results (before settle).
+      if (collected.length > 0) {
+        setSearchResults(replaceSearchResults(collected.slice(0, SEARCH_BATCH), verifiedIds));
+        setSearchStatus(searchStatusForQa(activeQa, 2));
+      }
+      if (mapped.length === 0 && res.error) {
+        // Zoom-in is a client chip state — never toast "No stops" for it.
+        if (isZoomInSearchError(res.error)) zoomInOnly = true;
+        else hardError = true;
+      }
+      const clientMs =
+        (typeof performance !== "undefined" ? performance.now() : Date.now()) - tClient;
+      console.info("[rydn.search.apply]", {
+        clientMs: Math.round(clientMs),
+        rendered: Math.min(collected.length, SEARCH_BATCH),
+        cache: res.cache,
+        timings: res.timings,
+      });
+    } catch (err) {
+      if (gen !== searchGenRef.current) return;
+      if (isAbortError(err) || ac.signal.aborted) {
+        // timeout / supersede — settle via outcome below
+      } else {
+        thrown = true;
+        hardError = true;
+      }
+    } finally {
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+      if (searchStatusTimerRef.current != null) {
+        window.clearInterval(searchStatusTimerRef.current);
+        searchStatusTimerRef.current = null;
+      }
+      // Always clear spinner for this generation; superseded searches leave the new one running.
+      if (gen !== searchGenRef.current) {
+        if (searchAbortRef.current === ac) searchAbortRef.current = null;
+        return;
+      }
+
+      if (zoomInOnly) {
+        setSearchingArea(false);
+        setSearchStatus(null);
+        setSearchPrompted(true);
+        if (searchAbortRef.current === ac) searchAbortRef.current = null;
+        return;
+      }
+
+      const outcome = resolveSearchOutcome({
+        resultCount: collected.length,
+        aborted: ac.signal.aborted,
+        hardError,
+        thrown,
+      });
+
+      if (outcome === "results" || outcome === "empty") {
+        // Replace temporary workspace; verified untouched.
+        setSearchResults(
+          replaceSearchResults(collected.slice(0, SEARCH_BATCH), verifiedIds),
+        );
+        searchOk = true;
+        if (outcome === "empty") showToast(SEARCH_EMPTY_TOAST);
+      } else {
+        // Failed with zero usable POIs — keep previous temp, toast once.
+        showToast(SEARCH_FAIL_TOAST);
+        searchOk = false;
+      }
+
+      setSearchingArea(false);
+      setSearchStatus(null);
+      // Success/empty → hide until next pan. Fail → keep prompted for retry.
+      setSearchPrompted(!searchOk);
+      if (searchAbortRef.current === ac) searchAbortRef.current = null;
+    }
+  };
+
+  if (error && !route) {
+    const needsPro =
+      /pro|race pass/i.test(error) || error.toLowerCase().includes("upgrade");
+    if (needsPro) {
+      return (
+        <div className="page-enter">
+          <ProGate
+            feature="planning"
+            intent="import"
+            onBack={onBack}
+            onOpenAccount={onOpenAccount}
+          />
+        </div>
+      );
+    }
+    return (
+      <div className="ultra-page">
+        <header className="ultra-page__nav">
+          <button type="button" className="icon-btn" onClick={onBack} aria-label="Back">
+            <Icon name="chevronLeft" size={22} />
+          </button>
+        </header>
+        <div className="space-loading">{error}</div>
+      </div>
+    );
+  }
+
+  if (!route) {
+    return (
+      <div className="app-loading">
+        <RydnLoader label="Opening route…" />
+      </div>
+    );
+  }
+
+  const prep = route.preparation;
+  const done = CHECKS.filter((c) => prep[c.key]).length;
+  const reviewing = reviewMotion?.stopId === selectedStop?.id ? reviewMotion : null;
+  const locked = Boolean(reviewing);
+
+  return (
+    <div
+      className={[
+        "plan-workspace",
+        mode === "ride" ? "plan-workspace--ride" : "",
+        briefingOpen && mode === "plan" ? "plan-workspace--briefing" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <header className="plan-workspace__top">
+        <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to Planning">
+          <Icon name="chevronLeft" size={20} />
+        </button>
+        <div className="plan-workspace__top-actions">
+          <div className="route-mode-tabs" role="tablist" aria-label="Plan or Ride">
+            <button
+              type="button"
+              role="tab"
+              className={`chip${mode === "plan" ? " is-on" : ""}`}
+              aria-selected={mode === "plan"}
+              onClick={() => setMode("plan")}
+            >
+              Plan
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={`chip${mode === "ride" ? " is-on" : ""}`}
+              aria-selected={mode === "ride"}
+              onClick={() => {
+                cancelCustomDraft();
+                setMode("ride");
+              }}
+            >
+              Ride
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div className="plan-workspace__stage">
+        {/* Map is Plan-only — Ride is full-bleed verified timeline. */}
+        {mode === "plan" && (
+          <PlanMap
+            points={route.points}
+            markers={analysis ? visibleMarkers : []}
+            selectedId={selectedId}
+            fitKey={route.id}
+            focusIds={focusIds}
+            searching={searchingArea}
+            placeMode={placeMode}
+            draftPin={
+              customDraft &&
+              (customDraft.mode === "create" || customDraft.mode === "move")
+                ? { lat: customDraft.lat, lon: customDraft.lon }
+                : null
+            }
+            onSelectMarker={onSelectMarker}
+            onPlace={(lat, lon) => {
+              if (customDraft && (customDraft.mode === "create" || customDraft.mode === "move")) {
+                setCustomDraft({ ...customDraft, lat, lon });
+                return;
+              }
+              setCustomDraft({
+                mode: "create",
+                lat,
+                lon,
+                name: "",
+                kind: "checkpoint",
+              });
+              setPlaceMode(true);
+              setSelectedId(null);
+            }}
+            onDraftMove={(lat, lon) => {
+              setCustomDraft((prev) => (prev ? { ...prev, lat, lon } : prev));
+            }}
+            onViewChange={onViewChange}
+            viewApiRef={planMapViewRef}
+          />
+        )}
+        {mode === "plan" && analyzing && !analysis && (
+          <div className="plan-workspace__analyzing" role="status" aria-live="polite">
+            Analysing course…
+          </div>
+        )}
+
+        {/* Top chrome: exclusive search chip + nearest card (Plan only). */}
+        {mode === "plan" && (
+          <div className="plan-map-top" data-testid="plan-map-top">
+            {placeMode && (
+              <div
+                className="plan-search-chip plan-search-chip--hint plan-place-chip"
+                data-testid="plan-place-chip"
+                role="status"
+              >
+                {customDraft ? "Drag pin to adjust · name below" : "Tap map to place a POI"}
+                <button
+                  type="button"
+                  className="plan-place-chip__cancel"
+                  onClick={cancelCustomDraft}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+            {!placeMode && searchChip === "zoomIn" && (
+              <div
+                className="plan-search-chip plan-search-chip--hint"
+                data-search-chip="zoomIn"
+                role="status"
+              >
+                Zoom in to search this area
+              </div>
+            )}
+            {!placeMode && searchChip === "ready" && (
+              <button
+                type="button"
+                className="plan-search-chip plan-search-chip--action"
+                data-search-chip="ready"
+                onClick={() => void searchThisArea()}
+              >
+                Search this area
+              </button>
+            )}
+            {!placeMode && searchChip === "searching" && (
+              <div
+                className="plan-search-chip plan-search-chip--busy"
+                data-search-chip="searching"
+                role="status"
+                aria-live="polite"
+                aria-busy="true"
+              >
+                <span className="plan-qa__spinner" aria-hidden />
+                Searching…
+              </div>
+            )}
+
+            {!placeMode && nearest && qa && analysis && (
+              <aside className="plan-nearest" aria-label="Nearest for quick action">
+                <p className="plan-nearest__label">
+                  Nearest {QUICK_ACTIONS.find((a) => a.id === qa)?.label || ""} · map center
+                </p>
+                <button
+                  type="button"
+                  className="plan-nearest__row"
+                  onClick={() => {
+                    setSelectedId(nearest.marker.id);
+                    setFocusIds([nearest.marker.id]);
+                  }}
+                >
+                  <span>{nearest.marker.name || nearest.marker.category || "Stop"}</span>
+                  <span>
+                    {nearest.km < 1
+                      ? `${Math.round(nearest.km * 1000)} m`
+                      : `${nearest.km.toFixed(1)} km`}
+                  </span>
+                </button>
+              </aside>
+            )}
+          </div>
+        )}
+
+        {/* Floating right stack — Add POI + More under zoom controls */}
+        {mode === "plan" && (
+          <div className="plan-map-fab" aria-label="Map tools">
+            <button
+              type="button"
+              className={`plan-map-fab__btn plan-map-fab__btn--add${placeMode ? " is-on" : ""}`}
+              aria-label="Add custom POI"
+              aria-pressed={placeMode}
+              title="Add POI"
+              data-testid="plan-add-poi"
+              onClick={() => {
+                if (placeMode || customDraft) cancelCustomDraft();
+                else beginAddCustomPoi();
+              }}
+            >
+              <Icon name="pinPlus" size={20} weight="medium" />
+            </button>
+            <button
+              type="button"
+              className={`plan-map-fab__btn${overflowOpen ? " is-on" : ""}`}
+              aria-label="More"
+              aria-pressed={overflowOpen}
+              onClick={() => setOverflowOpen((o) => !o)}
+            >
+              <span className="plan-map-fab__more" aria-hidden>
+                <i />
+                <i />
+                <i />
+              </span>
+            </button>
+          </div>
+        )}
+
+        {overflowOpen && mode === "plan" && (
+          <aside className="plan-overflow" aria-label="More actions">
+            <button
+              type="button"
+              className="plan-overflow__item"
+              onClick={() => {
+                setBriefingOpen(true);
+                setOverflowOpen(false);
+              }}
+            >
+              Briefing
+            </button>
+            <button
+              type="button"
+              className="plan-overflow__item"
+              disabled={analyzing}
+              onClick={() => {
+                setOverflowOpen(false);
+                void loadAnalysis({ refresh: true });
+              }}
+            >
+              {analyzing ? "Refreshing…" : "Refresh"}
+            </button>
+            {searchChip === "ready" && (
+              <button
+                type="button"
+                className="plan-overflow__item"
+                onClick={() => {
+                  setOverflowOpen(false);
+                  void searchThisArea();
+                }}
+              >
+                Search this area
+              </button>
+            )}
+          </aside>
+        )}
+
+        {/* Quick Actions — Plan only (Ride uses verified timeline). */}
+        {mode === "plan" && (
+          <nav className="plan-qa" aria-label="Quick actions">
+            {QUICK_ACTIONS.map((a) => {
+              const busy = searchingArea && qa === a.id;
+              const on = qa === a.id;
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  className={`plan-qa__btn plan-qa__btn--${a.id}${on ? " is-on" : ""}${busy ? " is-loading" : ""}`}
+                  onClick={() => toggleQa(a.id)}
+                  aria-pressed={on}
+                  aria-busy={busy || undefined}
+                  title={busy ? searchStatus || a.label : a.label}
+                >
+                  <span className="plan-qa__icon" aria-hidden>
+                    {busy ? (
+                      <span className="plan-qa__spinner" />
+                    ) : (
+                      <RydnPlanIcon
+                        id={iconForQuickAction(a.id)}
+                        size={24}
+                        variant={on ? "selected" : "outlined"}
+                      />
+                    )}
+                  </span>
+                  <span className="plan-qa__label">{a.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        )}
+
+        {mode === "ride" && (
+          <RidePanel
+            routeId={routeId}
+            routeName={route.name}
+            verified={rideVerified}
+            profile={analysis?.profile}
+            rideKm={rideKm}
+            routeDistanceKm={route.distanceKm}
+            selectedId={selectedId}
+            liveStatus={liveLoc.status}
+            liveOffRouteM={liveLoc.offRouteM}
+            gpsDrivesKm={liveTracking}
+            onRideKmChange={setRideKm}
+            onSelectStop={(id) => {
+              setSelectedId(id);
+              setFocusIds([id]);
+            }}
+            onProRequired={() => setShowExportGate(true)}
+          />
+        )}
+
+        {showExportGate ? (
+          <div className="pro-gate-overlay" role="dialog" aria-modal="true" aria-label="GPX export is Pro">
+            <ProGate
+              feature="gpxExport"
+              intent="subscribe"
+              onBack={() => setShowExportGate(false)}
+              onOpenAccount={onOpenAccount}
+            />
+          </div>
+        ) : null}
+
+        {/* Custom POI create / edit sheet */}
+        {mode === "plan" && customDraft && (
+          <CustomPoiSheet
+            mode={customDraft.mode === "create" ? "create" : "edit"}
+            initialName={customDraft.name}
+            initialKind={customDraft.kind}
+            distanceAlongKm={draftProjection?.distanceAlongKm ?? null}
+            distanceOffRouteM={draftProjection?.distanceOffRouteM ?? null}
+            saving={customSaving}
+            onSave={(name, kind) => void saveCustomPoi(name, kind)}
+            onCancel={cancelCustomDraft}
+            onDelete={
+              customDraft.id
+                ? () => void deleteCustomPoi(customDraft.id!)
+                : undefined
+            }
+            onMove={
+              customDraft.id
+                ? () => {
+                    setCustomDraft({ ...customDraft, mode: "move" });
+                    setPlaceMode(true);
+                  }
+                : undefined
+            }
+          />
+        )}
+
+        {/* Compact stop sheet — Plan only (Ride cards carry the timeline). */}
+        {mode === "plan" && !customDraft && (selectedStop || peek) && (
+          <div
+            className={`plan-sheet plan-sheet--compact${selectedStop ? " plan-sheet--streetview" : ""}${selectedStop?.reviewStatus === "verified" ? " plan-sheet--verified" : ""}`}
+            role="dialog"
+            aria-label="Selection"
+          >
+            <div className="plan-sheet__handle" aria-hidden />
+            <button
+              type="button"
+              className="plan-sheet__close"
+              aria-label="Close"
+              onClick={() => setSelectedId(null)}
+            >
+              ×
+            </button>
+            {selectedStop && (
+              <>
+                <p className="plan-sheet__eyebrow">
+                  <span className="plan-sheet__cat-chip" aria-hidden>
+                    <RydnPlanIcon
+                      id={iconForCategory(selectedStop.category, selectedStop.group)}
+                      size={14}
+                      className="plan-sheet__eyebrow-icon"
+                    />
+                  </span>
+                  {selectedStop.category}
+                  {selectedStop.is24h ? " · 24h" : ""}
+                </p>
+                <h2 className="plan-sheet__title">{selectedStop.name || selectedStop.category}</h2>
+                <p className="plan-sheet__rating">
+                  {[
+                    selectedStop.distanceOffRouteM != null
+                      ? `${selectedStop.distanceOffRouteM} m off route`
+                      : "On route",
+                    fmtHotelStars(selectedStop.hotelStars),
+                    selectedStop.openingHours || null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+                {(selectedStop.phone || selectedStop.website) && (
+                  <p className="plan-sheet__links">
+                    {selectedStop.phone ? (
+                      <a href={telHref(selectedStop.phone)}>{selectedStop.phone}</a>
+                    ) : null}
+                    {selectedStop.website ? (
+                      <a
+                        href={externalHref(selectedStop.website)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Website
+                      </a>
+                    ) : null}
+                  </p>
+                )}
+                <StreetViewLink
+                  key={selectedStop.id}
+                  latitude={selectedStop.lat}
+                  longitude={selectedStop.lon}
+                />
+                <div className="plan-sheet__nav plan-sheet__nav--pair" role="group" aria-label="Maps actions">
+                  <a
+                    className="plan-sheet__nav-btn plan-sheet__nav-btn--emphasis"
+                    href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).google}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Directions
+                  </a>
+                  <a
+                    className="plan-sheet__nav-btn"
+                    href={
+                      selectedStop.googleMapsUrl ||
+                      mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open Google Maps
+                  </a>
+                </div>
+                <div className="plan-sheet__cta">
+                  <button
+                    type="button"
+                    className={[
+                      "btn",
+                      "btn--block",
+                      "plan-sheet__verify",
+                      selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
+                        ? "plan-sheet__verify--done"
+                        : "btn--primary",
+                      reviewing?.status === "verified" ? "btn--working" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    disabled={
+                      selectedStop.reviewStatus === "verified" ||
+                      (locked && reviewing?.status !== "verified")
+                    }
+                    aria-busy={reviewing?.status === "verified" || undefined}
+                    onClick={() => reviewStop(selectedStop.id, "verified")}
+                  >
+                    {reviewing?.status === "verified" && reviewing.phase === "confirming" && (
+                      <span className="btn__spinner" aria-hidden />
+                    )}
+                    {selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
+                      ? "Verified ✓"
+                      : "✓ Verify"}
+                  </button>
+                </div>
+              </>
+            )}
+            {peek?.kind === "climb" && (
+              <>
+                <p className="plan-sheet__eyebrow">Climb</p>
+                <h2 className="plan-sheet__title">
+                  {peek.climb.name || `Climb · km ${peek.climb.startKm.toFixed(0)}`}
+                </h2>
+                <p className="plan-sheet__rating">
+                  km {peek.climb.startKm.toFixed(0)}–{peek.climb.endKm.toFixed(0)} ·{" "}
+                  {peek.climb.lengthKm.toFixed(1)} km · {peek.climb.elevationGainM} m · avg{" "}
+                  {peek.climb.avgGradientPct}%
+                  {peek.climb.estimatedClimbTimeS
+                    ? ` · ~${fmtDuration(peek.climb.estimatedClimbTimeS)}`
+                    : ""}
+                </p>
+              </>
+            )}
+            {peek?.kind === "remote" && (
+              <>
+                <p className="plan-sheet__eyebrow">Remote · {peek.gap.riskLevel}</p>
+                <h2 className="plan-sheet__title">{peek.gap.label}</h2>
+                <p className="plan-sheet__why">{peek.gap.preparation}</p>
+              </>
+            )}
+            {peek?.kind === "decision" && (
+              <>
+                <p className="plan-sheet__eyebrow">Critical decision</p>
+                <h2 className="plan-sheet__title">{peek.decision.title}</h2>
+                <p className="plan-sheet__why">
+                  {peek.decision.detail} — {peek.decision.advice}
+                </p>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Briefing drawer — secondary editorial content */}
+      {briefingOpen && mode === "plan" && analysis && (
+        <aside className="plan-briefing" aria-label="Planning briefing">
+          <div className="plan-briefing__tabs">
+            {(
+              [
+                ["critical", "Critical"],
+                ["stops", "Stops"],
+                ["climbs", "Climbs"],
+                ["stages", "Stages"],
+                ["verify", `Verify · ${verifiedCount}/${recommended.length || 0}`],
+                ["prep", "Prep"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={`chip${briefingTab === id ? " is-on" : ""}`}
+                onClick={() => setBriefingTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="plan-briefing__body">
+            {briefingTab === "critical" && (
+              <>
+                <h2 className="plan-briefing__heading">Critical decisions</h2>
+                {decisions.length === 0 ? (
+                  <p className="space__hint">No critical decisions yet.</p>
+                ) : (
+                  <div className="plan-list">
+                    {decisions.map((d) => (
+                      <button
+                        type="button"
+                        key={d.id}
+                        className="plan-row plan-row--click"
+                        onClick={() => {
+                          setSelectedId(d.relatedStopId || d.id);
+                          setBriefingOpen(false);
+                        }}
+                      >
+                        <div className="plan-row__main">
+                          <span className="plan-row__title">{d.title}</span>
+                          <span className="plan-row__meta">
+                            km {d.km.toFixed(0)} · {d.detail}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {briefingTab === "stops" && (
+              <>
+                <h2 className="plan-briefing__heading">
+                  Recommended · {pendingCount} left
+                </h2>
+                <div className="plan-list plan-list--compact">
+                  {recommended.map((s) => (
+                    <button
+                      type="button"
+                      key={s.id}
+                      className={`plan-row plan-row--click plan-row--${s.reviewStatus}`}
+                      onClick={() => {
+                        setSelectedId(s.id);
+                        setBriefingOpen(false);
+                      }}
+                    >
+                      <div className="plan-row__main">
+                        <span className="plan-row__title">
+                          {s.name || s.category}
+                          <span className="plan-pill plan-pill--quiet">{s.reviewStatus}</span>
+                        </span>
+                        <span className="plan-row__meta">
+                          km {s.distanceAlongKm.toFixed(0)} · {s.category}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {briefingTab === "climbs" && (
+              <>
+                <h2 className="plan-briefing__heading">Major climbs</h2>
+                <div className="plan-list">
+                  {analysis.climbs.map((c) => (
+                    <button
+                      type="button"
+                      key={c.id}
+                      className="plan-row plan-row--click"
+                      onClick={() => {
+                        setSelectedId(c.id);
+                        setBriefingOpen(false);
+                      }}
+                    >
+                      <div className="plan-row__main">
+                        <span className="plan-row__title">
+                          {c.name || `Climb · km ${c.startKm.toFixed(0)}`}
+                        </span>
+                        <span className="plan-row__meta">
+                          {c.lengthKm.toFixed(1)} km · {c.elevationGainM} m · avg {c.avgGradientPct}%
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {briefingTab === "stages" && (
+              <>
+                <h2 className="plan-briefing__heading">Stage plan</h2>
+                <div className="plan-stage-controls">
+                  <label className="field">
+                    <span>Target km / day</span>
+                    <input
+                      type="number"
+                      min={60}
+                      max={400}
+                      step={10}
+                      value={targetKm}
+                      onChange={(e) => setTargetKm(Number(e.target.value) || 250)}
+                      disabled={analyzing}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn--ghost"
+                    disabled={analyzing}
+                    onClick={() => void loadAnalysis({ targetStageKm: targetKm })}
+                  >
+                    Recalculate
+                  </button>
+                </div>
+                <div className="plan-list">
+                  {analysis.stages.map((s) => (
+                    <div className="plan-row" key={s.index}>
+                      <div className="plan-row__main">
+                        <span className="plan-row__title">
+                          {s.label}
+                          <span className="plan-pill plan-pill--quiet">{s.distanceKm} km</span>
+                        </span>
+                        <span className="plan-row__meta">
+                          km {s.startKm.toFixed(0)}–{s.endKm.toFixed(0)} · {s.reason}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {briefingTab === "verify" && (
+              <>
+                <h2 className="plan-briefing__heading">Verify deck</h2>
+                <p className="ua-block__lead">
+                  {verifiedCount} verified · {pendingCount} remaining. Tap Verify on the map sheet, or
+                  step through here.
+                </p>
+                {verifyStop ? (
+                  <div className="plan-verify-mini">
+                    <p className="plan-sheet__eyebrow">
+                      Stop {verifyIndex + 1} of {recommended.length}
+                    </p>
+                    <h3 className="plan-sheet__title">{verifyStop.name || verifyStop.category}</h3>
+                    <p className="plan-sheet__why">{recommendWhy(verifyStop)}</p>
+                    <div className="plan-sheet__actions">
+                      {(["verified", "rejected", "skipped"] as ReviewStatus[]).map((status) => (
+                        <button
+                          key={status}
+                          type="button"
+                          className={`btn${status !== "verified" ? " btn--ghost" : ""}`}
+                          disabled={Boolean(reviewMotion)}
+                          onClick={() => reviewStop(verifyStop.id, status)}
+                        >
+                          {REVIEW_LABELS[status].idle}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="verify-card__nav">
+                      <button
+                        type="button"
+                        className="btn btn--ghost"
+                        disabled={verifyIndex <= 0 || Boolean(reviewMotion)}
+                        onClick={() => {
+                          const next = Math.max(0, verifyIndex - 1);
+                          setVerifyIndex(next);
+                          setSelectedId(recommended[next]?.id ?? null);
+                        }}
+                      >
+                        Previous
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--ghost"
+                        disabled={verifyIndex >= recommended.length - 1 || Boolean(reviewMotion)}
+                        onClick={() => {
+                          const next = Math.min(recommended.length - 1, verifyIndex + 1);
+                          setVerifyIndex(next);
+                          setSelectedId(recommended[next]?.id ?? null);
+                        }}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="space__hint">No recommendations to verify yet.</p>
+                )}
+              </>
+            )}
+
+            {briefingTab === "prep" && (
+              <>
+                <h2 className="plan-briefing__heading">Preparation</h2>
+                <label className="field" style={{ marginBottom: 12 }}>
+                  <span>Route name</span>
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onBlur={() => void saveName()}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") e.currentTarget.blur();
+                    }}
+                    disabled={busy}
+                    aria-label="Route name"
+                  />
+                </label>
+                <div className="ultra-page__score" style={{ marginBottom: 12 }}>
+                  <ScoreLine
+                    distanceKm={route.distanceKm}
+                    elevationGainM={route.elevationGainM}
+                    durationS={0}
+                    hideDuration
+                  />
+                </div>
+                <div className="plan-dates">
+                  <label className="field">
+                    <span>Start</span>
+                    <input
+                      type="date"
+                      value={dateStart}
+                      onChange={(e) => setDateStart(e.target.value)}
+                      onBlur={() => void saveDates()}
+                      disabled={busy}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>End</span>
+                    <input
+                      type="date"
+                      value={dateEnd}
+                      onChange={(e) => setDateEnd(e.target.value)}
+                      onBlur={() => void saveDates()}
+                      disabled={busy}
+                    />
+                  </label>
+                </div>
+                <label className="field">
+                  <span className="visually-hidden">Notes</span>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    onBlur={() => void saveNotes()}
+                    placeholder="Hotel bookings, customs, shops you already trust…"
+                    rows={3}
+                    disabled={busy}
+                  />
+                </label>
+                <p className="ua-block__lead" style={{ marginTop: 16 }}>
+                  Checklist · {done}/{CHECKS.length}
+                </p>
+                <ul className="verify-list">
+                  {CHECKS.map((c) => (
+                    <li key={c.key}>
+                      <label className={`verify-row${prep[c.key] ? " is-done" : ""}`}>
+                        <input
+                          type="checkbox"
+                          checked={!!prep[c.key]}
+                          disabled={busy}
+                          onChange={() => void toggleCheck(c.key)}
+                        />
+                        <span>
+                          <span className="verify-row__label">{c.label}</span>
+                          <span className="verify-row__hint">{c.doneHint(analysis)}</span>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  style={{ marginTop: 16 }}
+                  onClick={() => void onDelete()}
+                  disabled={busy}
+                >
+                  Delete route
+                </button>
+              </>
+            )}
+          </div>
+        </aside>
+      )}
+
+      {toast && (
+        <div className="plan-toast" role="status" aria-live="polite" data-testid="plan-toast">
+          {toast}
+        </div>
+      )}
+
+      {error && !isZoomInSearchError(error) && (
+        <div className="banner banner--err plan-workspace__err">{error}</div>
+      )}
+    </div>
+  );
+}

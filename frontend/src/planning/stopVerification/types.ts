@@ -48,6 +48,21 @@ export interface VerifiedStopRecord {
   updatedAt: string;
 }
 
-export function verifiedStopKey(zoneId: number): string {
-  return String(zoneId);
+export function verifiedStopKey(zoneId: number, poiId?: string | null): string {
+  return poiId ?? String(zoneId);
+}
+
+/** Resolve verification record using poi_id first, then legacy zone key. */
+export function lookupVerifiedStopRecord(
+  verifiedStops: Record<string, VerifiedStopRecord>,
+  zoneId: number,
+  poiId?: string | null,
+): VerifiedStopRecord | undefined {
+  for (const key of [poiId, String(zoneId)].filter(Boolean) as string[]) {
+    const record = verifiedStops[key];
+    if (record?.status) {
+      return record;
+    }
+  }
+  return undefined;
 }

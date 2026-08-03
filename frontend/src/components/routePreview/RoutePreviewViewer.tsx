@@ -60,7 +60,6 @@ const RoutePreviewViewer = forwardRef<RoutePreviewViewerHandle, RoutePreviewView
     }));
 
     useEffect(() => {
-      console.info("[RoutePreview] RoutePreviewViewer mounted (Three.js / RoutePreviewEngine)");
       const host = hostRef.current;
       if (!host) {
         return;

@@ -10,13 +10,14 @@ import {
   markVerificationsSynced,
   removeSyncedVerifications,
 } from "../lib/verificationQueue";
+import { logSyncDebug } from "@shared/sync/syncDebugLog";
 
 export async function syncPendingVerifications(
   accessToken: string,
   userId: string | null,
   online: boolean,
   options?: {
-    bundle: CompanionBundle | null;
+    getBundle?: () => CompanionBundle | null;
     onBundleUpdate?: (bundle: CompanionBundle) => void;
   },
 ): Promise<void> {
@@ -38,9 +39,10 @@ export async function syncPendingVerifications(
   if (syncedIds.length > 0) {
     await markVerificationsSynced(syncedIds);
     await removeSyncedVerifications();
-    if (options?.bundle && options.onBundleUpdate) {
+    const currentBundle = options?.getBundle?.() ?? null;
+    if (currentBundle && options?.onBundleUpdate) {
       const next = applySyncedVerificationsToBundle(
-        options.bundle,
+        currentBundle,
         syncedItems.map(({ synced: _synced, ...submission }) => submission),
       );
       options.onBundleUpdate(next);
@@ -52,14 +54,14 @@ export function useVerificationSync(
   online: boolean,
   userId: string | null,
   options?: {
-    bundle: CompanionBundle | null;
+    getBundle?: () => CompanionBundle | null;
     onBundleUpdate?: (bundle: CompanionBundle) => void;
   },
 ) {
   const { session } = useAuth();
   const syncingRef = useRef(false);
-  const bundleRef = useRef(options?.bundle ?? null);
-  bundleRef.current = options?.bundle ?? null;
+  const getBundleRef = useRef(options?.getBundle);
+  getBundleRef.current = options?.getBundle;
 
   const syncNow = useCallback(async () => {
     if (!session?.access_token || syncingRef.current) {
@@ -68,11 +70,12 @@ export function useVerificationSync(
     syncingRef.current = true;
     try {
       await syncPendingVerifications(session.access_token, userId, online, {
-        bundle: bundleRef.current,
+        getBundle: () => getBundleRef.current?.() ?? null,
         onBundleUpdate: options?.onBundleUpdate,
       });
-    } catch {
-      // Keep queued for next attempt.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logSyncDebug("verification-sync", `Pending verification sync failed: ${message}`);
     } finally {
       syncingRef.current = false;
     }

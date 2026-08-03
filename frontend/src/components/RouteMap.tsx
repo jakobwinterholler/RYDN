@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import {
   CircleMarker,
@@ -9,7 +9,12 @@ import {
   useMap,
   useMapEvents,
 } from "react-leaflet";
-import type { ClimbCandidateRow, ClimbRow, ResupplyZone, RouteVisualization } from "../api";
+import type { ClimbCandidateRow, ClimbRow, ResupplyZone, RoadbookResult, RouteVisualization } from "../api";
+import { discoverMarkerHtml } from "@shared/race/discoverMarker";
+import type { DiscoverCandidate } from "@shared/race/discoverStops";
+import { poiOsmKey } from "@shared/race/discoverStops";
+import { mapBoundsFromLeaflet } from "../planning/discoverStopsAdapter";
+import type { MapBounds } from "@shared/race/discoverStops";
 import { legendForView } from "../planning/viewModel";
 import type { OverlayMode, TimeMode, ZoneDensityMode } from "../planning/types";
 import type { TimeWindowId } from "../planning/timeWindows";
@@ -17,12 +22,18 @@ import { zoneAvailability } from "../planning/stopAvailability";
 import { climbDisplayName } from "../planning/climbLabels";
 import { surfaceSegmentMatchesSelection } from "../planning/surfaceBreakdown";
 import { primaryMapPois } from "../planning/poiMapMarkers";
+import {
+  buildSuggestedStopMapMarkers,
+  isSuggestedStopVerified,
+  suggestedStopMarkerColor,
+} from "../planning/suggestedStopMapMarkers";
 import type { KmRangeSelection } from "../planning/useRouteWorkspaceSelection";
 import type { StopSelection } from "../planning/stopSelection";
 import OverlayLegend from "./OverlayLegend";
 import { zoneHasCategory } from "./routeInsights";
 import { useRace } from "../races/RaceContext";
 import {
+  verificationStatusPresentation,
   verificationStatusTooltipLabel,
   zoneVerificationStatus,
 } from "../planning/stopVerification/verificationStatusPresentation";
@@ -83,6 +94,11 @@ interface RouteMapProps {
   climbDebugMode?: boolean;
   onPoiDebugClick?: (lat: number, lon: number) => void;
   onClimbDebugClick?: (lat: number, lon: number) => void;
+  discoverCandidates?: DiscoverCandidate[];
+  selectedDiscoverKey?: string | null;
+  onDiscoverBoundsChange?: (bounds: MapBounds) => void;
+  onSelectDiscoverCandidate?: (candidate: DiscoverCandidate) => void;
+  roadbookResult?: RoadbookResult | null;
 }
 
 function PanToFocus({
@@ -105,9 +121,16 @@ function PanToFocus({
   focusKmRange?: KmRangeSelection | null;
 }) {
   const map = useMap();
+  const lastFocusKeyRef = useRef<string | null>(null);
+  const FOCUS_DURATION_S = 1;
 
   useEffect(() => {
     if (focusKmRange) {
+      const focusKey = `range:${focusKmRange.startKm}-${focusKmRange.endKm}`;
+      if (focusKey === lastFocusKeyRef.current) {
+        return;
+      }
+      lastFocusKeyRef.current = focusKey;
       const bounds = boundsForKmRange(points, focusKmRange.startKm, focusKmRange.endKm);
       if (bounds) {
         fitPlanningBounds(map, bounds, "local", {
@@ -120,6 +143,11 @@ function PanToFocus({
     }
 
     if (selectedCandidateId && selectedCandidate) {
+      const focusKey = `candidate:${selectedCandidateId}`;
+      if (focusKey === lastFocusKeyRef.current) {
+        return;
+      }
+      lastFocusKeyRef.current = focusKey;
       const bounds = boundsForKmRange(points, selectedCandidate.start_km, selectedCandidate.end_km);
       if (bounds) {
         fitPlanningBounds(map, bounds, "local", {
@@ -132,6 +160,11 @@ function PanToFocus({
     }
 
     if (selectedClimbId && selectedClimb) {
+      const focusKey = `climb:${selectedClimbId}`;
+      if (focusKey === lastFocusKeyRef.current) {
+        return;
+      }
+      lastFocusKeyRef.current = focusKey;
       const bounds = boundsForKmRange(points, selectedClimb.start_km, selectedClimb.end_km);
       if (bounds) {
         fitPlanningBounds(map, bounds, "local", {
@@ -144,8 +177,19 @@ function PanToFocus({
     }
 
     if (selectedZoneId && selectedZone) {
-      map.setView([selectedZone.lat, selectedZone.lon], Math.max(map.getZoom(), 14), { animate: true });
+      const focusKey = `zone:${selectedZoneId}`;
+      if (focusKey === lastFocusKeyRef.current) {
+        return;
+      }
+      lastFocusKeyRef.current = focusKey;
+      map.flyTo([selectedZone.lat, selectedZone.lon], Math.max(map.getZoom(), 14), {
+        animate: true,
+        duration: FOCUS_DURATION_S,
+      });
+      return;
     }
+
+    lastFocusKeyRef.current = null;
   }, [
     map,
     points,
@@ -261,6 +305,36 @@ function poiDivIcon(icon: string): L.DivIcon {
   });
 }
 
+function discoverDivIcon(selected = false, animationDelayMs = 0): L.DivIcon {
+  const markerSpan = selected ? 17 : 16;
+  return L.divIcon({
+    html: discoverMarkerHtml({ selected, animationDelayMs }),
+    className: "discover-marker",
+    iconSize: [markerSpan, markerSpan],
+    iconAnchor: [markerSpan / 2, markerSpan / 2],
+  });
+}
+
+function MapBoundsWatcher({ onBoundsChange }: { onBoundsChange?: (bounds: MapBounds) => void }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!onBoundsChange) {
+      return;
+    }
+    const emit = () => onBoundsChange(mapBoundsFromLeaflet(map.getBounds()));
+    emit();
+    map.on("moveend", emit);
+    map.on("zoomend", emit);
+    return () => {
+      map.off("moveend", emit);
+      map.off("zoomend", emit);
+    };
+  }, [map, onBoundsChange]);
+
+  return null;
+}
+
 export default function RouteMap({
   route,
   zones,
@@ -289,6 +363,11 @@ export default function RouteMap({
   climbDebugMode = false,
   onPoiDebugClick,
   onClimbDebugClick,
+  discoverCandidates = [],
+  selectedDiscoverKey = null,
+  onDiscoverBoundsChange,
+  onSelectDiscoverCandidate,
+  roadbookResult = null,
 }: RouteMapProps) {
   const { verifiedStops } = useRace();
   const [mapZoom, setMapZoom] = useState(11);
@@ -313,6 +392,17 @@ export default function RouteMap({
     rejectedClimbs.find((candidate) => candidate.candidate_id === selectedCandidateId) ?? null;
   const legend = legendForView(overlay, timeMode);
   const poiMarkers = useMemo(() => primaryMapPois(zones, zoneDensity), [zones, zoneDensity]);
+  const suggestedMarkers = useMemo(
+    () => (roadbookResult ? buildSuggestedStopMapMarkers(roadbookResult, verifiedStops) : []),
+    [roadbookResult, verifiedStops],
+  );
+  const zonesById = useMemo(
+    () =>
+      new Map(
+        (roadbookResult?.resupply_zones ?? zones).map((zone) => [zone.zone_id, zone] as const),
+      ),
+    [roadbookResult?.resupply_zones, zones],
+  );
   const focusActive =
     selectedClimbId !== null || selectedZoneId !== null || highlightKmRange !== null;
   const showLabels = mapZoom >= 14;
@@ -343,6 +433,7 @@ export default function RouteMap({
         <PlanningTileLayer />
         <FitBounds route={route} />
         <ZoomWatcher onZoomChange={setMapZoom} />
+        <MapBoundsWatcher onBoundsChange={onDiscoverBoundsChange} />
         <PanToFocus
           points={route.track_points}
           selectedZone={selectedZone}
@@ -480,6 +571,22 @@ export default function RouteMap({
           );
         })}
 
+        {discoverCandidates.map((candidate, index) => {
+          const key = poiOsmKey(candidate.osmType, candidate.osmId);
+          const selected = selectedDiscoverKey === key;
+          return (
+            <Marker
+              key={`discover-${key}`}
+              position={[candidate.lat, candidate.lon]}
+              icon={discoverDivIcon(selected, index * 60)}
+              zIndexOffset={selected ? 700 : 400}
+              eventHandlers={{
+                click: () => onSelectDiscoverCandidate?.(candidate),
+              }}
+            />
+          );
+        })}
+
         {poiMarkers.map((marker) => (
           <Marker
             key={`${marker.poi.osm_type}-${marker.poi.osm_id}`}
@@ -495,6 +602,38 @@ export default function RouteMap({
           </Marker>
         ))}
 
+        {suggestedMarkers.map((marker) => {
+          const zone = zonesById.get(marker.stop.zone_id);
+          if (!zone) {
+            return null;
+          }
+          const selected = selectedZoneId === marker.stop.zone_id;
+          const verified = isSuggestedStopVerified(marker.verificationStatus);
+          const fillColor = suggestedStopMarkerColor(marker.verificationStatus);
+          return (
+            <Marker
+              key={`suggested-${marker.stop.osm_type}-${marker.stop.osm_id}`}
+              position={[marker.stop.lat, marker.stop.lon]}
+              icon={zoneMapDivIcon({
+                fillColor,
+                selected,
+                dimmed: focusActive && selectedZoneId !== null && !selected,
+                verified,
+              })}
+              zIndexOffset={selected ? 500 : verified ? 200 : 0}
+              eventHandlers={{
+                click: () => onSelectPoi({ kind: "poi", poi: marker.poi, zone }),
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -8]} opacity={0.95}>
+                {marker.label}
+                {" · "}
+                {verificationStatusTooltipLabel(marker.verificationStatus)}
+              </Tooltip>
+            </Marker>
+          );
+        })}
+
         {zones.map((zone) => {
           const availability = zoneAvailability(zone, arrivalTimeWindow, timeMode);
           const verificationStatus = zoneVerificationStatus(zone.zone_id, verifiedStops);
@@ -503,7 +642,9 @@ export default function RouteMap({
           const dimmed =
             availability?.status === "closed" ||
             (focusActive && selectedZoneId !== null && !selected);
-          const fillColor = zoneMarkerColor(zone, overlay, timeMode, route);
+          const statusPresentation = verificationStatusPresentation(verificationStatus);
+          const fillColor =
+            statusPresentation.markerColor ?? zoneMarkerColor(zone, overlay, timeMode, route);
 
           return (
             <Marker

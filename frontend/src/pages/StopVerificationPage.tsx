@@ -9,7 +9,7 @@ import VerifiedPlanOverview from "../components/verification/VerifiedPlanOvervie
 import VerificationOverviewHub from "../components/verification/VerificationOverviewHub";
 import { usePlanning } from "../planning/PlanningContext";
 import { usePlanningAssumptions } from "../planning/usePlanningAssumptions";
-import { presentZones } from "../planning/zonePresentation";
+import { presentSuggestedStops } from "../planning/suggestedStops";
 import {
   batchIsComplete,
   countBatchPending,
@@ -33,9 +33,10 @@ import {
   type NearbyAlternativeStop,
 } from "../planning/stopVerification/nearbyAlternatives";
 import type { PrioritizedStop } from "../planning/stopVerification/priority";
-import type { StopRejectReason } from "../planning/stopVerification/types";
+import type { StopRejectReason, VerifiedStopRecord } from "../planning/stopVerification/types";
 import { verifiedStopKey } from "../planning/stopVerification/types";
 import { buildHubRecommendations } from "../planning/hubRecommendations";
+import { updateRacePreparation } from "../races/api";
 import { useRace } from "../races/RaceContext";
 
 interface StopVerificationPageProps {
@@ -68,30 +69,28 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
   const [planFinished, setPlanFinished] = useState(false);
   const [viewMode, setViewMode] = useState<VerifyViewMode>("overview");
   const [alternativeBranch, setAlternativeBranch] = useState<AlternativeBranch | null>(null);
+  const [lastUndo, setLastUndo] = useState<{
+    zoneId: number;
+    previous: VerifiedStopRecord | null;
+    batchIndex: number;
+  } | null>(null);
   const batchInitRef = useRef(false);
 
-  const planningHubs = useMemo(
-    () =>
-      presentZones(
-        result.resupply_zones,
-        timeMode,
-        "planning",
-        result.summary.distance_km,
-        result.route,
-      ),
-    [result.resupply_zones, timeMode, result.summary.distance_km, result.route],
+  const suggestedStops = useMemo(
+    () => presentSuggestedStops(result, timeMode),
+    [result, timeMode],
   );
 
   const fullRoute = useMemo(
     () =>
       buildVerificationRoute(
-        planningHubs,
+        suggestedStops,
         result.route,
         result.summary.distance_km,
         arrivalTimeWindow,
         timeMode,
       ),
-    [planningHubs, result.route, result.summary.distance_km, arrivalTimeWindow, timeMode],
+    [suggestedStops, result.route, result.summary.distance_km, arrivalTimeWindow, timeMode],
   );
 
   const verifiedPlan = useMemo(
@@ -101,19 +100,19 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
         verifiedStops,
         result.route,
         result.summary.distance_km,
-        planningHubs,
+        suggestedStops,
       ),
-    [fullRoute, verifiedStops, result.route, result.summary.distance_km, planningHubs],
+    [fullRoute, verifiedStops, result.route, result.summary.distance_km, suggestedStops],
   );
 
   const progress = useMemo(
-    () => verificationProgress(planningHubs, verifiedStops),
-    [planningHubs, verifiedStops],
+    () => verificationProgress(suggestedStops, verifiedStops),
+    [suggestedStops, verifiedStops],
   );
 
   const remainingCandidates = useMemo(
-    () => remainingCandidateCount(planningHubs, verifiedStops),
-    [planningHubs, verifiedStops],
+    () => remainingCandidateCount(suggestedStops, verifiedStops),
+    [suggestedStops, verifiedStops],
   );
 
   const batchActive = activeBatch !== null && activeBatch.length > 0;
@@ -148,10 +147,11 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
 
   const rejectedCount = useMemo(
     () =>
-      planningHubs.filter(
-        (zone) => verifiedStops[verifiedStopKey(zone.zone_id)]?.status === "rejected",
-      ).length,
-    [planningHubs, verifiedStops],
+      suggestedStops.filter((zone) => {
+        const status = verifiedStops[verifiedStopKey(zone.zone_id)]?.status;
+        return status === "rejected" || status === "deferred";
+      }).length,
+    [suggestedStops, verifiedStops],
   );
 
   useEffect(() => {
@@ -187,7 +187,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
 
   const handleStartBatch = useCallback(() => {
     const batch = selectNextBatch(
-      planningHubs,
+      suggestedStops,
       result.route,
       result.summary.distance_km,
       verifiedStops,
@@ -203,7 +203,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
     setRoundNumber((round) => round + 1);
     setCurrentIndex(0);
   }, [
-    planningHubs,
+    suggestedStops,
     result.route,
     result.summary.distance_km,
     verifiedStops,
@@ -336,10 +336,15 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
       status: "verified" | "rejected" | "deferred",
       rejectReason?: StopRejectReason,
       rejectNotes?: string,
+      batchIndex?: number,
     ) => {
       setSaving(true);
       try {
-        const zone = planningHubs.find((entry) => entry.zone_id === zoneId);
+        const previous = verifiedStops[verifiedStopKey(zoneId)] ?? null;
+        if (batchIndex !== undefined) {
+          setLastUndo({ zoneId, previous, batchIndex });
+        }
+        const zone = suggestedStops.find((entry) => entry.zone_id === zoneId);
         const best = zone ? buildHubRecommendations(zone).best : null;
         await saveVerifiedStop(zoneId, {
           status,
@@ -357,7 +362,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
         setSaving(false);
       }
     },
-    [planningHubs, saveVerifiedStop],
+    [suggestedStops, saveVerifiedStop, verifiedStops],
   );
 
   const handleVerify = useCallback(async () => {
@@ -366,7 +371,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
     }
     const zoneId = effectiveCurrent.zone.zone_id;
     const batchIndex = alternativeBranch ? alternativeBranch.resumeBatchIndex : currentIndex;
-    await persistDecision(zoneId, "verified");
+    await persistDecision(zoneId, "verified", undefined, undefined, batchIndex);
     const updatedStops = {
       ...verifiedStops,
       [verifiedStopKey(zoneId)]: {
@@ -392,7 +397,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
     }
     const anchor = effectiveCurrent;
     const zoneId = anchor.zone.zone_id;
-    await persistDecision(zoneId, "verified");
+    await persistDecision(zoneId, "verified", undefined, undefined, currentIndex);
     const updatedStops = {
       ...verifiedStops,
       [verifiedStopKey(zoneId)]: {
@@ -422,7 +427,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
     }
     const anchor = effectiveCurrent;
     const zoneId = anchor.zone.zone_id;
-    await persistDecision(zoneId, "deferred");
+    await persistDecision(zoneId, "deferred", undefined, undefined, currentIndex);
     const updatedStops = {
       ...verifiedStops,
       [verifiedStopKey(zoneId)]: {
@@ -446,51 +451,18 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
     advanceAfterDecision,
   ]);
 
-  const handleRejectStart = useCallback(() => {
-    if (!effectiveCurrent || saving || !currentPending) {
-      return;
-    }
-    setRejectingZoneId(effectiveCurrent.zone.zone_id);
-  }, [effectiveCurrent, saving, currentPending]);
-
-  const handleRejectConfirm = useCallback(
-    async (reason: StopRejectReason, notes?: string) => {
-      if (rejectingZoneId === null) {
-        return;
-      }
-      const zoneId = rejectingZoneId;
-      setRejectingZoneId(null);
-      await persistDecision(zoneId, "rejected", reason, notes);
-      const zone = planningHubs.find((entry) => entry.zone_id === zoneId);
-      const best = zone ? buildHubRecommendations(zone).best : null;
-      const batchIndex = alternativeBranch ? alternativeBranch.resumeBatchIndex : currentIndex;
-      const updatedStops = {
-        ...verifiedStops,
-        [verifiedStopKey(zoneId)]: {
-          status: "rejected" as const,
-          rejectReason: reason,
-          rejectNotes: notes,
-          feedbackContext:
-            zone ? buildRejectFeedbackContext(zone, best, reason) : undefined,
-          updatedAt: new Date().toISOString(),
-        },
-      };
-      advanceAfterDecision(batchIndex, updatedStops);
-    },
-    [rejectingZoneId, persistDecision, verifiedStops, advanceAfterDecision, currentIndex, planningHubs, alternativeBranch],
-  );
-
-  const handleLater = useCallback(async () => {
+  const handleSkip = useCallback(async () => {
     if (!effectiveCurrent || saving || !currentPending) {
       return;
     }
     const zoneId = effectiveCurrent.zone.zone_id;
     const batchIndex = alternativeBranch ? alternativeBranch.resumeBatchIndex : currentIndex;
-    await persistDecision(zoneId, "deferred");
+    await persistDecision(zoneId, "rejected", "not_practical", undefined, batchIndex);
     const updatedStops = {
       ...verifiedStops,
       [verifiedStopKey(zoneId)]: {
-        status: "deferred" as const,
+        status: "rejected" as const,
+        rejectReason: "not_practical" as const,
         updatedAt: new Date().toISOString(),
       },
     };
@@ -505,6 +477,54 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
     verifiedStops,
     advanceAfterDecision,
   ]);
+
+  const handleUndo = useCallback(async () => {
+    if (!lastUndo || !activeRaceId || saving) {
+      return;
+    }
+    setSaving(true);
+    try {
+      const key = verifiedStopKey(lastUndo.zoneId);
+      if (lastUndo.previous) {
+        await saveVerifiedStop(lastUndo.zoneId, lastUndo.previous);
+      } else {
+        await updateRacePreparation(activeRaceId, {
+          verifiedStops: { [key]: { _delete: true } },
+        });
+      }
+      setCurrentIndex(lastUndo.batchIndex);
+      setLastUndo(null);
+    } finally {
+      setSaving(false);
+    }
+  }, [lastUndo, activeRaceId, saving, saveVerifiedStop]);
+
+  const handleRejectConfirm = useCallback(
+    async (reason: StopRejectReason, notes?: string) => {
+      if (rejectingZoneId === null) {
+        return;
+      }
+      const zoneId = rejectingZoneId;
+      setRejectingZoneId(null);
+      const batchIndex = alternativeBranch ? alternativeBranch.resumeBatchIndex : currentIndex;
+      await persistDecision(zoneId, "rejected", reason, notes, batchIndex);
+      const zone = suggestedStops.find((entry) => entry.zone_id === zoneId);
+      const best = zone ? buildHubRecommendations(zone).best : null;
+      const updatedStops = {
+        ...verifiedStops,
+        [verifiedStopKey(zoneId)]: {
+          status: "rejected" as const,
+          rejectReason: reason,
+          rejectNotes: notes,
+          feedbackContext:
+            zone ? buildRejectFeedbackContext(zone, best, reason) : undefined,
+          updatedAt: new Date().toISOString(),
+        },
+      };
+      advanceAfterDecision(batchIndex, updatedStops);
+    },
+    [rejectingZoneId, persistDecision, verifiedStops, advanceAfterDecision, currentIndex, suggestedStops, alternativeBranch],
+  );
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -544,11 +564,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
         case "Delete":
         case "Backspace":
           event.preventDefault();
-          handleRejectStart();
-          break;
-        case " ":
-          event.preventDefault();
-          void handleLater();
+          void handleSkip();
           break;
         default:
           break;
@@ -557,7 +573,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [rejectingZoneId, showingVerificationCard, viewMode, goPrevious, goNext, handleVerify, handleRejectStart, handleLater]);
+  }, [rejectingZoneId, showingVerificationCard, viewMode, goPrevious, goNext, handleVerify, handleSkip]);
 
   const currentStatus = effectiveCurrent
     ? verifiedStops[verifiedStopKey(effectiveCurrent.zone.zone_id)]?.status
@@ -604,7 +620,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
         <VerifiedPlanOverview
           route={result.route}
           plan={verifiedPlan}
-          planningHubs={planningHubs}
+          planningHubs={suggestedStops}
           verifiedRecords={verifiedStops}
         />
         <div className="mt-6">
@@ -634,7 +650,7 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
           <VerifiedPlanOverview
             route={result.route}
             plan={verifiedPlan}
-            planningHubs={planningHubs}
+            planningHubs={suggestedStops}
             verifiedRecords={verifiedStops}
           />
 
@@ -727,11 +743,12 @@ export default function StopVerificationPage({ result, onNavigate }: StopVerific
                 <StopVerificationActions
                   saving={saving}
                   currentPending={currentPending}
+                  canUndo={lastUndo !== null}
                   showAlternatives={showAlternativeActions}
                   inAlternativeBranch={alternativeBranch !== null}
                   onVerify={() => void handleVerify()}
-                  onReject={handleRejectStart}
-                  onLater={() => void handleLater()}
+                  onSkip={() => void handleSkip()}
+                  onUndo={() => void handleUndo()}
                   onVerifyAndAlternatives={() => void handleVerifyAndAlternatives()}
                   onDontVerifyAndAlternatives={() => void handleDontVerifyAndAlternatives()}
                 />

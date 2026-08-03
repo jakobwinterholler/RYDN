@@ -28,7 +28,7 @@
     "preferred_stage_length_km": 75,
     "max_gap_without_resupply_km": 50,
     "default_arrival_time_window": null,
-    "default_zone_density": "planning"
+    "developer_mode_enabled": false
   },
   "analysis": {
     "refresh_osm_on_analyse": true

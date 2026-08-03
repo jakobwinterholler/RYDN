@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchSyncRaces, pushRaceNow } from "@shared/api/sync";
+import { getFreshAccessToken } from "@shared/auth/accessToken";
 import { useAuth } from "@shared/auth/AuthProvider";
 import type { SyncPushRaceResult } from "@shared/types/sync";
 import {
@@ -9,7 +10,11 @@ import {
   hasPendingSyncRaces,
   removePendingSyncRace,
 } from "@shared/sync/pendingSync";
-import { needsDesktopUpload } from "@shared/sync/raceVersion";
+import {
+  isDesktopCloudCurrent,
+  needsDesktopUpload,
+  resolveCloudRaceForLocal,
+} from "@shared/sync/raceVersion";
 import {
   formatRelativeTime,
   getLastSyncAt,
@@ -80,7 +85,8 @@ export function useAccountSync() {
   }, [accessToken, refreshCloudStats]);
 
   const syncToCompanion = useCallback(async () => {
-    if (!accessToken || !userId) {
+    const token = await getFreshAccessToken(accessToken);
+    if (!userId) {
       throw new Error("Sign in required to sync races.");
     }
     setSyncError(null);
@@ -92,16 +98,28 @@ export function useAccountSync() {
     try {
       const [localRaces, cloudRaces] = await Promise.all([
         fetchRaces(),
-        fetchSyncRaces(accessToken),
+        fetchSyncRaces(token ?? accessToken ?? ""),
       ]);
-      const cloudById = new Map(cloudRaces.map((race) => [race.id, race]));
       const pending = getPendingSyncRaces(userId);
+      for (const race of localRaces) {
+        const cloud = resolveCloudRaceForLocal(race, cloudRaces);
+        if (pending.has(race.id) && isDesktopCloudCurrent(race, cloud)) {
+          removePendingSyncRace(userId, race.id);
+        }
+      }
+      const pendingAfterReconcile = getPendingSyncRaces(userId);
 
       const toUpload = localRaces.filter((race) =>
-        needsDesktopUpload(race, cloudById.get(race.id), pending),
+        needsDesktopUpload(
+          race,
+          resolveCloudRaceForLocal(race, cloudRaces),
+          pendingAfterReconcile,
+        ),
       );
 
       if (toUpload.length === 0) {
+        clearPendingSyncRaces(userId);
+        setHasPending(false);
         setSyncMessage("All races are up to date in the cloud.");
         const now = new Date().toISOString();
         setLastSyncAt(userId, now);
@@ -120,7 +138,8 @@ export function useAccountSync() {
           raceName: race.name,
         });
         try {
-          const pushed: SyncPushRaceResult = await pushRaceNow(accessToken, race.id);
+          const uploadToken = await getFreshAccessToken(token ?? accessToken);
+          const pushed: SyncPushRaceResult = await pushRaceNow(uploadToken, race.id, userId);
           removePendingSyncRace(userId, race.id);
           results.push({
             raceId: race.id,
@@ -129,6 +148,17 @@ export function useAccountSync() {
             companionRevision: pushed.companion_revision,
           });
         } catch (err) {
+          const cloud = resolveCloudRaceForLocal(race, cloudRaces);
+          if (isDesktopCloudCurrent(race, cloud)) {
+            removePendingSyncRace(userId, race.id);
+            results.push({
+              raceId: race.id,
+              name: race.name,
+              status: "skipped",
+              companionRevision: cloud?.companion_revision,
+            });
+            continue;
+          }
           addPendingSyncRace(userId, race.id);
           const message = err instanceof Error ? err.message : "Upload failed.";
           results.push({
@@ -143,9 +173,11 @@ export function useAccountSync() {
       setRaceResults(results);
       const failed = results.filter((entry) => entry.status === "failed");
       const succeeded = results.filter((entry) => entry.status === "success");
+      const skipped = results.filter((entry) => entry.status === "skipped");
       setHasPending(hasPendingSyncRaces(userId));
+      const now = new Date().toISOString();
 
-      if (failed.length > 0 && succeeded.length === 0) {
+      if (failed.length > 0 && succeeded.length === 0 && skipped.length === 0) {
         setSyncError(
           `Failed to upload ${failed.length} race${failed.length === 1 ? "" : "s"}. ${failed[0]?.error ?? ""}`.trim(),
         );
@@ -156,15 +188,19 @@ export function useAccountSync() {
         setSyncError(
           failed.map((entry) => `${entry.name}: ${entry.error}`).join(" · "),
         );
+      } else if (succeeded.length === 0 && skipped.length > 0) {
+        clearPendingSyncRaces(userId);
+        setHasPending(false);
+        setSyncMessage("All races are up to date in the cloud.");
       } else {
         clearPendingSyncRaces(userId);
         setHasPending(false);
+        const uploaded = [...succeeded, ...skipped];
         setSyncMessage(
-          `Uploaded ${succeeded.length} race${succeeded.length === 1 ? "" : "s"} to Companion.`,
+          `Uploaded successfully at ${new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${uploaded.length} race${uploaded.length === 1 ? "" : "s"} · bundle v${Math.max(...uploaded.map((entry) => entry.companionRevision ?? 0))}`,
         );
       }
 
-      const now = new Date().toISOString();
       setLastSyncAt(userId, now);
       setLastSyncAtState(now);
       await refreshCloudStats();

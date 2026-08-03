@@ -13,6 +13,10 @@ export interface SyncRaceSummary {
   bundle_checksum?: string | null;
   /** Schema version of the cloud bundle. */
   bundle_schema_version?: number | null;
+  /** Significant climbs in the latest cloud analysis/bundle. */
+  significant_climb_count?: number | null;
+  /** GPX content fingerprint for deduplicating cloud rows. */
+  gpx_fingerprint?: string | null;
   updated_at: string | null;
   analyzed_at: string | null;
   has_bundle: boolean;
@@ -39,6 +43,8 @@ export interface AuthProfile {
 }
 
 export interface CompanionStopAlternative {
+  /** Permanent POI identity. */
+  poiId?: string;
   osmId: number;
   osmType: string;
   name: string;
@@ -48,6 +54,7 @@ export interface CompanionStopAlternative {
   distanceOffRouteM: number;
   distanceAlongKm: number;
   score: number;
+  confidenceScore?: number | null;
   verificationStatus: "verified" | "unverified" | "needs_review" | "pending";
   openingHours: string | null;
   lat: number;
@@ -55,10 +62,15 @@ export interface CompanionStopAlternative {
   phone?: string | null;
   website?: string | null;
   placeId?: string | null;
+  hasFood?: boolean;
+  hasWater?: boolean;
+  hasFuel?: boolean;
 }
 
 export interface CompanionStop {
   zoneId: number;
+  /** Permanent POI identity — stable across re-analysis. */
+  poiId?: string;
   /** Primary POI identity when available. */
   osmId?: number;
   osmType?: string;
@@ -85,6 +97,8 @@ export interface CompanionStop {
   verificationDate?: string | null;
   /** Ranked POI alternatives within the same resupply area. */
   alternatives?: CompanionStopAlternative[];
+  /** Alias for alternatives — embedded nearby options for this stop. */
+  nearbyAlternatives?: CompanionStopAlternative[];
   /** Rider-oriented reasoning for this stop choice. */
   resupplyReason?: string | null;
 }
@@ -118,6 +132,24 @@ export interface CompanionUnsupportedSection {
   riskBand?: "Low" | "Medium" | "High";
 }
 
+/** Compact POI row for bounds-based resupply discovery on Companion. */
+export interface CompanionDiscoverPoi {
+  osmId: number;
+  osmType: string;
+  name: string | null;
+  category: string;
+  priority: number;
+  lat: number;
+  lon: number;
+  distanceAlongKm: number;
+  distanceOffRouteM: number;
+  score: number;
+  zoneId: number | null;
+  openingHours?: string | null;
+  brand?: string | null;
+  tags?: Record<string, string> | null;
+}
+
 export interface CompanionDashboardStats {
   verifiedStops: number;
   unverifiedStops: number;
@@ -128,7 +160,13 @@ export interface CompanionDashboardStats {
 }
 
 export interface CompanionBundle {
+  /** Semantic bundle format version, e.g. "1.0.0". */
+  bundleVersion?: string;
   schemaVersion: number;
+  /** Minimum Companion app version that can read this bundle. */
+  minimumCompanionVersion?: string;
+  /** Minimum Desktop app version that produced this bundle. */
+  minimumDesktopVersion?: string;
   revision?: number;
   /** Alias for revision. */
   bundle_version?: number;
@@ -157,6 +195,8 @@ export interface CompanionBundle {
     };
   };
   stops: CompanionStop[];
+  /** Full discoverable POI set from desktop analysis (optional; falls back to stop alternatives). */
+  discoverPois?: CompanionDiscoverPoi[];
   climbs?: CompanionClimb[];
   unsupportedSections: CompanionUnsupportedSection[];
   dashboardStats?: CompanionDashboardStats;

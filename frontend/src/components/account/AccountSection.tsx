@@ -354,14 +354,16 @@ export default function AccountSection({ account }: AccountSectionProps) {
                 <span className="truncate text-ink">{result.name}</span>
                 <span
                   className={
-                    result.status === "success"
+                    result.status === "success" || result.status === "skipped"
                       ? "shrink-0 text-success"
                       : "shrink-0 text-red-600"
                   }
                 >
                   {result.status === "success"
-                    ? `Uploaded v${result.companionRevision ?? "?"}`
-                    : result.error ?? "Failed"}
+                    ? `Uploaded v${result.companionRevision ?? "?"} ✓`
+                    : result.status === "skipped"
+                      ? `Already in cloud v${result.companionRevision ?? "?"} ✓`
+                      : result.error ?? "Failed"}
                 </span>
               </li>
             ))}
@@ -380,7 +382,7 @@ export default function AccountSection({ account }: AccountSectionProps) {
           onClick={() => void syncToCompanion().catch(() => undefined)}
           className="mt-5 w-full rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-white transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {syncing ? "Syncing to Companion…" : "Sync to Companion"}
+          {syncing ? "Syncing to phone…" : "Sync to Phone"}
         </button>
 
         {!account.cloud_sync_enabled ? (

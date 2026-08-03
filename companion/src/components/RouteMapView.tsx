@@ -5,18 +5,50 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { analyzeClimbDifficulty } from "@shared/race/climbDifficulty";
 import { buildRouteTrack, interpolateTrackAtKm } from "@shared/race/mapMatching";
-import type { CompanionClimb } from "@shared/types/sync";
+import { collectAllBundlePois, resolveRenderedStop, type BundlePoiEntry } from "@shared/race/bundlePois";
+import { isMapVisibleStopStatus } from "@shared/race/discoverVerification";
+import {
+  ALTERNATIVE_STOP_COLOR,
+  DIMMED_STOP_COLOR,
+  POI_FOCUS_ANIMATION_MS,
+  POI_FOCUS_OFFSET,
+  POI_FOCUS_ZOOM,
+  ROUTE_CORE_COLOR,
+  ROUTE_CORE_OPACITY,
+  ROUTE_CORE_WIDTH,
+  ROUTE_HALO_COLOR,
+  ROUTE_HALO_OPACITY,
+  ROUTE_HALO_WIDTH,
+  SELECTED_STOP_CORE,
+  SELECTED_STOP_HALO,
+  SKIPPED_STOP_COLOR,
+  SUGGESTED_STOP_COLOR,
+} from "@shared/race/companionMapTheme";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useCompanion } from "../context/CompanionContext";
-import { buildRouteArrowPoints } from "../lib/routeDirectionArrows";
+import {
+  mapBoundsFromMaplibre,
+} from "../planning/discoverStopsAdapter";
+import { discoverMarkerHtml } from "@shared/race/discoverMarker";
+import type { DiscoverCandidate, MapBounds } from "@shared/race/discoverStops";
+import { poiOsmKey } from "@shared/race/discoverStops";
+import type { CompanionClimb } from "@shared/types/sync";
 import type { CompanionStop, CompanionUnsupportedSection } from "../types";
 
 const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const FOLLOW_ZOOM = 14;
+const EMBEDDED_FOCUS_ZOOM = POI_FOCUS_ZOOM;
+const EMBEDDED_FOCUS_OFFSET = POI_FOCUS_OFFSET;
+const FOCUS_ANIMATION_MS = POI_FOCUS_ANIMATION_MS;
+
+function stopPoiId(stop: Pick<CompanionStop, "poiId" | "zoneId">): string {
+  return stop.poiId ?? `zone-${stop.zoneId}`;
+}
 
 export interface RouteMapHandle {
   recenter: () => void;
@@ -27,29 +59,80 @@ export interface RouteMapHandle {
 
 interface RouteMapViewProps {
   embedded?: boolean;
+  /**
+   * Whether the map is the currently-visible tab. The map is kept mounted (hidden)
+   * across tab switches; when not visible we skip GPS-follow and focus camera
+   * animations so a hidden map doesn't churn the GPU/battery or fire bounds
+   * callbacks that re-render the tree. Defaults to true.
+   */
+  visible?: boolean;
   showClimbs?: boolean;
   onClimbSelect?: (climbId: string) => void;
   focusStop?: Pick<CompanionStop, "lat" | "lon" | "zoneId"> | null;
+  discoverCandidates?: DiscoverCandidate[];
+  selectedDiscoverKey?: string | null;
+  onDiscoverBoundsChange?: (bounds: MapBounds) => void;
+  onSelectDiscoverCandidate?: (candidate: DiscoverCandidate) => void;
+}
+
+function stopMarkerTone(status: CompanionStop["verificationStatus"]): "verified" | "suggested" | "skipped" {
+  if (status === "verified" || status === "pending") {
+    return "verified";
+  }
+  if (status === "needs_review") {
+    return "skipped";
+  }
+  return "suggested";
 }
 
 function stopsGeoJson(
-  stops: CompanionStop[],
+  entries: BundlePoiEntry[],
+  selectedPoiId: string | null,
   selectedZoneId: number | null,
+  focusPoiId: string | null,
+  showUnverified: boolean,
 ): GeoJSON.FeatureCollection {
+  const focusActive = selectedPoiId != null || focusPoiId != null;
+  const activePoiId = focusPoiId ?? selectedPoiId;
   return {
     type: "FeatureCollection",
-    features: stops.map((stop) => ({
-      type: "Feature",
-      properties: {
-        zoneId: stop.zoneId,
-        verified: stop.verificationStatus === "verified" ? 1 : 0,
-        selected: stop.zoneId === selectedZoneId ? 1 : 0,
-      },
-      geometry: {
-        type: "Point",
-        coordinates: [stop.lon, stop.lat],
-      },
-    })),
+    features: entries.flatMap((entry) => {
+      const stop = entry.stop;
+      if (!Number.isFinite(stop.lat) || !Number.isFinite(stop.lon)) {
+        return [];
+      }
+      if (!isMapVisibleStopStatus(stop.verificationStatus, showUnverified)) {
+        return [];
+      }
+      const poiId = entry.poiId;
+      const isSelected = activePoiId != null && poiId === activePoiId;
+      const isAlternative =
+        focusActive &&
+        entry.role === "alternative" &&
+        selectedZoneId != null &&
+        entry.parentZoneId === selectedZoneId;
+      const dimmed = focusActive && !isSelected && !isAlternative;
+      const tone = stopMarkerTone(stop.verificationStatus);
+      return [
+        {
+          type: "Feature" as const,
+          properties: {
+            zoneId: stop.zoneId,
+            poiId,
+            verified: tone === "verified" ? 1 : 0,
+            suggested: tone === "suggested" ? 1 : 0,
+            skipped: tone === "skipped" ? 1 : 0,
+            selected: isSelected ? 1 : 0,
+            alternative: isAlternative ? 1 : 0,
+            dimmed: dimmed ? 1 : 0,
+          },
+          geometry: {
+            type: "Point" as const,
+            coordinates: [stop.lon, stop.lat],
+          },
+        },
+      ];
+    }),
   };
 }
 
@@ -144,7 +227,17 @@ function climbMarkersGeoJson(
 }
 
 const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function RouteMapView(
-  { embedded = false, showClimbs = false, onClimbSelect, focusStop = null },
+  {
+    embedded = false,
+    visible = true,
+    showClimbs = false,
+    onClimbSelect,
+    focusStop = null,
+    discoverCandidates = [],
+    selectedDiscoverKey = null,
+    onDiscoverBoundsChange,
+    onSelectDiscoverCandidate,
+  },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -155,31 +248,40 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
   const stopsRef = useRef<CompanionStop[]>([]);
   const onClimbSelectRef = useRef(onClimbSelect);
   const selectStopRef = useRef<(stop: CompanionStop | null) => void>(() => undefined);
+  const onDiscoverBoundsChangeRef = useRef(onDiscoverBoundsChange);
+  const onSelectDiscoverCandidateRef = useRef(onSelectDiscoverCandidate);
+  const discoverMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const lastFocusKeyRef = useRef<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const {
     bundle,
     gps,
     selectedStop,
     selectStop,
-    showUnverified,
     followGps,
     setFollowGps,
+    showUnverified,
   } = useCompanion();
 
-  const selectedZoneId = focusStop?.zoneId ?? selectedStop?.zoneId ?? null;
   const climbs = bundle.climbs ?? [];
+  const poiEntries = useMemo(() => collectAllBundlePois(bundle), [bundle]);
+  const visibleStops = useMemo(() => poiEntries.map((entry) => entry.stop), [poiEntries]);
+  const selectedRenderedStop = useMemo(() => {
+    if (!selectedStop) {
+      return null;
+    }
+    return resolveRenderedStop(bundle, selectedStop);
+  }, [bundle, selectedStop]);
+  const selectedMarkerPoiId = selectedRenderedStop?.poiId ?? selectedStop?.poiId ?? null;
+  const selectedZoneId = selectedRenderedStop?.zoneId ?? selectedStop?.zoneId ?? null;
+  const focusPoiId = focusStop ? stopPoiId(focusStop) : null;
 
-  const visibleStops = useMemo(
-    () =>
-      bundle.stops.filter(
-        (stop) => stop.verificationStatus === "verified" || showUnverified,
-      ),
-    [bundle.stops, showUnverified],
-  );
-
-  stopsRef.current = bundle.stops;
+  stopsRef.current = visibleStops;
   onClimbSelectRef.current = onClimbSelect;
   selectStopRef.current = selectStop;
+  onDiscoverBoundsChangeRef.current = onDiscoverBoundsChange;
+  onSelectDiscoverCandidateRef.current = onSelectDiscoverCandidate;
 
   const recenter = useCallback(() => {
     const map = mapRef.current;
@@ -226,9 +328,11 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
       return;
     }
 
+    let cancelled = false;
     readyRef.current = false;
     userExploringRef.current = false;
     initialFitDoneRef.current = false;
+    setLoadError(null);
 
     const map = new maplibregl.Map({
       container: host,
@@ -247,11 +351,23 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
     });
     mapRef.current = map;
 
+    const fail = (message: string) => {
+      if (cancelled) {
+        return;
+      }
+      setLoadError(message);
+    };
+
+    map.on("error", (event) => {
+      fail(event.error?.message ?? "Map failed to load.");
+    });
+
     const setup = () => {
-      if (map.getSource("route")) {
+      if (cancelled || map.getSource("route")) {
         return;
       }
 
+      try {
       map.addSource("route", {
         type: "geojson",
         data: {
@@ -269,9 +385,9 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
         type: "line",
         source: "route",
         paint: {
-          "line-color": "#93c5fd",
-          "line-width": embedded ? 8 : 10,
-          "line-opacity": 0.45,
+          "line-color": ROUTE_HALO_COLOR,
+          "line-width": embedded ? ROUTE_HALO_WIDTH - 2 : ROUTE_HALO_WIDTH,
+          "line-opacity": ROUTE_HALO_OPACITY,
         },
       });
 
@@ -280,9 +396,9 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
         type: "line",
         source: "route",
         paint: {
-          "line-color": "#2563eb",
-          "line-width": embedded ? 4 : 5,
-          "line-opacity": 1,
+          "line-color": ROUTE_CORE_COLOR,
+          "line-width": embedded ? ROUTE_CORE_WIDTH - 1 : ROUTE_CORE_WIDTH,
+          "line-opacity": ROUTE_CORE_OPACITY,
         },
       });
 
@@ -313,15 +429,10 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
         },
         paint: {
           "text-color": "#ffffff",
-          "text-halo-color": "#1d4ed8",
+          "text-halo-color": ROUTE_CORE_COLOR,
           "text-halo-width": 1.2,
           "text-opacity": 0.9,
         },
-      });
-
-      map.addSource("route-arrows", {
-        type: "geojson",
-        data: buildRouteArrowPoints(bundle.route.coordinates, bundle.race.distanceKm),
       });
 
       map.addSource("climb-segments", {
@@ -381,17 +492,60 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
 
       map.addSource("stops", {
         type: "geojson",
-        data: stopsGeoJson(visibleStops, selectedZoneId),
+        data: stopsGeoJson(poiEntries, selectedMarkerPoiId, selectedZoneId, focusPoiId, showUnverified),
       });
 
       map.addLayer({
-        id: "stops-unverified",
+        id: "stops-dimmed",
         type: "circle",
         source: "stops",
-        filter: ["==", ["get", "verified"], 0],
+        filter: ["==", ["get", "dimmed"], 1],
+        paint: {
+          "circle-radius": 6,
+          "circle-color": DIMMED_STOP_COLOR,
+          "circle-opacity": 0.35,
+          "circle-stroke-width": 1,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-opacity": 0.35,
+        },
+      });
+
+      map.addLayer({
+        id: "stops-alternative",
+        type: "circle",
+        source: "stops",
+        filter: ["==", ["get", "alternative"], 1],
+        paint: {
+          "circle-radius": 7,
+          "circle-color": ALTERNATIVE_STOP_COLOR,
+          "circle-opacity": 0.85,
+          "circle-stroke-width": 2,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-opacity": 0.9,
+        },
+      });
+
+      map.addLayer({
+        id: "stops-suggested",
+        type: "circle",
+        source: "stops",
+        filter: ["all", ["==", ["get", "suggested"], 1], ["==", ["get", "selected"], 0], ["==", ["get", "dimmed"], 0], ["==", ["get", "alternative"], 0]],
         paint: {
           "circle-radius": embedded ? 8 : 11,
-          "circle-color": "#64748b",
+          "circle-color": SUGGESTED_STOP_COLOR,
+          "circle-stroke-width": 2,
+          "circle-stroke-color": "#ffffff",
+        },
+      });
+
+      map.addLayer({
+        id: "stops-skipped",
+        type: "circle",
+        source: "stops",
+        filter: ["all", ["==", ["get", "skipped"], 1], ["==", ["get", "selected"], 0], ["==", ["get", "dimmed"], 0], ["==", ["get", "alternative"], 0]],
+        paint: {
+          "circle-radius": embedded ? 8 : 11,
+          "circle-color": SKIPPED_STOP_COLOR,
           "circle-stroke-width": 2,
           "circle-stroke-color": "#ffffff",
         },
@@ -401,7 +555,7 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
         id: "stops-verified-bg",
         type: "circle",
         source: "stops",
-        filter: ["==", ["get", "verified"], 1],
+        filter: ["all", ["==", ["get", "verified"], 1], ["==", ["get", "selected"], 0], ["==", ["get", "dimmed"], 0], ["==", ["get", "alternative"], 0]],
         paint: {
           "circle-radius": embedded ? 9 : 12,
           "circle-color": "#10b981",
@@ -416,9 +570,9 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
         source: "stops",
         filter: ["==", ["get", "selected"], 1],
         paint: {
-          "circle-radius": embedded ? 16 : 22,
-          "circle-color": "#38bdf8",
-          "circle-opacity": 0.25,
+          "circle-radius": embedded ? 20 : 24,
+          "circle-color": SELECTED_STOP_HALO,
+          "circle-opacity": 0.35,
           "circle-stroke-width": 0,
         },
       });
@@ -429,23 +583,67 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
         source: "stops",
         filter: ["==", ["get", "selected"], 1],
         paint: {
-          "circle-radius": embedded ? 12 : 16,
-          "circle-color": "transparent",
+          "circle-radius": embedded ? 14 : 17,
+          "circle-color": SELECTED_STOP_CORE,
           "circle-stroke-width": 3,
-          "circle-stroke-color": "#38bdf8",
+          "circle-stroke-color": "#ffffff",
+        },
+      });
+
+      map.addLayer({
+        id: "stops-selected-core",
+        type: "circle",
+        source: "stops",
+        filter: ["==", ["get", "selected"], 1],
+        paint: {
+          "circle-radius": embedded ? 8 : 10,
+          "circle-color": "#ffffff",
+          "circle-stroke-width": 3,
+          "circle-stroke-color": SELECTED_STOP_CORE,
+        },
+      });
+
+      map.addSource("discover-detours", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+
+      map.addLayer({
+        id: "discover-detours-halo",
+        type: "line",
+        source: "discover-detours",
+        layout: { visibility: "none" },
+        paint: {
+          "line-color": "#2563EB",
+          "line-width": 4,
+          "line-opacity": 0.18,
+          "line-dasharray": [2, 4],
+        },
+      });
+
+      map.addLayer({
+        id: "discover-detours-core",
+        type: "line",
+        source: "discover-detours",
+        layout: { visibility: "none", "line-cap": "round" },
+        paint: {
+          "line-color": "#2563EB",
+          "line-width": 2,
+          "line-opacity": 0.9,
+          "line-dasharray": [6, 8],
+        },
+      });
+
+      map.addSource("rider", {
+        type: "geojson",
+        data: {
+          type: "Feature",
+          properties: {},
+          geometry: { type: "Point", coordinates: [0, 0] },
         },
       });
 
       if (!embedded) {
-        map.addSource("rider", {
-          type: "geojson",
-          data: {
-            type: "Feature",
-            properties: {},
-            geometry: { type: "Point", coordinates: [0, 0] },
-          },
-        });
-
         map.addLayer({
           id: "rider-pulse",
           type: "circle",
@@ -468,6 +666,19 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
             "circle-stroke-color": "#ffffff",
           },
         });
+      } else {
+        map.addLayer({
+          id: "rider-core",
+          type: "circle",
+          source: "rider",
+          layout: { visibility: "none" },
+          paint: {
+            "circle-radius": 7,
+            "circle-color": "#0ea5e9",
+            "circle-stroke-width": 2,
+            "circle-stroke-color": "#ffffff",
+          },
+        });
       }
 
       if (!embedded && !initialFitDoneRef.current) {
@@ -482,6 +693,9 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
       }
 
       readyRef.current = true;
+      } catch (error) {
+        fail(error instanceof Error ? error.message : "Map failed to set up.");
+      }
     };
 
     if (map.loaded()) {
@@ -503,13 +717,24 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
       }
 
       const stopFeatures = map.queryRenderedFeatures(event.point, {
-        layers: ["stops-verified-bg", "stops-unverified", "stops-selected-ring"],
+        layers: [
+          "stops-verified-bg",
+          "stops-suggested",
+          "stops-skipped",
+          "stops-alternative",
+          "stops-selected-ring",
+          "stops-selected-core",
+        ],
       });
       if (stopFeatures.length === 0) {
         return;
       }
-      const zoneId = Number(stopFeatures[0].properties?.zoneId);
-      const stop = stopsRef.current.find((item) => item.zoneId === zoneId) ?? null;
+      const poiId = stopFeatures[0].properties?.poiId;
+      if (typeof poiId !== "string") {
+        return;
+      }
+      const stop =
+        stopsRef.current.find((item) => stopPoiId(item) === poiId) ?? null;
       selectStopRef.current(stop);
     });
 
@@ -522,8 +747,35 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
     map.on("rotatestart", pauseFollow);
     map.on("pitchstart", pauseFollow);
 
+    const emitBounds = () => {
+      onDiscoverBoundsChangeRef.current?.(mapBoundsFromMaplibre(map.getBounds()));
+    };
+    map.on("moveend", emitBounds);
+    map.on("zoomend", emitBounds);
+    emitBounds();
+
+    // Keep the canvas matched to its container. The map is kept alive (only
+    // hidden) across tab switches, and the surrounding header/banners change
+    // height between tabs — resizing here means the map is already correct the
+    // instant it becomes visible again, with no reflow flash.
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            if (mapRef.current && host.clientWidth > 0 && host.clientHeight > 0) {
+              mapRef.current.resize();
+            }
+          })
+        : null;
+    resizeObserver?.observe(host);
+
     return () => {
+      cancelled = true;
       readyRef.current = false;
+      resizeObserver?.disconnect();
+      for (const marker of discoverMarkersRef.current) {
+        marker.remove();
+      }
+      discoverMarkersRef.current = [];
       map.remove();
       mapRef.current = null;
     };
@@ -535,9 +787,52 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
       return;
     }
     (map.getSource("stops") as maplibregl.GeoJSONSource).setData(
-      stopsGeoJson(visibleStops, selectedZoneId),
+      stopsGeoJson(poiEntries, selectedMarkerPoiId, selectedZoneId, focusPoiId, showUnverified),
     );
-  }, [visibleStops, selectedZoneId]);
+  }, [focusPoiId, poiEntries, selectedMarkerPoiId, selectedZoneId, showUnverified]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !readyRef.current) {
+      return;
+    }
+
+    for (const marker of discoverMarkersRef.current) {
+      marker.remove();
+    }
+    discoverMarkersRef.current = [];
+
+    const detourSource = map.getSource("discover-detours") as maplibregl.GeoJSONSource | undefined;
+    detourSource?.setData({ type: "FeatureCollection", features: [] });
+    for (const layerId of ["discover-detours-halo", "discover-detours-core"]) {
+      if (map.getLayer(layerId)) {
+        map.setLayoutProperty(layerId, "visibility", "none");
+      }
+    }
+
+    if (discoverCandidates.length === 0) {
+      return;
+    }
+
+    for (const [index, candidate] of discoverCandidates.entries()) {
+      const key = poiOsmKey(candidate.osmType, candidate.osmId);
+      const selected = selectedDiscoverKey === key;
+      const element = document.createElement("button");
+      element.type = "button";
+      element.className = "discover-marker";
+      element.style.animationDelay = `${index * 60}ms`;
+      element.setAttribute("aria-label", candidate.name ?? candidate.category);
+      element.innerHTML = discoverMarkerHtml({ selected, animationDelayMs: index * 60 });
+      element.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onSelectDiscoverCandidateRef.current?.(candidate);
+      });
+      const marker = new maplibregl.Marker({ element, anchor: "center" })
+        .setLngLat([candidate.lon, candidate.lat])
+        .addTo(map);
+      discoverMarkersRef.current.push(marker);
+    }
+  }, [discoverCandidates, selectedDiscoverKey]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -568,13 +863,17 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
       properties: {},
       geometry: { type: "Point", coordinates: [gps.lon, gps.lat] },
     });
-  }, [gps.lat, gps.lon]);
+    if (embedded && map.getLayer("rider-core")) {
+      map.setLayoutProperty("rider-core", "visibility", "visible");
+    }
+  }, [embedded, gps.lat, gps.lon]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (
       !map ||
       embedded ||
+      !visible ||
       !readyRef.current ||
       !followGps ||
       userExploringRef.current ||
@@ -589,24 +888,47 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
       duration: 450,
       essential: true,
     });
-  }, [embedded, followGps, gps.bearing, gps.lat, gps.lon]);
+  }, [embedded, visible, followGps, gps.bearing, gps.lat, gps.lon]);
 
   useEffect(() => {
     const map = mapRef.current;
     const target = focusStop ?? selectedStop;
-    if (!map || !readyRef.current || !target) {
+    if (!map || !readyRef.current) {
       return;
     }
-    if (!embedded && followGps) {
+    // Don't animate the camera of a hidden map (e.g. a stop selected from the
+    // Resupply tab): it would move under the covers, fire moveend/bounds and
+    // waste GPU. The focus applies when the map becomes visible again.
+    if (!visible && !embedded) {
       return;
     }
+    if (!target) {
+      lastFocusKeyRef.current = null;
+      return;
+    }
+    if (!embedded && followGps && !selectedStop) {
+      return;
+    }
+    if (!Number.isFinite(target.lat) || !Number.isFinite(target.lon)) {
+      return;
+    }
+    const focusKey = stopPoiId(target);
+    if (focusKey === lastFocusKeyRef.current) {
+      return;
+    }
+    lastFocusKeyRef.current = focusKey;
+
+    const focusingSelectedStop = !embedded && selectedStop != null;
+    map.stop();
     map.easeTo({
       center: [target.lon, target.lat],
-      zoom: embedded ? 14 : map.getZoom(),
-      duration: 350,
+      zoom: embedded || focusingSelectedStop ? EMBEDDED_FOCUS_ZOOM : map.getZoom(),
+      bearing: map.getBearing(),
+      offset: embedded || focusingSelectedStop ? EMBEDDED_FOCUS_OFFSET : undefined,
+      duration: FOCUS_ANIMATION_MS,
       essential: true,
     });
-  }, [embedded, focusStop?.zoneId, followGps, selectedStop?.zoneId]);
+  }, [embedded, visible, focusStop, followGps, selectedStop]);
 
   useEffect(() => {
     if (followGps) {
@@ -614,7 +936,17 @@ const RouteMapView = forwardRef<RouteMapHandle, RouteMapViewProps>(function Rout
     }
   }, [followGps]);
 
-  return <div ref={hostRef} className="absolute inset-0 bg-[#0c1018]" />;
+  return (
+    <div className="absolute inset-0 bg-[#0c1018]">
+      <div ref={hostRef} className="absolute inset-0" />
+      {loadError ? (
+        <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center">
+          <p className="text-sm font-medium text-white/75">Map unavailable</p>
+          <p className="mt-1 text-xs text-white/45">{loadError}</p>
+        </div>
+      ) : null}
+    </div>
+  );
 });
 
 export default RouteMapView;

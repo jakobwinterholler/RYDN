@@ -3,11 +3,12 @@ import type { NearbyAlternativeStop } from "../../planning/stopVerification/near
 interface StopVerificationActionsProps {
   saving: boolean;
   currentPending: boolean;
+  canUndo: boolean;
   showAlternatives: boolean;
   inAlternativeBranch: boolean;
   onVerify: () => void;
-  onReject: () => void;
-  onLater: () => void;
+  onSkip: () => void;
+  onUndo: () => void;
   onVerifyAndAlternatives: () => void;
   onDontVerifyAndAlternatives: () => void;
 }
@@ -15,44 +16,48 @@ interface StopVerificationActionsProps {
 export default function StopVerificationActions({
   saving,
   currentPending,
+  canUndo,
   showAlternatives,
   inAlternativeBranch,
   onVerify,
-  onReject,
-  onLater,
+  onSkip,
+  onUndo,
   onVerifyAndAlternatives,
   onDontVerifyAndAlternatives,
 }: StopVerificationActionsProps) {
   const disabled = saving || !currentPending;
 
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-3 gap-3">
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
         <button
           type="button"
           onClick={onVerify}
           disabled={disabled}
-          className="rounded-xl bg-emerald-600 px-4 py-3.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+          className="rounded-2xl bg-emerald-600 px-5 py-4 text-base font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
         >
           ✓ Verify
         </button>
         <button
           type="button"
-          onClick={onReject}
+          onClick={onSkip}
           disabled={disabled}
-          className="rounded-xl border border-red-200 bg-red-50 px-4 py-3.5 text-sm font-semibold text-red-800 transition hover:bg-red-100 disabled:opacity-60"
+          className="rounded-2xl border border-line bg-card px-5 py-4 text-base font-semibold text-muted transition hover:border-red-200 hover:bg-red-50 hover:text-red-800 disabled:opacity-60"
         >
-          ✕ Reject
-        </button>
-        <button
-          type="button"
-          onClick={onLater}
-          disabled={disabled}
-          className="rounded-xl border border-line bg-card px-4 py-3.5 text-sm font-semibold text-muted transition hover:text-ink disabled:opacity-60"
-        >
-          Later
+          ✕ Skip
         </button>
       </div>
+
+      {canUndo && (
+        <button
+          type="button"
+          onClick={onUndo}
+          disabled={saving}
+          className="w-full rounded-2xl border border-line bg-canvas px-4 py-3 text-sm font-semibold text-ink transition hover:bg-card disabled:opacity-60"
+        >
+          Undo last decision
+        </button>
+      )}
 
       {showAlternatives && !inAlternativeBranch && (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -70,15 +75,15 @@ export default function StopVerificationActions({
             disabled={disabled}
             className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm font-semibold text-amber-950 transition hover:bg-amber-100 disabled:opacity-60"
           >
-            ✕ Don&apos;t verify &amp; view alternatives
+            ✕ Skip &amp; view alternatives
           </button>
         </div>
       )}
 
       <p className="text-center text-xs text-muted">
         {inAlternativeBranch
-          ? "← → navigate · Enter verify · Delete reject · Space later · Returns to route order when done"
-          : "← → navigate · Enter verify · Delete reject · Space later"}
+          ? "← → navigate · Enter verify · Delete skip · Undo reverses last decision"
+          : "← → navigate · Enter verify · Delete skip"}
       </p>
     </div>
   );

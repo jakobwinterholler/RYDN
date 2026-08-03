@@ -54,10 +54,10 @@ export default function ResupplyZoneCard({
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
               <VerificationStatusLabel zoneId={zone.zone_id} />
-              <span className="text-xs text-muted">· Resupply hub</span>
+              <span className="text-xs text-muted">· Suggested stop</span>
             </div>
             <h3 className="mt-0.5 text-lg font-semibold text-ink">{zone.name}</h3>
-            <p className="mt-1 text-xs tracking-tight text-muted">{summary.hubStarDisplay}</p>
+            <p className="mt-1 text-xs tracking-tight text-muted">{summary.stopStarDisplay}</p>
           </div>
           <span className="shrink-0 text-xs tabular-nums text-muted">
             {formatKm(zone.distance_along_km, 1)}

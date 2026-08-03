@@ -1,3 +1,6 @@
+import type { SyncRaceSummary } from "../types/sync";
+import { needsDesktopUpload, resolveCloudRaceForLocal } from "../sync/raceVersion";
+
 export type SyncIndicator =
   | "cloud-synced"
   | "syncing"
@@ -122,8 +125,14 @@ export function getCompanionRaceSyncStatus(race: {
 }
 
 export function getDesktopRaceSyncStatus(
-  race: { id: string; updated_at: string; has_analysis: boolean },
-  cloudById: Map<string, { updated_at: string | null; companion_revision?: number; has_bundle?: boolean }>,
+  race: {
+    id: string;
+    updated_at: string;
+    has_analysis: boolean;
+    climb_count?: number | null;
+    gpx_fingerprint?: string | null;
+  },
+  cloudRaces: SyncRaceSummary[] | Map<string, SyncRaceSummary>,
   syncing: boolean,
   signedIn: boolean,
   pendingSync: Set<string> = new Set(),
@@ -141,16 +150,9 @@ export function getDesktopRaceSyncStatus(
   if (pendingSync.has(race.id)) {
     return "waiting-to-sync";
   }
-  const cloud = cloudById.get(race.id);
-  if (!cloud) {
-    return "needs-upload";
-  }
-  if (!cloud.has_bundle) {
-    return "needs-upload";
-  }
-  const localTime = new Date(race.updated_at).getTime();
-  const cloudTime = cloud.updated_at ? new Date(cloud.updated_at).getTime() : 0;
-  if (localTime > cloudTime + 1000) {
+  const races = cloudRaces instanceof Map ? [...cloudRaces.values()] : cloudRaces;
+  const cloud = resolveCloudRaceForLocal(race, races);
+  if (needsDesktopUpload(race, cloud, pendingSync)) {
     return "needs-upload";
   }
   return "cloud-synced";

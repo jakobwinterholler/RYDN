@@ -4,6 +4,7 @@ import {
   estimateRidingHours,
   type RiderAssumptions,
 } from "@shared/race/riderAssumptions";
+import { filterStopsForResupplyView } from "@shared/race/resupplyView";
 
 export function bundleAssumptions(bundle: CompanionBundle): RiderAssumptions {
   return {
@@ -13,9 +14,7 @@ export function bundleAssumptions(bundle: CompanionBundle): RiderAssumptions {
 }
 
 export function visibleStops(bundle: CompanionBundle, includeUnverified: boolean): CompanionStop[] {
-  return bundle.stops.filter(
-    (stop) => stop.verificationStatus === "verified" || includeUnverified,
-  );
+  return filterStopsForResupplyView(bundle.stops, !includeUnverified);
 }
 
 export function nextResupplyStop(
@@ -120,4 +119,8 @@ export function isVerifiedLocally(status: CompanionStop["verificationStatus"]): 
 
 export function canVerifyStop(status: CompanionStop["verificationStatus"]): boolean {
   return status !== "verified" && status !== "pending";
+}
+
+export function canConfirmOnRoute(status: CompanionStop["verificationStatus"]): boolean {
+  return status === "verified";
 }

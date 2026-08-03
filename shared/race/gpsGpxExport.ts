@@ -1,13 +1,18 @@
 import { computeStopConfidence } from "./stopConfidence";
 import type { CompanionBundle, CompanionStop, CompanionStopAlternative } from "../types/sync";
 import {
+  assignWaypointPriority,
+  shouldExportPriority,
+  type WaypointExportPriority,
+} from "./corosWaypointPriority";
+import {
   GPS_GPX_EXPORT_VERSION,
   isExcludedExportCategory,
   isInvalidExportName,
   MAX_WAYPOINT_OFF_ROUTE_M,
+  formatCorosWaypointName,
   resolveCorosWptIcon,
   ROUTE_INTEGRITY_FAILED_MESSAGE,
-  smartPoiLabel,
 } from "./gpsGpxExportConstants";
 
 export type GpsGpxDeviceProfile = "original" | "coros" | "garmin" | "wahoo";
@@ -24,6 +29,8 @@ export interface GpsGpxExportOptions {
   verifiedOnly: boolean;
   includeHighConfidence: boolean;
   includeAlternatives: boolean;
+  /** When false (default), export Critical + Recommended waypoints only. */
+  includeOptional: boolean;
 }
 
 export interface TrackFingerprint {
@@ -49,6 +56,33 @@ export interface GpsGpxExportReport {
   corosIconsTotal: number | null;
   integrityPercent: number;
   waypointCount: number;
+  criticalCount: number;
+  recommendedCount: number;
+  optionalCount: number;
+}
+
+export interface GpxExportPreviewWaypoint {
+  name: string;
+  km: number;
+  priority: WaypointExportPriority;
+  sym: string | null;
+  category: string;
+}
+
+export interface GpxExportPreview {
+  routeIntegrityPassed: boolean;
+  trackPointCount: number;
+  distanceKm: number;
+  elevationGainM: number;
+  elevationDescentM: number;
+  verifiedPoiCount: number;
+  waypointCount: number;
+  criticalCount: number;
+  recommendedCount: number;
+  optionalCount: number;
+  exportedCount: number;
+  waypoints: GpxExportPreviewWaypoint[];
+  validationErrors: string[];
 }
 
 export class GpxTrackModifiedError extends Error {
@@ -78,6 +112,7 @@ interface GpsWaypoint {
   sym: string | null;
   verificationStatus: string;
   offRouteM: number | null;
+  priority: WaypointExportPriority;
 }
 
 const EARTH_RADIUS_M = 6_371_000;
@@ -230,23 +265,30 @@ function serviceLabels(stop: CompanionStop): string {
 function waypointName(
   stop: Pick<
     CompanionStop,
-    "name" | "category" | "categoryLabel" | "hasFuel" | "hasWater" | "hasFood" | "hasCoffee"
+    | "name"
+    | "category"
+    | "categoryLabel"
+    | "hasFuel"
+    | "hasWater"
+    | "hasFood"
+    | "hasCoffee"
+    | "resupplyReason"
   >,
   km: number,
   deviceProfile: GpsGpxDeviceProfile,
   isPrimary: boolean,
 ): string {
   if (deviceProfile === "coros") {
-    const prefix = isPrimary ? "" : "ALT ";
-    const label = smartPoiLabel({
+    return formatCorosWaypointName({
       name: stop.name,
       brand: stop.name,
       category: stop.category,
       hasFuel: stop.hasFuel,
       hasWater: stop.hasWater,
       hasFood: stop.hasFood,
+      resupplyReason: stop.resupplyReason,
+      isPrimary,
     });
-    return `${prefix}${label}`.trim().slice(0, 32);
   }
   const kmLabel = formatKmLabel(km);
   const base = isPrimary ? stop.name : `ALT ${stop.name}`;
@@ -282,11 +324,21 @@ function waypointDesc(
   return lines.join("\n");
 }
 
+function isResupplyStop(stop: Pick<CompanionStop, "category">): boolean {
+  return !isExcludedExportCategory(stop.category);
+}
+
 function shouldExportStop(stop: CompanionStop, options: GpsGpxExportOptions): boolean {
+  if (!isResupplyStop(stop)) {
+    return false;
+  }
+  if (options.deviceProfile === "coros") {
+    return stop.verificationStatus === "verified";
+  }
   if (stop.verificationStatus === "verified") {
     return true;
   }
-  if (options.includeHighConfidence && options.deviceProfile !== "coros") {
+  if (options.includeHighConfidence) {
     const confidence = computeStopConfidence({
       verificationStatus: stop.verificationStatus,
       verifiedAt: stop.verificationDate,
@@ -298,9 +350,20 @@ function shouldExportStop(stop: CompanionStop, options: GpsGpxExportOptions): bo
     return confidence.level === "high";
   }
   if (!options.verifiedOnly) {
-    return options.deviceProfile !== "coros";
+    return true;
   }
   return false;
+}
+
+function stopPriority(stop: CompanionStop): WaypointExportPriority {
+  return assignWaypointPriority({
+    resupplyReason: stop.resupplyReason,
+    hasFuel: stop.hasFuel,
+    hasWater: stop.hasWater,
+    hasFood: stop.hasFood,
+    confidenceScore: stop.confidenceScore,
+    verificationStatus: stop.verificationStatus,
+  });
 }
 
 function countVerifiedStops(bundle: CompanionBundle): number {
@@ -382,6 +445,7 @@ function collectWaypoints(bundle: CompanionBundle, options: GpsGpxExportOptions)
           sym,
           verificationStatus: stop.verificationStatus,
           offRouteM: stop.distanceOffRouteM ?? null,
+          priority: stopPriority(stop),
         });
       }
     }
@@ -427,14 +491,65 @@ function collectWaypoints(bundle: CompanionBundle, options: GpsGpxExportOptions)
         sym,
         verificationStatus: source.verificationStatus,
         offRouteM: alternative.distanceOffRouteM ?? stop.distanceOffRouteM ?? null,
+        priority: assignWaypointPriority({
+          resupplyReason: stop.resupplyReason,
+          hasFuel: stop.hasFuel,
+          hasWater: stop.hasWater,
+          hasFood: stop.hasFood,
+          confidenceScore: source.confidenceScore,
+          verificationStatus: source.verificationStatus,
+        }),
       });
     }
   }
 
   waypoints.sort((left, right) => left.km - right.km || Number(right.isPrimary) - Number(left.isPrimary));
-  return waypoints;
+  return waypoints.filter((waypoint) => shouldExportPriority(waypoint.priority, options.includeOptional));
 }
 
+function countPriorityBreakdown(waypoints: GpsWaypoint[]): {
+  criticalCount: number;
+  recommendedCount: number;
+  optionalCount: number;
+} {
+  let criticalCount = 0;
+  let recommendedCount = 0;
+  let optionalCount = 0;
+  for (const waypoint of waypoints) {
+    if (waypoint.priority === "critical") {
+      criticalCount += 1;
+    } else if (waypoint.priority === "recommended") {
+      recommendedCount += 1;
+    } else {
+      optionalCount += 1;
+    }
+  }
+  return { criticalCount, recommendedCount, optionalCount };
+}
+
+function collectAllCandidateWaypoints(
+  bundle: CompanionBundle,
+  options: GpsGpxExportOptions,
+): GpsWaypoint[] {
+  const withOptional: GpsGpxExportOptions = { ...options, includeOptional: true };
+  return collectWaypoints(bundle, withOptional);
+}
+
+function tryValidateExportQuality(
+  waypoints: GpsWaypoint[],
+  options: GpsGpxExportOptions,
+  verifiedPoiCount: number,
+): string[] {
+  try {
+    validateExportQuality(waypoints, options, verifiedPoiCount);
+    return [];
+  } catch (error) {
+    if (error instanceof GpxExportQualityError) {
+      return [error.message];
+    }
+    return [error instanceof Error ? error.message : "Export validation failed."];
+  }
+}
 function validateExportQuality(
   waypoints: GpsWaypoint[],
   options: GpsGpxExportOptions,
@@ -521,6 +636,7 @@ function buildExportReport(
 ): GpsGpxExportReport {
   const exportedCount = waypoints.length;
   const corosIconsAssigned = waypoints.filter((waypoint) => waypoint.sym).length;
+  const { criticalCount, recommendedCount, optionalCount } = countPriorityBreakdown(waypoints);
   return {
     exportVersion: GPS_GPX_EXPORT_VERSION,
     deviceProfile,
@@ -535,6 +651,9 @@ function buildExportReport(
     corosIconsTotal: deviceProfile === "coros" ? exportedCount : null,
     integrityPercent: 100,
     waypointCount: exportedCount,
+    criticalCount,
+    recommendedCount,
+    optionalCount,
   };
 }
 
@@ -543,7 +662,89 @@ const DEFAULT_OPTIONS: GpsGpxExportOptions = {
   verifiedOnly: true,
   includeHighConfidence: false,
   includeAlternatives: false,
+  includeOptional: false,
 };
+
+export function buildGpxExportPreview(
+  originalGpx: ArrayBuffer | Uint8Array,
+  bundle: CompanionBundle,
+  options: Partial<GpsGpxExportOptions> = {},
+): GpxExportPreview {
+  const resolved: GpsGpxExportOptions = { ...DEFAULT_OPTIONS, ...options };
+  const originalBytes =
+    originalGpx instanceof Uint8Array ? originalGpx : new Uint8Array(originalGpx);
+
+  let before: TrackFingerprint;
+  let routeIntegrityPassed = true;
+  const validationErrors: string[] = [];
+
+  try {
+    before = fingerprintGpxBytes(originalBytes);
+  } catch (error) {
+    routeIntegrityPassed = false;
+    validationErrors.push(error instanceof Error ? error.message : "GPX fingerprint failed.");
+    return {
+      routeIntegrityPassed: false,
+      trackPointCount: 0,
+      distanceKm: 0,
+      elevationGainM: 0,
+      elevationDescentM: 0,
+      verifiedPoiCount: 0,
+      waypointCount: 0,
+      criticalCount: 0,
+      recommendedCount: 0,
+      optionalCount: 0,
+      exportedCount: 0,
+      waypoints: [],
+      validationErrors,
+    };
+  }
+
+  const verifiedPoiCount = countVerifiedStops(bundle);
+  const allWaypoints = collectAllCandidateWaypoints(bundle, resolved);
+  const waypoints = collectWaypoints(bundle, resolved);
+  const { criticalCount, recommendedCount, optionalCount } = countPriorityBreakdown(allWaypoints);
+
+  validationErrors.push(...tryValidateExportQuality(waypoints, resolved, verifiedPoiCount));
+
+  try {
+    const outputBytes = insertWaypoints(
+      originalBytes,
+      renderWaypointsXml(waypoints, resolved.deviceProfile),
+    );
+    const after = fingerprintGpxBytes(outputBytes);
+    validateTrackUnchanged(before, after);
+  } catch (error) {
+    routeIntegrityPassed = false;
+    if (error instanceof GpxTrackModifiedError) {
+      validationErrors.push(ROUTE_INTEGRITY_FAILED_MESSAGE);
+    } else {
+      validationErrors.push(error instanceof Error ? error.message : "Integrity check failed.");
+    }
+  }
+
+  return {
+    routeIntegrityPassed: routeIntegrityPassed && validationErrors.length === 0,
+    trackPointCount: before.trackPointCount,
+    distanceKm: Math.round(before.distanceKm * 100) / 100,
+    elevationGainM: Math.round(before.elevationGainM),
+    elevationDescentM: Math.round(before.elevationDescentM),
+    verifiedPoiCount,
+    waypointCount: allWaypoints.length,
+    criticalCount,
+    recommendedCount,
+    optionalCount,
+    exportedCount: waypoints.length,
+    waypoints: waypoints.map((waypoint) => ({
+      name: waypoint.name,
+      km: waypoint.km,
+      priority: waypoint.priority,
+      sym: waypoint.sym,
+      category: waypoint.category,
+    })),
+    validationErrors,
+  };
+}
 
 export function exportGpxForGps(
   originalGpx: ArrayBuffer | Uint8Array,
