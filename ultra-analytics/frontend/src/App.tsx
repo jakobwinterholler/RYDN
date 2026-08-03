@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Home from "./components/Home";
 import Review from "./components/Review";
 import UltraPage from "./components/UltraPage";
@@ -11,6 +11,11 @@ import RydnLoader from "./components/ui/RydnLoader";
 import { getRide } from "./api";
 import { useAuth } from "./auth/useAuth";
 import type { Report } from "./types";
+import {
+  loadActiveRouteId,
+  loadQuickResumeEnabled,
+  saveActiveRouteId,
+} from "./prefs/quickResume";
 
 type HomeSpace = "planning" | "trips" | "library" | "you";
 
@@ -18,7 +23,7 @@ type Screen =
   | { kind: "home"; space?: HomeSpace }
   | { kind: "ultra"; ultraId: string; backSpace?: "planning" | "trips" }
   | { kind: "ultraAnalytics"; ultraId: string }
-  | { kind: "route"; routeId: string }
+  | { kind: "route"; routeId: string; mode?: "plan" | "ride" }
   | {
       kind: "ride";
       rideId: string;
@@ -45,8 +50,10 @@ function screenToPath(screen: Screen): string {
       return `/ultras/${screen.ultraId}`;
     case "ultraAnalytics":
       return `/ultras/${screen.ultraId}/analytics`;
-    case "route":
+    case "route": {
+      if (screen.mode === "ride") return `/routes/${screen.routeId}?mode=ride`;
       return `/routes/${screen.routeId}`;
+    }
     case "ride": {
       const q = new URLSearchParams();
       if (screen.backUltraId && screen.backTo === "ultraAnalytics") {
@@ -72,7 +79,8 @@ function pathToScreen(pathname: string, search = ""): Screen {
     return { kind: "ultra", ultraId: parts[1] };
   }
   if (parts[0] === "routes" && parts[1]) {
-    return { kind: "route", routeId: parts[1] };
+    const mode = params.get("mode") === "ride" ? "ride" : undefined;
+    return { kind: "route", routeId: parts[1], mode };
   }
   if (parts[0] === "rides" && parts[1]) {
     const from = params.get("from");
@@ -125,6 +133,7 @@ export default function App() {
 
   const [syncPid, setSyncPid] = useState<string | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
+  const quickResumeTried = useRef(false);
 
   const navigate = useCallback((next: Screen, opts?: { replace?: boolean }) => {
     setScreenState(next);
@@ -144,7 +153,7 @@ export default function App() {
 
     // Keep deep-link back/space params; strip one-shot OAuth banners.
     const keep = new URLSearchParams();
-    for (const key of ["from", "ultra", "space"]) {
+    for (const key of ["from", "ultra", "space", "mode"]) {
       const v = params.get(key);
       if (v) keep.set(key, v);
     }
@@ -204,6 +213,27 @@ export default function App() {
     document.title = titles[screen.kind] || "RYDN";
   }, [screen.kind]);
 
+  // Quick Resume — once per session, jump to active Ride when enabled.
+  useEffect(() => {
+    if (auth.loading || !auth.user || quickResumeTried.current) return;
+    if (syncPid) return;
+    if (!auth.user.onboardedAt) {
+      const pending = auth.providers.find((p) => p.enabled && !p.connected);
+      if (pending) return;
+    }
+    quickResumeTried.current = true;
+    if (!loadQuickResumeEnabled()) return;
+    const activeId = loadActiveRouteId();
+    if (!activeId) return;
+    const path = window.location.pathname.replace(/\/+$/, "") || "/";
+    if (path !== "/") return;
+    const params = new URLSearchParams(window.location.search);
+    const space = params.get("space");
+    if (space && space !== "planning") return;
+    if (params.get("billing") || params.get("connected") || params.get("auth_error")) return;
+    navigate({ kind: "route", routeId: activeId, mode: "ride" }, { replace: true });
+  }, [auth.loading, auth.user, auth.providers, syncPid, navigate]);
+
   if (auth.loading) {
     return (
       <div className="app-loading">
@@ -256,8 +286,12 @@ export default function App() {
       <div className="page-enter">
         <RoutePage
           routeId={screen.routeId}
+          initialMode={screen.mode === "ride" ? "ride" : "plan"}
           onBack={() => navigate({ kind: "home", space: "planning" })}
-          onDeleted={() => navigate({ kind: "home", space: "planning" }, { replace: true })}
+          onDeleted={() => {
+            saveActiveRouteId(null);
+            navigate({ kind: "home", space: "planning" }, { replace: true });
+          }}
           onOpenAccount={() => navigate({ kind: "home", space: "you" })}
         />
       </div>

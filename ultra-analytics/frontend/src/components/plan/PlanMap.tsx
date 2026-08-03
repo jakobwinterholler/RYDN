@@ -49,7 +49,15 @@ interface Props {
   /** When set, ease camera to these marker ids (Quick Action nearest-5). */
   focusIds?: string[] | null;
   searching?: boolean;
+  /** Tap-to-place custom POI mode — empty-map clicks call onPlace. */
+  placeMode?: boolean;
+  /** Live draft pin while placing / moving a custom POI. */
+  draftPin?: { lat: number; lon: number } | null;
   onSelectMarker?: (id: string) => void;
+  /** Empty-map tap while placeMode is on. */
+  onPlace?: (lat: number, lon: number) => void;
+  /** Draft pin dragged to a new lat/lon. */
+  onDraftMove?: (lat: number, lon: number) => void;
   /** Map center — used for nearest panel. Debounced by parent via this callback. */
   onViewChange?: (center: { lat: number; lon: number }, bbox: PlanMapBBox, userMoved: boolean) => void;
   /** Filled with live getCenter/getBBox once the map exists. */
@@ -333,24 +341,35 @@ function ensureLayers(map: MapLibreMap) {
     });
   }
 
-  // Subtle direction chevrons along the GPX — same source as the route line.
+  // Subtle direction chevrons — only when zoomed in enough to read them.
   if (map.getSource("route") && !map.getLayer("route-direction")) {
     map.addLayer({
       id: "route-direction",
       type: "symbol",
       source: "route",
+      minzoom: 9,
       layout: {
         "symbol-placement": "line",
-        "symbol-spacing": 70,
+        "symbol-spacing": 88,
         "icon-image": "rydn-route-chevron",
-        "icon-size": 0.4,
+        "icon-size": 0.38,
         "icon-rotation-alignment": "map",
         "icon-pitch-alignment": "map",
         "icon-allow-overlap": true,
         "icon-ignore-placement": true,
       },
       paint: {
-        "icon-opacity": 0.52,
+        "icon-opacity": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          9,
+          0.28,
+          11,
+          0.48,
+          14,
+          0.58,
+        ],
       },
     });
   }
@@ -585,15 +604,23 @@ export default function PlanMap({
   fitKey,
   focusIds,
   searching = false,
+  placeMode = false,
+  draftPin = null,
   onSelectMarker,
+  onPlace,
+  onDraftMove,
   onViewChange,
   viewApiRef,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const draftMarkerRef = useRef<maplibregl.Marker | null>(null);
   const userMovedRef = useRef(false);
   const hoveredIdRef = useRef<string | null>(null);
   const onSelectRef = useRef(onSelectMarker);
+  const onPlaceRef = useRef(onPlace);
+  const onDraftMoveRef = useRef(onDraftMove);
+  const placeModeRef = useRef(placeMode);
   const onViewRef = useRef(onViewChange);
   const viewApiHostRef = useRef(viewApiRef);
   viewApiHostRef.current = viewApiRef;
@@ -690,6 +717,15 @@ export default function PlanMap({
   useEffect(() => {
     onSelectRef.current = onSelectMarker;
   }, [onSelectMarker]);
+  useEffect(() => {
+    onPlaceRef.current = onPlace;
+  }, [onPlace]);
+  useEffect(() => {
+    onDraftMoveRef.current = onDraftMove;
+  }, [onDraftMove]);
+  useEffect(() => {
+    placeModeRef.current = placeMode;
+  }, [placeMode]);
   useEffect(() => {
     onViewRef.current = onViewChange;
   }, [onViewChange]);
@@ -839,6 +875,11 @@ export default function PlanMap({
 
       const feats = map.queryRenderedFeatures(e.point, { layers: HIT_LAYERS });
       if (!feats.length) {
+        if (placeModeRef.current) {
+          const { lng, lat } = e.lngLat;
+          onPlaceRef.current?.(lat, wrapLongitude(lng));
+          return;
+        }
         onSelectRef.current?.("");
         return;
       }
@@ -950,6 +991,8 @@ export default function PlanMap({
       if (viewApiHostRef.current?.current === viewApi) {
         viewApiHostRef.current.current = null;
       }
+      draftMarkerRef.current?.remove();
+      draftMarkerRef.current = null;
       map.remove();
       mapRef.current = null;
     };
@@ -1022,12 +1065,65 @@ export default function PlanMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusIds?.join(",")]);
 
+  // Draggable draft pin for custom POI place / move.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (!draftPin) {
+      draftMarkerRef.current?.remove();
+      draftMarkerRef.current = null;
+      return;
+    }
+
+    const lngLat: [number, number] = [draftPin.lon, draftPin.lat];
+    let marker = draftMarkerRef.current;
+    if (!marker) {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "plan-draft-pin";
+      el.setAttribute("aria-label", "Custom POI — drag to move");
+      el.innerHTML =
+        '<span class="plan-draft-pin__dot" aria-hidden="true"></span><span class="plan-draft-pin__stem" aria-hidden="true"></span>';
+      marker = new maplibregl.Marker({ element: el, draggable: true, anchor: "bottom" })
+        .setLngLat(lngLat)
+        .addTo(map);
+      marker.on("dragend", () => {
+        const ll = marker!.getLngLat();
+        onDraftMoveRef.current?.(ll.lat, wrapLongitude(ll.lng));
+      });
+      draftMarkerRef.current = marker;
+    } else {
+      const cur = marker.getLngLat();
+      if (Math.abs(cur.lat - draftPin.lat) > 1e-7 || Math.abs(cur.lng - draftPin.lon) > 1e-7) {
+        marker.setLngLat(lngLat);
+      }
+    }
+  }, [draftPin]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.getCanvas().style.cursor = placeMode ? "crosshair" : "";
+    return () => {
+      if (mapRef.current) mapRef.current.getCanvas().style.cursor = "";
+    };
+  }, [placeMode]);
+
+  useEffect(() => {
+    return () => {
+      draftMarkerRef.current?.remove();
+      draftMarkerRef.current = null;
+    };
+  }, []);
+
   return (
     <div
       ref={containerRef}
-      className={`plan-map ${className}`.trim()}
+      className={`plan-map${placeMode ? " plan-map--place" : ""} ${className}`.trim()}
       role="application"
-      aria-label="Route planning map"
+      aria-label={placeMode ? "Tap map to place a custom POI" : "Route planning map"}
+      data-place-mode={placeMode ? "true" : undefined}
     />
   );
 }

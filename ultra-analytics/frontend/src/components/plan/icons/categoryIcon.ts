@@ -29,6 +29,7 @@ export function iconForCategory(category?: string | null, group?: string | null)
   if (cat.includes("hospital") || cat.includes("clinic")) return "hospital";
   if (cat.includes("atm") || cat.includes("bank")) return "atm";
   if (cat.includes("toilet") || cat.includes("restroom") || cat.includes("wc")) return "toilet";
+  if (cat.includes("checkpoint") || grp === "checkpoint") return "stage";
 
   if (grp === "sleep") return "sleepSpot";
   if (grp === "resupply") return "supermarket";

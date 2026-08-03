@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Report } from "../../types";
 import { cleanDayTitle } from "../ui/titles";
 import { fmtDate } from "../ui/format";
-import { fmtElapsed } from "../ui/ScoreLine";
+import ScoreLine, { fmtElapsed } from "../ui/ScoreLine";
 import UltraElevProfile from "../ui/UltraElevProfile";
+import RydnMark from "../ui/RydnMark";
 import RideShareMap from "./RideShareMap";
 
 type IntroReveal = "hold" | "play" | false;
@@ -25,22 +26,36 @@ function sourceLabel(report: Report): string {
     return "Strava";
   }
   if (src === "upload") return "Upload";
-  return report.race.kind === "race" ? "Race" : "Training Ride";
+  return report.race.kind === "race" ? "Race" : "Training";
 }
 
 function sportLabel(report: Report): string {
   return report.race.kind === "race" ? "Race" : "Ride";
 }
 
-export default function RideShareScreen({ report }: { report: Report }) {
+interface Props {
+  report: Report;
+  /** When true, skip intro hold/draw so a screenshot is immediately complete. */
+  staticReveal?: boolean;
+  /** Compact certificate chrome for the share overlay. */
+  shareSurface?: boolean;
+}
+
+export default function RideShareScreen({
+  report,
+  staticReveal = false,
+  shareSurface = false,
+}: Props) {
   const { race, overview, performance } = report;
   const title = cleanDayTitle(race.name) || race.name || "Ride";
 
-  const [introReveal, setIntroReveal] = useState<IntroReveal>(() =>
-    typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? false
-      : "hold",
-  );
+  const [introReveal, setIntroReveal] = useState<IntroReveal>(() => {
+    if (staticReveal) return false;
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return false;
+    }
+    return "hold";
+  });
   const introStarted = useRef(false);
   const introRaf = useRef<number[]>([]);
 
@@ -51,8 +66,14 @@ export default function RideShareScreen({ report }: { report: Report }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!staticReveal) return;
+    setIntroReveal(false);
+    introStarted.current = true;
+  }, [staticReveal]);
+
   const startIntroReveal = useCallback(() => {
-    if (introStarted.current) return;
+    if (staticReveal || introStarted.current) return;
     introStarted.current = true;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       setIntroReveal(false);
@@ -63,7 +84,7 @@ export default function RideShareScreen({ report }: { report: Report }) {
       introRaf.current.push(raf2);
     });
     introRaf.current.push(raf1);
-  }, []);
+  }, [staticReveal]);
 
   const elev = useMemo(() => {
     const axisKm = performance?.axisKm || [];
@@ -76,24 +97,34 @@ export default function RideShareScreen({ report }: { report: Report }) {
     };
   }, [performance]);
 
-  const npW = overview.npW != null && overview.npW > 0 ? overview.npW : null;
-  const avgPowerW =
-    overview.avgPowerW != null && overview.avgPowerW > 0 ? overview.avgPowerW : null;
+  const hasPower = overview.hasPower && overview.npW != null && overview.npW > 0;
+  const npW = hasPower ? overview.npW : null;
   const weightKg =
     report.athleteWeightKg != null && report.athleteWeightKg > 0
       ? report.athleteWeightKg
       : null;
-  const avgWPerKg =
-    avgPowerW != null && weightKg != null ? avgPowerW / weightKg : null;
+  // W/kg is NP-based (Normalized Power / weight), never average power.
+  const npWPerKg = npW != null && weightKg != null ? npW / weightKg : null;
   const avgHr =
     performance?.hr?.avg != null && performance.hr.avg > 0
       ? Math.round(performance.hr.avg)
       : null;
 
+  const secondary: string[] = [];
+  secondary.push(`Moving ${fmtElapsed(overview.movingTimeS)}`);
+  if (overview.avgSpeedMovingKmh > 0) {
+    secondary.push(`${overview.avgSpeedMovingKmh.toFixed(1)} km/h`);
+  }
+  if (npWPerKg != null) secondary.push(`${fmtMetric(npWPerKg, 1)} W/kg`);
+  if (avgHr != null) secondary.push(`${avgHr} bpm`);
+
   const points = report.route?.points;
 
   return (
-    <section className="ride-share" aria-label="Ride summary">
+    <section
+      className={`ride-share${shareSurface ? " ride-share--surface" : ""}`}
+      aria-label="Ride summary"
+    >
       <div className="ride-share__hero">
         <p className="ride-share__eyebrow">
           {sportLabel(report)} · {sourceLabel(report)} · {fmtDate(race.startTime)}
@@ -118,53 +149,36 @@ export default function RideShareScreen({ report }: { report: Report }) {
         ) : null}
 
         <div className="ride-share__score" aria-label="Primary ride metrics">
-          <div className="ride-score">
-            <span className="ride-score__item">
-              <span className="ride-score__v">{fmtMetric(overview.distanceKm)}</span>
-              <span className="ride-score__u">km</span>
-            </span>
-            <span className="ride-score__sep" aria-hidden>
-              ·
-            </span>
-            <span className="ride-score__item">
-              <span className="ride-score__v">{fmtMetric(overview.elevationGainM)}</span>
-              <span className="ride-score__u">m</span>
-            </span>
-            <span className="ride-score__sep" aria-hidden>
-              ·
-            </span>
-            <span className="ride-score__item">
-              <span className="ride-score__v">{fmtMetric(npW)}</span>
-              <span className="ride-score__u">W NP</span>
-            </span>
-            <span className="ride-score__sep" aria-hidden>
-              ·
-            </span>
-            <span className="ride-score__item">
-              <span className="ride-score__v">{fmtMetric(avgWPerKg, 1)}</span>
-              <span className="ride-score__u">W/kg</span>
-            </span>
-            <span className="ride-score__sep" aria-hidden>
-              ·
-            </span>
-            <span className="ride-score__item">
-              <span className="ride-score__v">{fmtMetric(avgHr)}</span>
-              <span className="ride-score__u">bpm</span>
-            </span>
-          </div>
+          <ScoreLine
+            distanceKm={overview.distanceKm}
+            elevationGainM={overview.elevationGainM}
+            durationS={overview.elapsedTimeS}
+            showNp={hasPower}
+            npW={npW}
+          />
 
-          <p className="ride-share__secondary" aria-label="Secondary ride metrics">
-            <span>Moving {fmtElapsed(overview.movingTimeS)}</span>
-            <span className="ride-share__sec-sep" aria-hidden>
-              ·
-            </span>
-            <span>Elapsed {fmtElapsed(overview.elapsedTimeS)}</span>
-            <span className="ride-share__sec-sep" aria-hidden>
-              ·
-            </span>
-            <span>{overview.avgSpeedMovingKmh.toFixed(1)} km/h avg</span>
-          </p>
+          {secondary.length > 0 && (
+            <p className="ride-share__secondary" aria-label="Secondary ride metrics">
+              {secondary.map((part, i) => (
+                <span key={part}>
+                  {i > 0 && (
+                    <span className="ride-share__sec-sep" aria-hidden>
+                      ·
+                    </span>
+                  )}
+                  <span>{part}</span>
+                </span>
+              ))}
+            </p>
+          )}
         </div>
+
+        {shareSurface && (
+          <footer className="ride-share__foot" aria-hidden="true">
+            <RydnMark size={14} />
+            <span>RYDN</span>
+          </footer>
+        )}
       </div>
     </section>
   );

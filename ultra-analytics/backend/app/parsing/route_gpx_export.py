@@ -2,19 +2,18 @@
 
 Export never copies imported ``<wpt>`` / checkpoints from the source GPX.
 The track comes from the course geometry; waypoints are rebuilt from RYDN
-verified water / shop / hotel (sleep) only.
+verified water / shop / hotel / cafe / checkpoint only.
 
 GPX ``<sym>`` has no formal enum; Garmin names are the de-facto interchange
 standard and what Coros / Wahoo / Hammerhead typically map on import.
 
 Coros choices (plain names + Garmin-compatible symbols):
 - Water → name ``Water``, ``<sym>Drinking Water</sym>``, ``<type>Water</type>``
-  Classic outdoors refill icon; Coros shows imported waypoints as checkpoints
-  and preserves common Garmin symbols when present.
 - Shop  → name ``Shop``, ``<sym>Shopping Center</sym>``, ``<type>Shop</type>``
-  Markets/stores (not cafés). No universal GPX ``Store``; avoid ``Restaurant``.
 - Hotel → name ``Hotel``, ``<sym>Lodging</sym>``, ``<type>Hotel</type>``
-  Sleep / hotel / hostel / camping verified by the rider.
+- Cafe  → name ``Cafe``, ``<sym>Restaurant</sym>``, ``<type>Cafe</type>``
+- Checkpoint → name ``Checkpoint``, ``<sym>Flag, Blue</sym>``, ``<type>Checkpoint</type>``
+  Custom race / planning pins (also any verified stop with group/category checkpoint).
 """
 
 from __future__ import annotations
@@ -37,11 +36,15 @@ GPX_SCHEMA_LOC = (
 SYM_WATER = "Drinking Water"
 SYM_SHOP = "Shopping Center"
 SYM_HOTEL = "Lodging"
+SYM_CAFE = "Restaurant"
+SYM_CHECKPOINT = "Flag, Blue"
 
 # Plain Coros-friendly labels — no emojis (device lists truncate / garble them).
 NAME_WATER = "Water"
 NAME_SHOP = "Shop"
 NAME_HOTEL = "Hotel"
+NAME_CAFE = "Cafe"
+NAME_CHECKPOINT = "Checkpoint"
 
 ET.register_namespace("", GPX_NS)
 ET.register_namespace("xsi", GPX_XSI)
@@ -94,8 +97,26 @@ def is_export_hotel(stop: Dict[str, Any]) -> bool:
     )
 
 
+def is_export_cafe(stop: Dict[str, Any]) -> bool:
+    """Verified café / coffee — custom dining + OSM cafés."""
+    cat = (stop.get("category") or "").lower()
+    group = (stop.get("group") or "").lower()
+    if group == "dining":
+        return "cafe" in cat or "café" in cat or cat == "cafe"
+    return "cafe" in cat or "café" in cat
+
+
+def is_export_checkpoint(stop: Dict[str, Any]) -> bool:
+    """Race / custom checkpoint pins."""
+    cat = (stop.get("category") or "").lower()
+    group = (stop.get("group") or "").lower()
+    if group == "checkpoint":
+        return True
+    return "checkpoint" in cat
+
+
 def filter_export_waypoints(stops: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Verified water + shop + hotel/sleep only; rejects café/bike/unverified."""
+    """Verified water + shop + hotel + cafe + checkpoint; rejects bike/unverified."""
     out: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for stop in stops:
@@ -111,10 +132,14 @@ def filter_export_waypoints(stops: Iterable[Dict[str, Any]]) -> List[Dict[str, A
         if not math.isfinite(lat_f) or not math.isfinite(lon_f):
             continue
         kind: Optional[str] = None
-        if is_export_water(stop):
+        if is_export_checkpoint(stop):
+            kind = "checkpoint"
+        elif is_export_water(stop):
             kind = "water"
         elif is_export_shop(stop):
             kind = "shop"
+        elif is_export_cafe(stop):
+            kind = "cafe"
         elif is_export_hotel(stop):
             kind = "hotel"
         if kind is None:
@@ -174,7 +199,26 @@ def _wpt_labels(kind: str) -> Tuple[str, str, str]:
         return NAME_WATER, SYM_WATER, "Water"
     if kind == "hotel":
         return NAME_HOTEL, SYM_HOTEL, "Hotel"
+    if kind == "cafe":
+        return NAME_CAFE, SYM_CAFE, "Cafe"
+    if kind == "checkpoint":
+        return NAME_CHECKPOINT, SYM_CHECKPOINT, "Checkpoint"
     return NAME_SHOP, SYM_SHOP, "Shop"
+
+
+def _plain_wpt_name(stop: Dict[str, Any], kind_label: str) -> str:
+    """Prefer a short rider name for custom stops; else the Coros type label."""
+    osm_type = (stop.get("osmType") or "").lower()
+    sid = str(stop.get("id") or "")
+    custom = osm_type == "custom" or sid.startswith("custom-")
+    raw = str(stop.get("name") or "").strip()
+    if custom and raw:
+        # ASCII-leaning plain label — drop control chars / trim length for devices.
+        cleaned = re.sub(r"[\x00-\x1f\x7f]+", "", raw)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()[:48]
+        if cleaned:
+            return cleaned
+    return kind_label
 
 
 def build_export_gpx(
@@ -199,13 +243,22 @@ def build_export_gpx(
     for stop in waypoints:
         kind = str(stop.get("_exportKind") or "shop")
         label, sym, wpt_type = _wpt_labels(kind)
+        wpt_name = _plain_wpt_name(stop, label)
         wpt = _el("wpt", lat=f"{float(stop['lat']):.7f}", lon=f"{float(stop['lon']):.7f}")
-        wpt.append(_el("name", label))
+        wpt.append(_el("name", wpt_name))
         wpt.append(_el("sym", sym))
         wpt.append(_el("type", wpt_type))
+        # Desc: custom name when we used the type label, else type / category.
+        desc_bits = []
+        if wpt_name == label:
+            user_name = str(stop.get("name") or "").strip()
+            if user_name and user_name.lower() != label.lower():
+                desc_bits.append(user_name)
         cat = stop.get("category")
-        if cat:
-            wpt.append(_el("desc", str(cat)))
+        if cat and str(cat) not in desc_bits and str(cat) != wpt_name:
+            desc_bits.append(str(cat))
+        if desc_bits:
+            wpt.append(_el("desc", " · ".join(desc_bits)[:120]))
         root.append(wpt)
 
     if track_points:

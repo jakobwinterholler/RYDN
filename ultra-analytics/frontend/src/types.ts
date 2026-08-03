@@ -108,7 +108,7 @@ export interface User {
   name: string | null;
   avatar: string | null;
   onboardedAt: number | null;
-  /** User-set body weight (kg) for Avg W/kg. Null = unset (may fall back to Strava). */
+  /** User-set body weight (kg) for NP-based W/kg. Null = unset (may fall back to Strava). */
   weightKg?: number | null;
   /** Source of truth from backend user record — never invent Pro on the client. */
   subscriptionTier?: SubscriptionTier;
@@ -303,6 +303,8 @@ export interface PlannedRouteSummary {
   dateStart?: string | null;
   dateEnd?: string | null;
   verificationProgress?: { done: number; total: number };
+  /** Verified resupply work — water / shop counts for Planning shelf. */
+  verifiedCounts?: { water: number; shop: number; total: number };
   objectType: "route";
   hasAnalysis?: boolean;
   /** Present when a Race Pass unlocked this route for Free users. */
@@ -518,11 +520,24 @@ export interface Temperature {
   min?: number;
   series?: { km: number; v: number }[];
 }
+export interface FatiguePoint {
+  /** Elapsed hours into the ride (x-axis). */
+  h: number;
+  /** % of first-hour baseline (plotted). */
+  v: number;
+  /** Absolute effort at this sample (W or m/beat). */
+  abs?: number | null;
+}
 export interface Fatigue {
   available: boolean;
   metric?: string;
+  /** Y-axis unit for the plotted series — typically "% of hour 1". */
   unit?: string;
-  series?: { h: number; v: number | null }[];
+  /** Unit for absolute effort (W or m/beat). */
+  absUnit?: string;
+  /** First-hour baseline absolute effort. */
+  baselineAbs?: number;
+  series?: FatiguePoint[];
   insight?: string | null;
 }
 export interface Fade {
@@ -534,6 +549,8 @@ export interface Fade {
 export interface HrDrift {
   available: boolean;
   pct?: number;
+  firstHalfHr?: number | null;
+  secondHalfHr?: number | null;
 }
 export interface Zone {
   name: string;
@@ -715,7 +732,7 @@ export interface Report {
   route?: { points?: number[][] };
   /** Where the ride came from — e.g. "strava" | "upload". */
   source?: string;
-  /** Athlete body weight (kg) from Strava profile when known — for W/kg. */
+  /** Athlete body weight (kg) when known — for NP-based W/kg on the share screen. */
   athleteWeightKg?: number | null;
 }
 

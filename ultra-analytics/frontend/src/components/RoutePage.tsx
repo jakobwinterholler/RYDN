@@ -24,8 +24,10 @@ import Icon from "./ui/Icon";
 import RydnLoader from "./ui/RydnLoader";
 import ScoreLine from "./ui/ScoreLine";
 import PlanMap, { type PlanMapBBox, type PlanMapViewApi } from "./plan/PlanMap";
-import StreetView from "./plan/StreetView";
+import StreetViewLink from "./plan/StreetViewLink";
+import { useRideLocation } from "./plan/useRideLocation";
 import { RydnPlanIcon, iconForCategory, iconForQuickAction } from "./plan/icons";
+import { saveActiveRouteId } from "../prefs/quickResume";
 import {
   DEFAULT_LAYERS,
   QA_NEAREST_N,
@@ -63,6 +65,14 @@ import {
 } from "./plan/workspaceLayers";
 import RidePanel from "./plan/RidePanel";
 import { mergeVerifiedStops } from "./plan/rideStops";
+import CustomPoiSheet from "./plan/CustomPoiSheet";
+import {
+  buildCustomStop,
+  isCustomStop,
+  kindFromStop,
+  projectOntoRoute,
+  type CustomPoiKind,
+} from "./plan/customPoi";
 
 function mapViewportPoi(p: {
   id: string;
@@ -147,14 +157,17 @@ function mapsLinks(lat: number, lon: number, name?: string | null) {
   };
 }
 
+type Mode = "plan" | "ride";
+
 interface Props {
   routeId: string;
   onBack: () => void;
   onDeleted?: () => void;
   onOpenAccount?: () => void;
+  /** Open Ride mode immediately (Quick Resume / deep link). */
+  initialMode?: Mode;
 }
 
-type Mode = "plan" | "ride";
 type ReviewStatus = "verified" | "rejected" | "skipped";
 type ReviewMotion = {
   stopId: string;
@@ -274,7 +287,13 @@ type PeekPayload =
   | { kind: "remote"; gap: RouteRemoteGap }
   | { kind: "decision"; decision: CriticalDecision };
 
-export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }: Props) {
+export default function RoutePage({
+  routeId,
+  onBack,
+  onDeleted,
+  onOpenAccount,
+  initialMode = "plan",
+}: Props) {
   const [route, setRoute] = useState<PlannedRouteDetail | null>(null);
   const [analysis, setAnalysis] = useState<RouteAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -285,19 +304,28 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
   const [notes, setNotes] = useState("");
   const [dateStart, setDateStart] = useState("");
   const [dateEnd, setDateEnd] = useState("");
-  const [mode, setMode] = useState<Mode>("plan");
+  const [mode, setMode] = useState<Mode>(initialMode === "ride" ? "ride" : "plan");
   const [layers, setLayers] = useState<Record<PlanLayerId, boolean>>(DEFAULT_LAYERS);
   const [qa, setQa] = useState<QuickActionId | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  /** Street View empty state — hide duplicate Directions/Verify row. */
-  const [streetViewEmpty, setStreetViewEmpty] = useState(false);
   const [verifyIndex, setVerifyIndex] = useState(0);
-
-  useEffect(() => {
-    setStreetViewEmpty(false);
-  }, [selectedId]);
   const [targetKm, setTargetKm] = useState(250);
   const [rideKm, setRideKm] = useState(0);
+  const liveLoc = useRideLocation(mode === "ride", route?.points);
+  const liveTracking =
+    liveLoc.status === "tracking" || liveLoc.status === "off_route";
+
+  // Drive Ride progress from GPS when available (scroll timeline stays secondary).
+  useEffect(() => {
+    if (!liveTracking || liveLoc.km == null) return;
+    setRideKm((prev) => (Math.abs(prev - liveLoc.km!) < 0.03 ? prev : liveLoc.km!));
+  }, [liveTracking, liveLoc.km]);
+
+  // Persist active route for Quick Resume while in Ride mode.
+  useEffect(() => {
+    if (mode === "ride") saveActiveRouteId(routeId);
+  }, [mode, routeId]);
+
   const [reviewMotion, setReviewMotion] = useState<ReviewMotion | null>(null);
   const [briefingOpen, setBriefingOpen] = useState(false);
   const [briefingTab, setBriefingTab] = useState<BriefingTab>("critical");
@@ -312,6 +340,17 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
   const [searchResults, setSearchResults] = useState<RecommendedStop[]>([]);
   /** PERMANENT verified layer — survives every search. */
   const [verifiedStops, setVerifiedStops] = useState<RecommendedStop[]>([]);
+  /** Tap-to-place custom POI on the planning map. */
+  const [placeMode, setPlaceMode] = useState(false);
+  const [customDraft, setCustomDraft] = useState<{
+    mode: "create" | "edit" | "move";
+    id?: string;
+    lat: number;
+    lon: number;
+    name: string;
+    kind: CustomPoiKind;
+  } | null>(null);
+  const [customSaving, setCustomSaving] = useState(false);
   /** Transient toast (errors) — never a permanent banner for search. */
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -795,9 +834,20 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
   }, [nearestRef]);
 
   const visibleMarkers = useMemo(() => {
-    const base = allMarkers.filter((m) => markerVisible(m, layers, qa, selectedId));
+    const hideId =
+      customDraft && (customDraft.mode === "move" || customDraft.mode === "create")
+        ? customDraft.id
+        : null;
+    const base = allMarkers
+      .filter((m) => !hideId || m.id !== hideId)
+      .filter((m) => markerVisible(m, layers, qa, selectedId));
     return applyQuickActionEmphasis(base, qa, nearestRef, selectedId);
-  }, [allMarkers, layers, qa, nearestRef, selectedId]);
+  }, [allMarkers, layers, qa, nearestRef, selectedId, customDraft]);
+
+  const draftProjection = useMemo(() => {
+    if (!customDraft || !route?.points?.length) return null;
+    return projectOntoRoute(route.points, customDraft.lat, customDraft.lon);
+  }, [customDraft, route?.points]);
 
   /** Camera focus — snap once when Quick Action changes, not on every pan. */
   const [focusIds, setFocusIds] = useState<string[] | null>(null);
@@ -883,10 +933,131 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
     [recommended, verifiedStops],
   );
 
+  const cancelCustomDraft = () => {
+    setPlaceMode(false);
+    setCustomDraft(null);
+    setCustomSaving(false);
+  };
+
+  const beginAddCustomPoi = () => {
+    setOverflowOpen(false);
+    setQa(null);
+    setSelectedId(null);
+    setCustomDraft(null);
+    setPlaceMode(true);
+    setSearchPrompted(false);
+  };
+
+  const saveCustomPoi = async (name: string, kind: CustomPoiKind) => {
+    const currentRoute = routeRef.current;
+    if (!currentRoute || !customDraft || customSaving) return;
+    setCustomSaving(true);
+    setError(null);
+    const stop = buildCustomStop({
+      id: customDraft.id,
+      name,
+      kind,
+      lat: customDraft.lat,
+      lon: customDraft.lon,
+      points: currentRoute.points || [],
+    });
+    const previousVerified = verifiedStops;
+    const previousSaved = { ...(currentRoute.savedStops || {}) };
+    setVerifiedStops((prev) => {
+      const others = prev.filter((s) => s.id !== stop.id);
+      return [...others, stop].sort((a, b) => a.distanceAlongKm - b.distanceAlongKm);
+    });
+    setRoute({
+      ...currentRoute,
+      stopReviews: { ...(currentRoute.stopReviews || {}), [stop.id]: "verified" },
+      savedStops: { ...(currentRoute.savedStops || {}), [stop.id]: stop },
+    });
+    setSelectedId(stop.id);
+    setPlaceMode(false);
+    setCustomDraft(null);
+    try {
+      const updated = await patchRoute(currentRoute.id, {
+        stopReviews: { [stop.id]: "verified" },
+        savedStops: { [stop.id]: stop },
+      });
+      setRoute((prev) => {
+        if (!prev || prev.id !== updated.id) return prev;
+        return {
+          ...prev,
+          stopReviews: updated.stopReviews ?? prev.stopReviews,
+          savedStops: updated.savedStops ?? prev.savedStops,
+          updatedAt: updated.updatedAt ?? prev.updatedAt,
+        };
+      });
+    } catch {
+      setVerifiedStops(previousVerified);
+      setRoute((prev) =>
+        prev ? { ...prev, savedStops: previousSaved, stopReviews: prev.stopReviews } : prev,
+      );
+      showToast("Couldn't save custom POI. Please try again.");
+    } finally {
+      setCustomSaving(false);
+    }
+  };
+
+  const deleteCustomPoi = async (stopId: string) => {
+    const currentRoute = routeRef.current;
+    if (!currentRoute || customSaving) return;
+    setCustomSaving(true);
+    const previousVerified = verifiedStops;
+    const previousSaved = { ...(currentRoute.savedStops || {}) };
+    const previousReviews = { ...(currentRoute.stopReviews || {}) };
+    const nextSaved = { ...previousSaved };
+    delete nextSaved[stopId];
+    const nextReviews = { ...previousReviews };
+    delete nextReviews[stopId];
+    setVerifiedStops((prev) => prev.filter((s) => s.id !== stopId));
+    setSelectedId(null);
+    setCustomDraft(null);
+    setPlaceMode(false);
+    setRoute({
+      ...currentRoute,
+      stopReviews: nextReviews,
+      savedStops: nextSaved,
+    });
+    try {
+      const updated = await patchRoute(currentRoute.id, {
+        stopReviews: { [stopId]: "unreviewed" },
+        savedStops: { [stopId]: null },
+      });
+      setRoute((prev) => {
+        if (!prev || prev.id !== updated.id) return prev;
+        return {
+          ...prev,
+          stopReviews: updated.stopReviews ?? prev.stopReviews,
+          savedStops: updated.savedStops ?? prev.savedStops,
+          updatedAt: updated.updatedAt ?? prev.updatedAt,
+        };
+      });
+    } catch {
+      setVerifiedStops(previousVerified);
+      setRoute((prev) =>
+        prev
+          ? { ...prev, savedStops: previousSaved, stopReviews: previousReviews }
+          : prev,
+      );
+      setSelectedId(stopId);
+      showToast("Couldn't delete custom POI. Please try again.");
+    } finally {
+      setCustomSaving(false);
+    }
+  };
+
   const onSelectMarker = (id: string) => {
     if (!id) {
+      if (placeMode && !customDraft) return;
       setSelectedId(null);
+      if (customDraft?.mode === "edit") cancelCustomDraft();
       return;
+    }
+    if (placeMode && !customDraft) {
+      // Selecting an existing marker exits empty place mode.
+      setPlaceMode(false);
     }
     const decision = decisions.find((d) => d.id === id);
     if (decision?.relatedStopId) {
@@ -896,9 +1067,26 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
     setSelectedId(id);
     const idx = recommended.findIndex((s) => s.id === id);
     if (idx >= 0) setVerifyIndex(idx);
+    const custom =
+      verifiedStops.find((s) => s.id === id && isCustomStop(s)) ||
+      recommended.find((s) => s.id === id && isCustomStop(s));
+    if (custom) {
+      setCustomDraft({
+        mode: "edit",
+        id: custom.id,
+        lat: custom.lat,
+        lon: custom.lon,
+        name: custom.name || "",
+        kind: kindFromStop(custom),
+      });
+      setPlaceMode(false);
+    } else if (customDraft?.mode === "edit" || customDraft?.mode === "create") {
+      setCustomDraft(null);
+    }
   };
 
   const toggleQa = (id: QuickActionId) => {
+    if (placeMode || customDraft) cancelCustomDraft();
     setQa((prev) => {
       const next = prev === id ? null : id;
       // Switching category replaces the question — clear stale temp workspace.
@@ -1148,7 +1336,15 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
   const locked = Boolean(reviewing);
 
   return (
-    <div className={`plan-workspace${mode === "ride" ? " plan-workspace--ride" : ""}`}>
+    <div
+      className={[
+        "plan-workspace",
+        mode === "ride" ? "plan-workspace--ride" : "",
+        briefingOpen && mode === "plan" ? "plan-workspace--briefing" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <header className="plan-workspace__top">
         <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to Planning">
           <Icon name="chevronLeft" size={20} />
@@ -1169,7 +1365,10 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
               role="tab"
               className={`chip${mode === "ride" ? " is-on" : ""}`}
               aria-selected={mode === "ride"}
-              onClick={() => setMode("ride")}
+              onClick={() => {
+                cancelCustomDraft();
+                setMode("ride");
+              }}
             >
               Ride
             </button>
@@ -1187,7 +1386,32 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
             fitKey={route.id}
             focusIds={focusIds}
             searching={searchingArea}
+            placeMode={placeMode}
+            draftPin={
+              customDraft &&
+              (customDraft.mode === "create" || customDraft.mode === "move")
+                ? { lat: customDraft.lat, lon: customDraft.lon }
+                : null
+            }
             onSelectMarker={onSelectMarker}
+            onPlace={(lat, lon) => {
+              if (customDraft && (customDraft.mode === "create" || customDraft.mode === "move")) {
+                setCustomDraft({ ...customDraft, lat, lon });
+                return;
+              }
+              setCustomDraft({
+                mode: "create",
+                lat,
+                lon,
+                name: "",
+                kind: "checkpoint",
+              });
+              setPlaceMode(true);
+              setSelectedId(null);
+            }}
+            onDraftMove={(lat, lon) => {
+              setCustomDraft((prev) => (prev ? { ...prev, lat, lon } : prev));
+            }}
             onViewChange={onViewChange}
             viewApiRef={planMapViewRef}
           />
@@ -1201,7 +1425,23 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
         {/* Top chrome: exclusive search chip + nearest card (Plan only). */}
         {mode === "plan" && (
           <div className="plan-map-top" data-testid="plan-map-top">
-            {searchChip === "zoomIn" && (
+            {placeMode && (
+              <div
+                className="plan-search-chip plan-search-chip--hint plan-place-chip"
+                data-testid="plan-place-chip"
+                role="status"
+              >
+                {customDraft ? "Drag pin to adjust · name below" : "Tap map to place a POI"}
+                <button
+                  type="button"
+                  className="plan-place-chip__cancel"
+                  onClick={cancelCustomDraft}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+            {!placeMode && searchChip === "zoomIn" && (
               <div
                 className="plan-search-chip plan-search-chip--hint"
                 data-search-chip="zoomIn"
@@ -1210,7 +1450,7 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
                 Zoom in to search this area
               </div>
             )}
-            {searchChip === "ready" && (
+            {!placeMode && searchChip === "ready" && (
               <button
                 type="button"
                 className="plan-search-chip plan-search-chip--action"
@@ -1220,7 +1460,7 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
                 Search this area
               </button>
             )}
-            {searchChip === "searching" && (
+            {!placeMode && searchChip === "searching" && (
               <div
                 className="plan-search-chip plan-search-chip--busy"
                 data-search-chip="searching"
@@ -1233,7 +1473,7 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
               </div>
             )}
 
-            {nearest && qa && analysis && (
+            {!placeMode && nearest && qa && analysis && (
               <aside className="plan-nearest" aria-label="Nearest for quick action">
                 <p className="plan-nearest__label">
                   Nearest {QUICK_ACTIONS.find((a) => a.id === qa)?.label || ""} · map center
@@ -1258,9 +1498,23 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
           </div>
         )}
 
-        {/* Floating right stack — More sits under zoom controls */}
+        {/* Floating right stack — Add POI + More under zoom controls */}
         {mode === "plan" && (
           <div className="plan-map-fab" aria-label="Map tools">
+            <button
+              type="button"
+              className={`plan-map-fab__btn plan-map-fab__btn--add${placeMode ? " is-on" : ""}`}
+              aria-label="Add custom POI"
+              aria-pressed={placeMode}
+              title="Add POI"
+              data-testid="plan-add-poi"
+              onClick={() => {
+                if (placeMode || customDraft) cancelCustomDraft();
+                else beginAddCustomPoi();
+              }}
+            >
+              <Icon name="pinPlus" size={20} weight="medium" />
+            </button>
             <button
               type="button"
               className={`plan-map-fab__btn${overflowOpen ? " is-on" : ""}`}
@@ -1358,6 +1612,9 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
             rideKm={rideKm}
             routeDistanceKm={route.distanceKm}
             selectedId={selectedId}
+            liveStatus={liveLoc.status}
+            liveOffRouteM={liveLoc.offRouteM}
+            gpsDrivesKm={liveTracking}
             onRideKmChange={setRideKm}
             onSelectStop={(id) => {
               setSelectedId(id);
@@ -1378,8 +1635,35 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
           </div>
         ) : null}
 
+        {/* Custom POI create / edit sheet */}
+        {mode === "plan" && customDraft && (
+          <CustomPoiSheet
+            mode={customDraft.mode === "create" ? "create" : "edit"}
+            initialName={customDraft.name}
+            initialKind={customDraft.kind}
+            distanceAlongKm={draftProjection?.distanceAlongKm ?? null}
+            distanceOffRouteM={draftProjection?.distanceOffRouteM ?? null}
+            saving={customSaving}
+            onSave={(name, kind) => void saveCustomPoi(name, kind)}
+            onCancel={cancelCustomDraft}
+            onDelete={
+              customDraft.id
+                ? () => void deleteCustomPoi(customDraft.id!)
+                : undefined
+            }
+            onMove={
+              customDraft.id
+                ? () => {
+                    setCustomDraft({ ...customDraft, mode: "move" });
+                    setPlaceMode(true);
+                  }
+                : undefined
+            }
+          />
+        )}
+
         {/* Compact stop sheet — Plan only (Ride cards carry the timeline). */}
-        {mode === "plan" && (selectedStop || peek) && (
+        {mode === "plan" && !customDraft && (selectedStop || peek) && (
           <div
             className={`plan-sheet plan-sheet--compact${selectedStop ? " plan-sheet--streetview" : ""}${selectedStop?.reviewStatus === "verified" ? " plan-sheet--verified" : ""}`}
             role="dialog"
@@ -1435,80 +1719,61 @@ export default function RoutePage({ routeId, onBack, onDeleted, onOpenAccount }:
                     ) : null}
                   </p>
                 )}
-                <StreetView
+                <StreetViewLink
                   key={selectedStop.id}
                   latitude={selectedStop.lat}
                   longitude={selectedStop.lon}
-                  mapsUrl={
-                    selectedStop.googleMapsUrl ||
-                    mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
-                  }
-                  onEmptyChange={setStreetViewEmpty}
-                  onVerifyAnyway={() => reviewStop(selectedStop.id, "verified")}
-                  verifyDisabled={
-                    selectedStop.reviewStatus === "verified" ||
-                    (locked && reviewing?.status !== "verified")
-                  }
-                  verifyLabel={
-                    selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
-                      ? "Verified ✓"
-                      : "Verify anyway"
-                  }
                 />
-                {!streetViewEmpty && (
-                  <>
-                    <div className="plan-sheet__nav plan-sheet__nav--pair" role="group" aria-label="Maps actions">
-                      <a
-                        className="plan-sheet__nav-btn plan-sheet__nav-btn--emphasis"
-                        href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).google}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Directions
-                      </a>
-                      <a
-                        className="plan-sheet__nav-btn"
-                        href={
-                          selectedStop.googleMapsUrl ||
-                          mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
-                        }
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Open Google Maps
-                      </a>
-                    </div>
-                    <div className="plan-sheet__cta">
-                      <button
-                        type="button"
-                        className={[
-                          "btn",
-                          "btn--block",
-                          "plan-sheet__verify",
-                          selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
-                            ? "plan-sheet__verify--done"
-                            : "btn--primary",
-                          reviewing?.status === "verified" ? "btn--working" : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        disabled={
-                          selectedStop.reviewStatus === "verified" ||
-                          (locked && reviewing?.status !== "verified")
-                        }
-                        aria-busy={reviewing?.status === "verified" || undefined}
-                        onClick={() => reviewStop(selectedStop.id, "verified")}
-                      >
-                        {reviewing?.status === "verified" && reviewing.phase === "confirming" && (
-                          <span className="btn__spinner" aria-hidden />
-                        )}
-                        {selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
-                          ? "Verified ✓"
-                          : "✓ Verify"}
-                      </button>
-                    </div>
-                  </>
-                )}
+                <div className="plan-sheet__nav plan-sheet__nav--pair" role="group" aria-label="Maps actions">
+                  <a
+                    className="plan-sheet__nav-btn plan-sheet__nav-btn--emphasis"
+                    href={mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).google}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Directions
+                  </a>
+                  <a
+                    className="plan-sheet__nav-btn"
+                    href={
+                      selectedStop.googleMapsUrl ||
+                      mapsLinks(selectedStop.lat, selectedStop.lon, selectedStop.name).place
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open Google Maps
+                  </a>
+                </div>
+                <div className="plan-sheet__cta">
+                  <button
+                    type="button"
+                    className={[
+                      "btn",
+                      "btn--block",
+                      "plan-sheet__verify",
+                      selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
+                        ? "plan-sheet__verify--done"
+                        : "btn--primary",
+                      reviewing?.status === "verified" ? "btn--working" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    disabled={
+                      selectedStop.reviewStatus === "verified" ||
+                      (locked && reviewing?.status !== "verified")
+                    }
+                    aria-busy={reviewing?.status === "verified" || undefined}
+                    onClick={() => reviewStop(selectedStop.id, "verified")}
+                  >
+                    {reviewing?.status === "verified" && reviewing.phase === "confirming" && (
+                      <span className="btn__spinner" aria-hidden />
+                    )}
+                    {selectedStop.reviewStatus === "verified" || reviewing?.status === "verified"
+                      ? "Verified ✓"
+                      : "✓ Verify"}
+                  </button>
+                </div>
               </>
             )}
             {peek?.kind === "climb" && (

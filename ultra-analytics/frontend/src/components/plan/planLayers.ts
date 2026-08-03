@@ -177,6 +177,8 @@ export function stopMatchesLayer(m: PlanMarker, layer: PlanLayerId): boolean {
  */
 function withinCorridor(m: PlanMarker): boolean {
   if (m.distanceOffRouteM == null) return true;
+  // Rider-placed custom POIs stay visible even when slightly off the bike line.
+  if (typeof m.id === "string" && m.id.startsWith("custom-")) return true;
   // Temp Search-this-area finds: viewport already filtered; allow full search corridor.
   if (m.layer === "temp" || m.kind === "area") {
     const maxM =

@@ -9,6 +9,7 @@ import type { RecommendedStop } from "../../types";
 import { RydnPlanIcon, iconForCategory } from "./icons";
 import {
   elevationAtKm,
+  elevationGainBetweenKm,
   hasUsableElevation,
   profileMarkerT,
   type ElevProfile,
@@ -19,6 +20,7 @@ import {
   nextRideGlance,
   verifiedLegs,
 } from "./rideStops";
+import type { RideLocationStatus } from "./useRideLocation";
 
 const PROFILE_W = 320;
 const PROFILE_H = 72;
@@ -32,6 +34,10 @@ type Props = {
   rideKm: number;
   routeDistanceKm: number;
   selectedId: string | null;
+  liveStatus?: RideLocationStatus;
+  liveOffRouteM?: number | null;
+  /** When true, scroll timeline does not override GPS-driven km. */
+  gpsDrivesKm?: boolean;
   onRideKmChange: (km: number) => void;
   onSelectStop: (id: string) => void;
   onProRequired?: () => void;
@@ -130,6 +136,16 @@ function ElevProfileChart({
   );
 }
 
+function liveStatusLabel(status: RideLocationStatus | undefined): string | null {
+  if (!status || status === "idle") return null;
+  if (status === "requesting") return "Locating…";
+  if (status === "tracking") return "Live";
+  if (status === "off_route") return "Off route";
+  if (status === "denied") return "Location denied";
+  if (status === "unavailable") return "Location unavailable";
+  return null;
+}
+
 export default function RidePanel({
   routeId,
   routeName,
@@ -138,6 +154,9 @@ export default function RidePanel({
   rideKm,
   routeDistanceKm,
   selectedId,
+  liveStatus = "idle",
+  liveOffRouteM = null,
+  gpsDrivesKm = false,
   onRideKmChange,
   onSelectStop,
   onProRequired,
@@ -145,6 +164,7 @@ export default function RidePanel({
   const listRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
   const onKmRef = useRef(onRideKmChange);
+  const gpsDrivesRef = useRef(gpsDrivesKm);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -177,12 +197,18 @@ export default function RidePanel({
   useEffect(() => {
     rideKmRef.current = rideKm;
   }, [rideKm]);
+  useEffect(() => {
+    gpsDrivesRef.current = gpsDrivesKm;
+  }, [gpsDrivesKm]);
 
   const legs = useMemo(() => verifiedLegs(verified, profile), [verified, profile]);
   const glance = useMemo(
     () => nextRideGlance(verified, rideKm, profile),
     [verified, rideKm, profile],
   );
+  const remainingKm = Math.max(0, routeDistanceKm - rideKm);
+  const remainingElev = elevationGainBetweenKm(profile, rideKm, routeDistanceKm);
+  const liveLabel = liveStatusLabel(liveStatus);
 
   // Sync elevation marker to the topmost visible verified card.
   useEffect(() => {
@@ -212,6 +238,8 @@ export default function RidePanel({
       if (!bestId) bestId = fallbackId ?? verified[0]?.id ?? null;
       if (!bestId) return;
       setActiveId(bestId);
+      // When GPS drives progress, scroll only highlights — don't jump the marker.
+      if (gpsDrivesRef.current) return;
       const stop = verified.find((s) => s.id === bestId);
       if (stop && Math.abs(stop.distanceAlongKm - rideKmRef.current) > 0.05) {
         onKmRef.current(stop.distanceAlongKm);
@@ -287,15 +315,45 @@ export default function RidePanel({
               <span className="ride-glance-bar__num ride-glance-bar__num--empty">—</span>
             )}
           </button>
+          <div className="ride-glance-bar__cell ride-glance-bar__cell--remain" aria-label="Remaining">
+            <span className="ride-glance-bar__label">Remaining</span>
+            <span className="ride-glance-bar__num">{fmtRideKm(remainingKm)}</span>
+            <span className="ride-glance-bar__sub">
+              {elevOk ? fmtRideElev(remainingElev, true) : "elev n/a"}
+            </span>
+          </div>
         </div>
 
         <p className="ride-panel__meta">
+          {liveLabel ? (
+            <>
+              <span
+                className={`ride-panel__live${
+                  liveStatus === "tracking"
+                    ? " ride-panel__live--on"
+                    : liveStatus === "off_route"
+                      ? " ride-panel__live--warn"
+                      : ""
+                }`}
+              >
+                {liveLabel}
+                {liveStatus === "off_route" && liveOffRouteM != null
+                  ? ` · ${Math.round(liveOffRouteM)} m`
+                  : ""}
+              </span>
+              <span aria-hidden> · </span>
+            </>
+          ) : null}
           Km {rideKm.toFixed(0)}
           <span aria-hidden> · </span>
           {verified.length} verified
           {!elevOk ? <span className="ride-panel__meta-warn"> · elev unavailable</span> : null}
-          <span aria-hidden> · </span>
-          {Math.round(routeDistanceKm)} km total
+          {liveStatus === "denied" ? (
+            <span className="ride-panel__meta-warn">
+              {" "}
+              · Enable location for live progress
+            </span>
+          ) : null}
         </p>
       </div>
 
@@ -359,7 +417,7 @@ export default function RidePanel({
             {exporting ? "Exporting…" : "Export for GPS"}
           </button>
           <p className="ride-panel__export-hint">
-            GPX with your route plus verified water, shops, and hotels
+            GPX with your route plus verified water, shops, hotels, cafes, and checkpoints
           </p>
           {exportError ? (
             <p className="ride-panel__export-error" role="alert">

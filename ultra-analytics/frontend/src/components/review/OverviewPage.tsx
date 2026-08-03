@@ -1,59 +1,102 @@
 import type { Overview } from "../../types";
-import MetricCard from "../ui/MetricCard";
 import SectionHeader from "../ui/SectionHeader";
 import { fmtDuration, fmtNumber } from "../ui/format";
 
-export default function OverviewPage({ data }: { data: Overview }) {
+function Stat({
+  label,
+  value,
+  unit,
+  sub,
+  accent,
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  sub?: string;
+  accent?: boolean;
+}) {
   return (
-    <section className="review-page">
-      <SectionHeader question={data.question} title="Overview" />
+    <div className={`overview-stat${accent ? " overview-stat--accent" : ""}`}>
+      <div className="overview-stat__label">{label}</div>
+      <div className="overview-stat__value">
+        {value}
+        {unit ? <span className="overview-stat__unit">{unit}</span> : null}
+      </div>
+      {sub ? <div className="overview-stat__sub">{sub}</div> : null}
+    </div>
+  );
+}
 
-      <div className="metric-grid">
-        <MetricCard label="Distance" value={fmtNumber(Math.round(data.distanceKm))} unit="km" />
-        <MetricCard label="Elevation" value={fmtNumber(data.elevationGainM)} unit="m" />
-        <MetricCard label="Moving time" value={fmtDuration(data.movingTimeS)} />
-        <MetricCard label="Elapsed time" value={fmtDuration(data.elapsedTimeS)} sub="this day" />
-        <MetricCard
-          label="Moving speed"
+export default function OverviewPage({ data }: { data: Overview }) {
+  const showPower = data.hasPower && (data.npW != null || data.avgPowerW != null);
+  const hikeHeavy = data.hasHike && data.pctClimbOnFoot >= 8;
+  const stopHeavy = data.movingPct < 75 && data.distanceKm >= 60;
+
+  return (
+    <section className="review-page overview-page">
+      <SectionHeader
+        question={data.question || "How did the day go?"}
+        title="Expedition day"
+      />
+
+      {data.insight ? <p className="overview-insight overview-insight--lead">{data.insight}</p> : null}
+
+      <div className="overview-band" aria-label="Distance and elevation">
+        <Stat label="Distance" value={fmtNumber(Math.round(data.distanceKm))} unit="km" accent />
+        <Stat label="Climbing" value={fmtNumber(data.elevationGainM)} unit="m" />
+        <Stat
+          label="Moving"
+          value={fmtDuration(data.movingTimeS)}
+          sub={`${Math.round(data.movingPct)}% of day`}
+        />
+        <Stat
+          label="Elapsed"
+          value={fmtDuration(data.elapsedTimeS)}
+          sub={stopHeavy ? `${fmtDuration(data.stoppedTimeS)} stopped` : "clock time"}
+        />
+      </div>
+
+      <div className="overview-band overview-band--secondary" aria-label="Pace">
+        <Stat
+          label="Riding speed"
           value={data.avgSpeedMovingKmh.toFixed(1)}
           unit="km/h"
-          sub="riding only"
+          sub="moving only"
         />
-        <MetricCard
-          label="Avg speed"
+        <Stat
+          label="Day speed"
           value={data.avgSpeedElapsedKmh.toFixed(1)}
           unit="km/h"
           sub="incl. stops"
         />
-        {data.hasPower && (
-          <MetricCard
-            label="Normalized Power"
-            value={`${data.npW}`}
-            unit="W"
-            accent
-            sub={data.variabilityIndex ? `VI ${data.variabilityIndex}` : undefined}
+        {data.avgTempC != null && (
+          <Stat
+            label="Temperature"
+            value={`${data.avgTempC}`}
+            unit="°C"
+            sub={data.maxTempC != null ? `max ${data.maxTempC}°C` : undefined}
           />
         )}
-        {data.hasPower && (
-          <MetricCard label="Avg power" value={`${data.avgPowerW ?? "—"}`} unit="W" sub="riding" />
+        {hikeHeavy && (
+          <Stat
+            label="On foot"
+            value={`${Math.round(data.pctClimbOnFoot)}`}
+            unit="%"
+            sub={`${fmtNumber(Math.round(data.hikeDistanceKm * 10) / 10)} km hike-a-bike`}
+          />
         )}
-        {data.caloriesKcal != null && (
-          <MetricCard label="Calories" value={fmtNumber(data.caloriesKcal)} unit="kcal" />
-        )}
-        <MetricCard
-          label="Temperature"
-          value={data.avgTempC != null ? `${data.avgTempC}` : "—"}
-          unit={data.avgTempC != null ? "°C" : undefined}
-          sub={data.maxTempC != null ? `max ${data.maxTempC}°C` : "no sensor"}
-        />
-        <MetricCard
-          label="Weather"
-          value={data.weather ?? "—"}
-          sub={data.weather ? undefined : "coming soon"}
-        />
       </div>
 
-      <div className="insight-line">{data.insight}</div>
+      {showPower && (
+        <div className="overview-band overview-band--power" aria-label="Power">
+          {data.npW != null && (
+            <Stat label="Normalized Power" value={`${data.npW}`} unit="W" accent />
+          )}
+          {data.avgPowerW != null && (
+            <Stat label="Avg power" value={`${data.avgPowerW}`} unit="W" sub="riding" />
+          )}
+        </div>
+      )}
     </section>
   );
 }

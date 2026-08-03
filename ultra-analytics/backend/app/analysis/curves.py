@@ -5,7 +5,7 @@ The signature of the module is the **mean-maximal curve** (best sustained effort
 over every duration), plus a few ultra-specific twists you won't find elsewhere:
 
   * moving vs. elapsed speed curves — the gap between them *is* the cost of stops
-  * a fatigue curve — best short effort per hour, so you can see where you cracked
+  * a durability curve — best short effort vs first-hour baseline (% + absolute)
   * time in zones from an FTP/HR estimated *from this ride*, honestly labelled
 
 All curves are computed on a 1 Hz timeline resampled from the (possibly irregular)
@@ -296,55 +296,124 @@ def _elevation_gain_curve(ele_1hz: List[Optional[float]], durations: List[int]) 
 # --------------------------------------------------------------------------- #
 # fatigue, fade, drift, zones
 # --------------------------------------------------------------------------- #
+def _effort_in_window(
+    power_1hz: List[Optional[float]],
+    speed_1hz: List[Optional[float]],
+    hr_1hz: List[Optional[float]],
+    lo: int,
+    hi: int,
+    has_power: bool,
+) -> Optional[float]:
+    """Best short effort inside [lo, hi): 5-min power, else mean speed/HR."""
+    if hi - lo < 60:
+        return None
+    if has_power:
+        pts = _best_mean(power_1hz[lo:hi], [300])
+        return float(pts[0]["v"]) if pts else None
+    sp = [speed_1hz[i] for i in range(lo, hi) if speed_1hz[i] is not None]
+    hb = [hr_1hz[i] for i in range(lo, hi) if hr_1hz[i] is not None]
+    if not sp or not hb:
+        return None
+    mean_hr = sum(hb) / len(hb)
+    if mean_hr <= 0:
+        return None
+    # km/h per bpm → m per beat (at 1 Hz mean speed)
+    return (sum(sp) / len(sp)) / mean_hr
+
+
 def _fatigue_curve(
     power_1hz: List[Optional[float]],
     speed_1hz: List[Optional[float]],
     hr_1hz: List[Optional[float]],
 ) -> Dict:
-    """Best short effort per elapsed hour — a visible fatigue signature.
+    """Durability vs first-hour baseline — concrete % (and absolute) over time.
 
-    Uses best 5-minute power when a meter exists; otherwise speed-per-HR
-    efficiency (metres per beat), which also decays with fatigue.
+    With a power meter: best 5-minute mean power in each trailing hour, expressed
+    as % of the first hour's best 5-min. Without power: mean speed÷HR efficiency
+    the same way. Dense 15-minute samples so the chart reads as a real curve.
     """
     n = len(power_1hz)
-    if n < 3600:
+    # Need ≥2 hours so “vs hour 1” is meaningful.
+    if n < 7200:
         return {"available": False}
-    hours = max(1, n // 3600)
+
     has_power = any(p is not None for p in power_1hz)
+    if not has_power:
+        has_eff = any(speed_1hz[i] is not None and hr_1hz[i] is not None for i in range(n))
+        if not has_eff:
+            return {"available": False}
+
     metric = "best 5-min power" if has_power else "speed per heart-beat"
-    unit = "W" if has_power else "m/beat"
+    abs_unit = "W" if has_power else "m/beat"
+    baseline = _effort_in_window(power_1hz, speed_1hz, hr_1hz, 0, 3600, has_power)
+    if baseline is None or baseline <= 0:
+        return {"available": False}
+
+    lookback = 3600
+    step = 900  # 15 min
     series: List[Dict] = []
-    win = 300 if has_power else 600
-    for h in range(hours):
-        lo, hi = h * 3600, min((h + 1) * 3600, n)
-        if has_power:
-            seg = power_1hz[lo:hi]
-            pts = _best_mean(seg, [win])
-            val = pts[0]["v"] if pts else None
-        else:
-            # mean speed / mean hr over the hour, moving samples only
-            sp = [speed_1hz[i] for i in range(lo, hi) if speed_1hz[i] is not None]
-            hb = [hr_1hz[i] for i in range(lo, hi) if hr_1hz[i] is not None]
-            val = None
-            if sp and hb:
-                mean_sp = sum(sp) / len(sp)
-                mean_hr = sum(hb) / len(hb)
-                if mean_hr > 0:
-                    val = round(mean_sp / mean_hr, 3)
-        series.append({"h": h, "v": val})
-    vals = [s["v"] for s in series if s["v"] is not None]
-    insight = None
-    if len(vals) >= 2 and vals[0]:
-        drop = (vals[0] - min(vals[len(vals) // 2 :])) / vals[0] * 100 if vals[0] else 0
-        worst_h = min(range(len(series)), key=lambda i: (series[i]["v"] is None, series[i]["v"] or 1e9))
-        if drop >= 12:
-            insight = (
-                f"Your {metric} fell about {drop:.0f}% from the first hour, with the deepest "
-                f"dip around hour {worst_h + 1} — that's where fatigue bit hardest."
+    # Anchor at end of hour 1 (= 100%), then every 15 min through ride end.
+    for t_end in range(3600, n + 1, step):
+        lo = max(0, t_end - lookback)
+        effort = _effort_in_window(power_1hz, speed_1hz, hr_1hz, lo, t_end, has_power)
+        if effort is None:
+            continue
+        pct = (effort / baseline) * 100.0
+        abs_v = round(effort) if has_power else round(effort, 3)
+        series.append(
+            {
+                "h": round(t_end / 3600.0, 2),
+                "v": round(pct, 1),
+                "abs": abs_v,
+            }
+        )
+
+    if len(series) < 2:
+        return {"available": False}
+
+    # Trailing partial hour if the last step didn't land on ride end.
+    if series[-1]["h"] * 3600 < n - 60:
+        effort = _effort_in_window(power_1hz, speed_1hz, hr_1hz, max(0, n - lookback), n, has_power)
+        if effort is not None:
+            series.append(
+                {
+                    "h": round(n / 3600.0, 2),
+                    "v": round((effort / baseline) * 100.0, 1),
+                    "abs": round(effort) if has_power else round(effort, 3),
+                }
             )
-        else:
-            insight = f"Your {metric} held remarkably steady across the ride — strong durability."
-    return {"available": True, "metric": metric, "unit": unit, "series": series, "insight": insight}
+
+    late = [s for s in series if s["h"] >= series[-1]["h"] / 2]
+    worst = min(series, key=lambda s: s["v"])
+    late_min = min(s["v"] for s in late) if late else worst["v"]
+    drop = 100.0 - late_min
+    insight = None
+    if drop >= 12:
+        abs_note = (
+            f" ({worst['abs']} {abs_unit})"
+            if has_power
+            else f" ({worst['abs']} {abs_unit})"
+        )
+        insight = (
+            f"Your {metric} fell to {worst['v']:.0f}% of hour 1{abs_note} around "
+            f"hour {worst['h']:g} — that's where fatigue bit hardest."
+        )
+    else:
+        end = series[-1]
+        insight = (
+            f"Your {metric} held at {end['v']:.0f}% of hour 1 by the end "
+            f"({end['abs']} {abs_unit}) — strong durability."
+        )
+
+    return {
+        "available": True,
+        "metric": metric,
+        "unit": "% of hour 1",
+        "absUnit": abs_unit,
+        "baselineAbs": round(baseline) if has_power else round(baseline, 3),
+        "series": series,
+        "insight": insight,
+    }
 
 
 def _half_means(values: List[Optional[float]]) -> Tuple[Optional[float], Optional[float]]:
@@ -376,7 +445,14 @@ def _hr_drift(speed_1hz: List[Optional[float]], hr_1hz: List[Optional[float]]) -
     if fa is None or sa is None or fa == 0:
         return {"available": False}
     drift = (fa - sa) / fa * 100  # positive = efficiency dropped in second half
-    return {"available": True, "pct": round(drift, 1)}
+    # Also report mean HR each half for a concrete bpm read.
+    hr_fa, hr_sa = _half_means(hr_1hz)
+    return {
+        "available": True,
+        "pct": round(drift, 1),
+        "firstHalfHr": round(hr_fa) if hr_fa is not None else None,
+        "secondHalfHr": round(hr_sa) if hr_sa is not None else None,
+    }
 
 
 _POWER_ZONES = [

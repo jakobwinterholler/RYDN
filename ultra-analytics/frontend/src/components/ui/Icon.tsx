@@ -15,6 +15,7 @@ export type IconName =
   | "moon"
   | "route"
   | "pin"
+  | "pinPlus"
   | "check"
   | "plus"
   | "minus"
@@ -24,7 +25,8 @@ export type IconName =
   | "chevronLeft"
   | "chevronRight"
   | "trash"
-  | "grip";
+  | "grip"
+  | "share";
 
 interface Props {
   name: IconName;
@@ -107,6 +109,13 @@ const paths: Record<IconName, ReactNode> = {
       <circle cx="12" cy="10.5" r="2" />
     </>
   ),
+  /** Map pin with plus — add/place POI; distinct from zoom + */
+  pinPlus: (
+    <>
+      <path d="M12 20.5s-6-5.4-6-10a6 6 0 1112 0c0 4.6-6 10-6 10z" />
+      <path d="M12 7.6v5.8M9.1 10.5h5.8" />
+    </>
+  ),
   check: <path d="M5 12.5l4.2 4.2L19 7" />,
   plus: <path d="M12 5v14M5 12h14" />,
   minus: <path d="M5 12h14" />,
@@ -133,6 +142,14 @@ const paths: Record<IconName, ReactNode> = {
   grip: (
     <>
       <path d="M9 7.5h.01M15 7.5h.01M9 12h.01M15 12h.01M9 16.5h.01M15 16.5h.01" />
+    </>
+  ),
+  share: (
+    <>
+      <circle cx="18" cy="5.5" r="2.2" />
+      <circle cx="6" cy="12" r="2.2" />
+      <circle cx="18" cy="18.5" r="2.2" />
+      <path d="M8.1 11.1l7.8-4.2M8.1 12.9l7.8 4.2" />
     </>
   ),
 };

@@ -32,6 +32,13 @@ import RydnLoader from "./ui/RydnLoader";
 import RydnMark from "./ui/RydnMark";
 import ScoreLine from "./ui/ScoreLine";
 import { cleanUltraTitle } from "./ui/titles";
+import { RydnPlanIcon } from "./plan/icons";
+import {
+  loadQuickResumeEnabled,
+  saveQuickResumeEnabled,
+} from "../prefs/quickResume";
+import { coachFromLibrary } from "../coach/rideCoach";
+import RideCoachCard from "./review/RideCoachCard";
 import {
   fileHasGpxTimestamps,
   loadImportPurpose,
@@ -457,11 +464,27 @@ function PlanningSpace({
                     durationS={0}
                     hideDuration
                   />
-                  <div className="route-card__meta">
-                    {r.verificationProgress
-                      ? `${r.verificationProgress.done}/${r.verificationProgress.total} verified`
-                      : "Verify"}
-                    {r.status === "ready" ? " · Ready" : ""}
+                  <div className="route-card__meta route-card__meta--counts">
+                    {r.verifiedCounts &&
+                    (r.verifiedCounts.water > 0 || r.verifiedCounts.shop > 0) ? (
+                      <span className="route-card__verified" aria-label="Verified stops">
+                        <span className="route-card__vchip" title="Verified water">
+                          <RydnPlanIcon id="waterFountain" size={14} />
+                          {r.verifiedCounts.water}
+                        </span>
+                        <span className="route-card__vchip" title="Verified shops">
+                          <RydnPlanIcon id="supermarket" size={14} />
+                          {r.verifiedCounts.shop}
+                        </span>
+                      </span>
+                    ) : r.verifiedCounts && r.verifiedCounts.total > 0 ? (
+                      <span>{r.verifiedCounts.total} verified</span>
+                    ) : (
+                      <span>Verify water &amp; shops</span>
+                    )}
+                    {r.status === "ready" ? (
+                      <span className="route-card__ready">Ready</span>
+                    ) : null}
                   </div>
                 </button>
               ))}
@@ -646,6 +669,7 @@ function LibrarySpace({
   });
 
   const sortedDays = useMemo(() => sortLibraryRides(days, sortId), [days, sortId]);
+  const coachTips = useMemo(() => coachFromLibrary(days), [days]);
 
   const onSortChange = (id: LibrarySortId) => {
     setSortId(id);
@@ -700,6 +724,8 @@ function LibrarySpace({
           </button>
         </div>
       )}
+
+      {coachTips.length > 0 ? <RideCoachCard tips={coachTips} /> : null}
 
       {days.length === 0 ? (
         <div className="empty">
@@ -788,6 +814,7 @@ function YouSpace({
   const [billingBusy, setBillingBusy] = useState(false);
   const [billingError, setBillingError] = useState<string | null>(null);
   const [billingConfigured, setBillingConfigured] = useState<boolean | null>(null);
+  const [quickResume, setQuickResume] = useState(() => loadQuickResumeEnabled());
   const [pricing, setPricing] = useState<{
     monthlyLabel: string;
     yearlyLabel: string;
@@ -938,7 +965,7 @@ function YouSpace({
           return;
         }
         await onUpdateProfile({ weightKg: Math.round(n * 10) / 10 });
-        setWeightNotice("Weight saved — used for Avg W/kg.");
+        setWeightNotice("Weight saved — used for W/kg (Normalized Power).");
       }
     } catch (e) {
       setWeightError((e as Error).message);
@@ -1132,10 +1159,33 @@ function YouSpace({
         </div>
       </section>
 
+      <section className="you-section" aria-labelledby="you-prefs-heading">
+        <h2 id="you-prefs-heading" className="space__label">
+          Preferences
+        </h2>
+        <label className="you-toggle">
+          <span className="you-toggle__copy">
+            <span className="you-toggle__title">Quick Resume</span>
+            <span className="you-toggle__meta">
+              Open RYDN straight into your active Ride. Turn off anytime.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={quickResume}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setQuickResume(on);
+              saveQuickResumeEnabled(on);
+            }}
+          />
+        </label>
+      </section>
+
       <section className="you-section">
         <h2 className="space__label">Body weight</h2>
         <p className="space__hint">
-          Used for Avg W/kg on the shareable ride screen. Overrides Strava athlete weight when set.
+          Used for W/kg (Normalized Power ÷ weight) on the shareable ride screen. Overrides Strava athlete weight when set.
         </p>
         <label className="field you-weight">
           <span>Weight (kg)</span>

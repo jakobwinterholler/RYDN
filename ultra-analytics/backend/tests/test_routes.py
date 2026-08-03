@@ -176,6 +176,70 @@ class RouteStoreTests(unittest.TestCase):
         self.assertEqual((cached.get("summary") or {}).get("climbCount"), 3)
         self.assertGreaterEqual(os.path.getmtime(cache), before_mtime)
 
+    def test_list_routes_verified_water_shop_counts(self) -> None:
+        route_id = "route-counts"
+        routes_dir = routes_store._routes_dir(self.uid)
+        os.makedirs(routes_dir, exist_ok=True)
+        route = {
+            "id": route_id,
+            "createdAt": 1,
+            "updatedAt": 1,
+            "objectType": "route",
+            "name": "Counts",
+            "status": "planning",
+            "points": [[42.3, 3.2], [42.4, 3.3]],
+            "preparation": dict(routes_store.PREPARATION_DEFAULTS),
+            "stopReviews": {"w1": "verified", "s1": "verified"},
+            "savedStops": {},
+            "hasAnalysis": True,
+            "distanceKm": 40,
+            "elevationGainM": 500,
+            "pointCount": 2,
+        }
+        with open(os.path.join(routes_dir, f"{route_id}.json"), "w", encoding="utf-8") as f:
+            json.dump(route, f)
+        with open(
+            os.path.join(routes_dir, f"{route_id}.analysis.json"), "w", encoding="utf-8"
+        ) as f:
+            json.dump(
+                {
+                    "schemaVersion": 2,
+                    "recommendedStops": [
+                        {
+                            "id": "w1",
+                            "category": "Drinking water",
+                            "group": "water",
+                            "reviewStatus": "verified",
+                            "lat": 42.31,
+                            "lon": 3.21,
+                        },
+                        {
+                            "id": "s1",
+                            "category": "Supermarket",
+                            "group": "resupply",
+                            "reviewStatus": "verified",
+                            "lat": 42.32,
+                            "lon": 3.22,
+                        },
+                        {
+                            "id": "u1",
+                            "category": "Water",
+                            "group": "water",
+                            "reviewStatus": "unreviewed",
+                            "lat": 42.33,
+                            "lon": 3.23,
+                        },
+                    ],
+                },
+                f,
+            )
+        listed = routes_store.list_routes(self.uid)
+        self.assertEqual(len(listed), 1)
+        counts = listed[0].get("verifiedCounts") or {}
+        self.assertEqual(counts.get("water"), 1)
+        self.assertEqual(counts.get("shop"), 1)
+        self.assertEqual(counts.get("total"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

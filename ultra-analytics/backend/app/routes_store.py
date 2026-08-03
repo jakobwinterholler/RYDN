@@ -137,10 +137,51 @@ def _ensure_dir(uid: str) -> None:
     os.makedirs(_routes_dir(uid), exist_ok=True)
 
 
-def _summary(route: dict) -> dict:
+def _verified_resupply_counts(uid: str, route: dict) -> Dict[str, int]:
+    """Water / shop verified counts for Planning shelf (work already done)."""
+    from .parsing.route_gpx_export import (
+        is_export_shop,
+        is_export_water,
+        merge_verified_stops,
+    )
+
+    recommended: List[dict] = []
+    cache = _analysis_path(uid, str(route.get("id") or ""))
+    if os.path.isfile(cache):
+        try:
+            with open(cache, "r", encoding="utf-8") as f:
+                analysis = json.load(f)
+            recommended = [
+                s
+                for s in (analysis.get("recommendedStops") or [])
+                if isinstance(s, dict)
+            ]
+        except (OSError, json.JSONDecodeError, TypeError):
+            recommended = []
+
+    merged = merge_verified_stops(
+        recommended,
+        route.get("savedStops") or {},
+        route.get("stopReviews") or {},
+    )
+    water = sum(1 for s in merged if is_export_water(s))
+    shop = sum(1 for s in merged if is_export_shop(s))
+    return {
+        "water": water,
+        "shop": shop,
+        "total": len(merged),
+    }
+
+
+def _summary(route: dict, uid: Optional[str] = None) -> dict:
     prep = route.get("preparation") or {}
     checks = ["routeUnderstood", "stopsVerified", "keyClimbsReviewed", "stagesPlanned"]
     done = sum(1 for k in checks if prep.get(k))
+    verified = (
+        _verified_resupply_counts(uid, route)
+        if uid
+        else {"water": 0, "shop": 0, "total": 0}
+    )
     return {
         "id": route["id"],
         "createdAt": route.get("createdAt"),
@@ -155,6 +196,7 @@ def _summary(route: dict) -> dict:
         "dateStart": route.get("dateStart"),
         "dateEnd": route.get("dateEnd"),
         "verificationProgress": {"done": done, "total": len(checks)},
+        "verifiedCounts": verified,
         "objectType": "route",
         "hasAnalysis": bool(route.get("hasAnalysis")),
         "proUnlock": route.get("proUnlock") if isinstance(route.get("proUnlock"), dict) else None,
@@ -172,7 +214,7 @@ def list_routes(uid: str) -> List[dict]:
         try:
             with open(os.path.join(d, fname), "r", encoding="utf-8") as f:
                 route = json.load(f)
-            out.append(_summary(route))
+            out.append(_summary(route, uid=uid))
         except (OSError, json.JSONDecodeError):
             continue
     out.sort(key=lambda r: r.get("updatedAt") or r.get("createdAt") or 0, reverse=True)
@@ -272,7 +314,7 @@ def create_route_from_gpx(
     except Exception:
         pass
     _progress("done", "Almost ready…", 98, stats)
-    return _summary(get_route(uid, route_id) or route)
+    return _summary(get_route(uid, route_id) or route, uid=uid)
 
 
 def update_route(uid: str, route_id: str, patch: Dict[str, Any]) -> Optional[dict]:
@@ -326,10 +368,11 @@ def update_route(uid: str, route_id: str, patch: Dict[str, Any]) -> Optional[dic
             lat, lon = snap.get("lat"), snap.get("lon")
             if lat is None or lon is None:
                 continue
+            osm_type = str(snap.get("osmType") or "node")[:24]
             saved[key] = {
                 "id": key,
                 "osmId": snap.get("osmId"),
-                "osmType": snap.get("osmType") or "node",
+                "osmType": osm_type,
                 "name": snap.get("name"),
                 "category": snap.get("category") or "Stop",
                 "group": snap.get("group") or "resupply",
@@ -366,7 +409,7 @@ def get_route_detail(uid: str, route_id: str) -> Optional[dict]:
     if not route:
         return None
     return {
-        **_summary(route),
+        **_summary(route, uid=uid),
         "points": route.get("points") or [],
         "preparation": route.get("preparation") or dict(PREPARATION_DEFAULTS),
         "stopReviews": route.get("stopReviews") or {},

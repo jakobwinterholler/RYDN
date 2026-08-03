@@ -1,8 +1,16 @@
 /** Editorial atlas route plate — paper land, quieter sea, thin ink route. */
 
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type CSSProperties } from "react";
 import Icon from "./Icon";
-import { lodStyleFromViewSpan, type ThumbLodStyle, type ThumbLodTier } from "./routePreviewLod";
+import {
+  lodStyleFromViewSpan,
+  preferLocalBasemap,
+  type ThumbLodStyle,
+  type ThumbLodTier,
+} from "./routePreviewLod";
+
+/** MapLibre local plate — lazy so Trips thumbs never pay the tile stack. */
+const RouteBasemap = lazy(() => import("./RouteBasemap"));
 
 interface Props {
   points?: number[][];
@@ -18,11 +26,12 @@ interface Props {
   /** Fires once the map plate is ready (or unavailable) so parents can start intro. */
   onReady?: () => void;
   /**
-   * Trips shelf thumbs: quieter plate, Apple-style start/finish dots (no planning markers).
+   * Trips shelf thumbs: quieter plate + earlier fine-atlas drop for paint cost.
+   * Detail (share / Ultra certificate): same span LOD, more aggressive fine coasts.
    * LOD follows bbox span (geographic zoom), not route length km.
    */
   variant?: "detail" | "thumb";
-  /** Country count hint for thumb LOD (secondary; from ultra.countryCodes). */
+  /** Country count hint for LOD (secondary; from ultra.countryCodes). */
   countryCount?: number;
   /**
    * @deprecated Ignored — LOD uses bbox span only. Kept so callers need not change.
@@ -550,6 +559,8 @@ export default function RoutePreview({
   const thumb = variant === "thumb";
   const [countries, setCountries] = useState<CountriesFC | null>(countriesCache);
   const [countriesFine, setCountriesFine] = useState<CountriesFC | null>(countriesFineCache);
+  /** Compact detail falls back to atlas if MapLibre/style fails. */
+  const [basemapFailed, setBasemapFailed] = useState(false);
 
   const segs = useMemo(() => {
     const fromSegs = (segments || []).map(validPts).filter((s) => s.length >= 2);
@@ -564,16 +575,23 @@ export default function RoutePreview({
     [allPtsRaw],
   );
 
+  const useLocalBasemap =
+    !thumb &&
+    !basemapFailed &&
+    allPtsRaw.length >= 2 &&
+    preferLocalBasemap(viewSpanKm, "detail");
+
   const lodStyle = useMemo((): ThumbLodStyle | null => {
-    if (!thumb || allPtsRaw.length < 2) return null;
-    return lodStyleFromViewSpan(viewSpanKm, countryCount);
+    if (allPtsRaw.length < 2) return null;
+    return lodStyleFromViewSpan(viewSpanKm, countryCount, thumb ? "thumb" : "detail");
   }, [thumb, viewSpanKm, countryCount, allPtsRaw.length]);
 
-  const thumbLod: ThumbLodTier | null = lodStyle?.tier ?? null;
-  const localDetail = !thumb && allPtsRaw.length >= 2 && viewSpanKm < 750;
-  const needsFineAtlas = Boolean(lodStyle?.useFineAtlas) || localDetail;
+  const thumbLod: ThumbLodTier | null = thumb ? lodStyle?.tier ?? null : null;
+  const needsFineAtlas = Boolean(lodStyle?.useFineAtlas);
 
   useEffect(() => {
+    // Local basemap skips country GeoJSON — don't pay atlas download cost.
+    if (useLocalBasemap) return;
     let cancelled = false;
     void loadCountries().then((data) => {
       if (!cancelled) setCountries(data);
@@ -581,10 +599,10 @@ export default function RoutePreview({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [useLocalBasemap]);
 
   useEffect(() => {
-    if (!needsFineAtlas) return;
+    if (useLocalBasemap || !needsFineAtlas) return;
     let cancelled = false;
     void loadCountriesFine().then((data) => {
       if (!cancelled && data) setCountriesFine(data);
@@ -592,7 +610,7 @@ export default function RoutePreview({
     return () => {
       cancelled = true;
     };
-  }, [needsFineAtlas]);
+  }, [needsFineAtlas, useLocalBasemap]);
 
   const outlineLod = thumbLod === "outline";
   const activeAtlas =
@@ -609,19 +627,19 @@ export default function RoutePreview({
   const allPts = useMemo(() => segsLod.flat(), [segsLod]);
 
   const plate = useMemo(() => {
+    if (useLocalBasemap) return null;
     if (allPts.length < 2 || !activeAtlas) return null;
     const pad = thumb ? PAD_THUMB : PAD;
     const usableAspect = (W - pad * 2) / (H - pad * 2);
-    const local = !thumb && viewSpanKm < 750;
-    const fill = lodStyle ? lodStyle.fill : local ? 0.62 : TARGET_FILL;
-    const digits = lodStyle?.digits ?? (local ? 2 : 1);
+    const fill = lodStyle?.fill ?? TARGET_FILL;
+    const digits = lodStyle?.digits ?? 1;
     const usingFine = Boolean(activeAtlas === countriesFine);
-    // Fine atlas coasts are dense — keep a floor on thumb simplify so SVG stays paint-able.
-    const baseSimplify = lodStyle?.simplify ?? (local ? 0 : 0.4);
+    // Fine atlas coasts are dense — thumb floor keeps shelf paints cheap;
+    // certificate detail uses the LOD curve as-is (peak simplify 0).
+    const baseSimplify = lodStyle?.simplify ?? 0.4;
     const simplify = thumb && usingFine ? Math.max(baseSimplify, 0.85) : baseSimplify;
     const routeBox = frameRoute(bboxOf(allPts), usableAspect, fill);
-    const selectBox =
-      (lodStyle?.useFineAtlas ?? false) || local ? inflateBBox(routeBox, 1.35) : routeBox;
+    const selectBox = lodStyle?.useFineAtlas ? inflateBBox(routeBox, 1.35) : routeBox;
     const project = projectFactory(routeBox, W, H, pad);
     const lands: string[] = [];
     const borders: string[] = [];
@@ -656,15 +674,42 @@ export default function RoutePreview({
             };
           });
     return { lands, borders, routePaths, start, end, dots };
-  }, [allPts, segsLod, activeAtlas, markers, selectedId, thumb, lodStyle, viewSpanKm]);
+  }, [allPts, segsLod, activeAtlas, markers, selectedId, thumb, lodStyle, useLocalBasemap]);
 
-  const loadingMap = allPts.length >= 2 && !activeAtlas;
+  const loadingMap = !useLocalBasemap && allPts.length >= 2 && !activeAtlas;
   const mapSettled = !loadingMap;
 
   useEffect(() => {
+    if (useLocalBasemap) return;
     if (!onReady || !mapSettled) return;
     onReady();
-  }, [mapSettled, onReady, plate]);
+  }, [mapSettled, onReady, plate, useLocalBasemap]);
+
+  if (useLocalBasemap) {
+    return (
+      <Suspense
+        fallback={
+          <div
+            className={`route-preview route-preview--empty ${className}`.trim()}
+            aria-busy="true"
+          >
+            <div className="route-preview__placeholder">
+              <div className="skeleton skeleton--line" style={{ width: "40%" }} aria-hidden />
+              <p className="route-preview__hint">Drawing map…</p>
+            </div>
+          </div>
+        }
+      >
+        <RouteBasemap
+          className={className}
+          points={allPtsRaw}
+          reveal={reveal}
+          onReady={onReady}
+          onFail={() => setBasemapFailed(true)}
+        />
+      </Suspense>
+    );
+  }
 
   if (loadingMap) {
     return (
@@ -717,8 +762,8 @@ export default function RoutePreview({
   const revealHold = reveal === "hold";
   const revealPlay = reveal === "play" || reveal === true;
 
-  const borderW = lodStyle ? lodStyle.borderW : 1.2;
-  const routeW = lodStyle ? lodStyle.routeW : 2.15;
+  const borderW = lodStyle?.borderW ?? 1.2;
+  const routeW = lodStyle?.routeW ?? 2.15;
   const lodClass = thumbLod ? ` route-preview--${thumbLod}` : "";
 
   return (

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  DETAIL_FINE_ATLAS_SPAN_KM,
+  DETAIL_FINE_SPAN_KM,
+  DETAIL_LOCAL_BASEMAP_SPAN_KM,
+  DETAIL_OUTLINE_SPAN_KM,
   LOD_FINE_ATLAS_SPAN_KM,
   LOD_FINE_SPAN_KM,
   LOD_OUTLINE_SPAN_KM,
   lodStyleFromViewSpan,
+  preferLocalBasemap,
 } from "./routePreviewLod";
 
 describe("lodStyleFromViewSpan", () => {
@@ -58,5 +63,45 @@ describe("lodStyleFromViewSpan", () => {
     const compact = lodStyleFromViewSpan(200, 1);
     expect(compact.tier).toBe("fine");
     expect(compact.useFineAtlas).toBe(true);
+  });
+
+  it("detail profile keeps fine atlas longer than thumbs (share / certificate)", () => {
+    const mid = (LOD_FINE_ATLAS_SPAN_KM + DETAIL_FINE_ATLAS_SPAN_KM) / 2;
+    expect(lodStyleFromViewSpan(mid, 1, "thumb").useFineAtlas).toBe(false);
+    expect(lodStyleFromViewSpan(mid, 1, "detail").useFineAtlas).toBe(true);
+    expect(lodStyleFromViewSpan(DETAIL_FINE_ATLAS_SPAN_KM, 1, "detail").useFineAtlas).toBe(false);
+  });
+
+  it("detail peak fidelity extends past thumb fine span without changing outline end", () => {
+    const between = (LOD_FINE_SPAN_KM + DETAIL_FINE_SPAN_KM) / 2;
+    const thumb = lodStyleFromViewSpan(between, 1, "thumb");
+    const detail = lodStyleFromViewSpan(between, 1, "detail");
+    expect(detail.simplify).toBeLessThan(thumb.simplify);
+    expect(detail.routePts).toBeGreaterThan(thumb.routePts);
+
+    const outlineThumb = lodStyleFromViewSpan(DETAIL_OUTLINE_SPAN_KM, 1, "thumb");
+    const outlineDetail = lodStyleFromViewSpan(DETAIL_OUTLINE_SPAN_KM, 1, "detail");
+    expect(outlineDetail.tier).toBe("outline");
+    expect(outlineDetail.simplify).toBeCloseTo(outlineThumb.simplify);
+    expect(outlineDetail.fill).toBeCloseTo(outlineThumb.fill);
+  });
+});
+
+describe("preferLocalBasemap", () => {
+  it("uses local basemap for Bavaria-class inland detail spans", () => {
+    // ~112 km loop bbox diagonal is well under the threshold.
+    expect(preferLocalBasemap(80, "detail")).toBe(true);
+    expect(preferLocalBasemap(210, "detail")).toBe(true);
+    expect(preferLocalBasemap(DETAIL_LOCAL_BASEMAP_SPAN_KM - 1, "detail")).toBe(true);
+  });
+
+  it("keeps quiet atlas for wide multi-country detail certificates", () => {
+    expect(preferLocalBasemap(DETAIL_LOCAL_BASEMAP_SPAN_KM, "detail")).toBe(false);
+    expect(preferLocalBasemap(LOD_OUTLINE_SPAN_KM, "detail")).toBe(false);
+  });
+
+  it("never switches Trips thumbs off the atlas plate", () => {
+    expect(preferLocalBasemap(80, "thumb")).toBe(false);
+    expect(preferLocalBasemap(210, "thumb")).toBe(false);
   });
 });
