@@ -11,7 +11,7 @@ from __future__ import annotations
 import bisect
 from typing import List, Optional, Tuple
 
-from .helpers import elevation_gain_loss, fmt_duration
+from .helpers import elevation_gain_loss, fmt_duration, interpolate
 from .prepare import PreparedRide
 
 GRID_M = 100.0
@@ -36,18 +36,7 @@ def _clean_profile(ride: PreparedRide) -> Tuple[List[float], List[float]]:
 
 
 def _interp(xs: List[float], ys: List[float], x: float) -> Optional[float]:
-    if not xs:
-        return None
-    if x <= xs[0]:
-        return ys[0]
-    if x >= xs[-1]:
-        return ys[-1]
-    i = bisect.bisect_left(xs, x)
-    x0, x1 = xs[i - 1], xs[i]
-    y0, y1 = ys[i - 1], ys[i]
-    if x1 == x0:
-        return y0
-    return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return interpolate(xs, ys, x)
 
 
 def _range_mean(ride: PreparedRide, values: List[Optional[float]], d0: float, d1: float):

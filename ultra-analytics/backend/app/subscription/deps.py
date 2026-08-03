@@ -6,7 +6,7 @@ from fastapi import Depends, HTTPException
 
 from ..auth import current_user
 from .. import routes_store
-from .features import FEATURE_PLANNING, can_access
+from .features import can_access
 from .race_pass import can_access_route_planning, can_import_planned_route
 from .service import get_tier
 
@@ -27,10 +27,6 @@ def require_feature(feature: str):
         return user
 
     return _dep
-
-
-# Global Pro only (subscription / redeem) — rarely used now.
-require_pro = require_feature(FEATURE_PLANNING)
 
 
 def require_can_import_route(user: dict = Depends(current_user)) -> dict:

@@ -4,7 +4,10 @@
 > Written as if the product has **no interface yet**. Current UI is irrelevant.  
 > Domain: [https://rydn.bike](https://rydn.bike)
 
-**Role of this file:** The design source of truth. Implementation follows it outward — tokens → components → screens — never the reverse.
+**Role of this file:** The design constitution (brand + long-term system).  
+**Implemented tokens / CSS conventions (do not invent a parallel system mid-task):**  
+[`ultra-analytics/DESIGN_SYSTEM.md`](./ultra-analytics/DESIGN_SYSTEM.md)  
+**AI product entrypoint:** [`ultra-analytics/RYDN_CONTEXT.md`](./ultra-analytics/RYDN_CONTEXT.md)
 
 **Status:** Constitution frozen. Execution mode — P0 in progress (Design System + App Shell).
 

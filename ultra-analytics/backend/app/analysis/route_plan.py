@@ -9,6 +9,8 @@ from __future__ import annotations
 import bisect
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .helpers import interpolate
+
 # Tuned for ultra course GPX (aligned with parent climb_detector + ride review).
 _GRID_M = 100.0
 _MIN_GAIN_M = 50.0
@@ -41,18 +43,7 @@ def _track_arrays(track: Sequence[Sequence[Any]]) -> Tuple[List[float], List[flo
 
 
 def _interp(xs: List[float], ys: List[float], x: float) -> Optional[float]:
-    if not xs:
-        return None
-    if x <= xs[0]:
-        return ys[0]
-    if x >= xs[-1]:
-        return ys[-1]
-    i = bisect.bisect_left(xs, x)
-    x0, x1 = xs[i - 1], xs[i]
-    y0, y1 = ys[i - 1], ys[i]
-    if x1 == x0:
-        return y0
-    return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return interpolate(xs, ys, x)
 
 
 def point_at_km(track: Sequence[Sequence[Any]], km: float) -> Optional[Tuple[float, float]]:

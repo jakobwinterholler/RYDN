@@ -15,7 +15,7 @@ deriving which product area a ride belongs to.
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional
+from typing import Optional
 
 # Ordered lifecycle. Do not rename without a migration plan.
 STATUSES = (
@@ -32,7 +32,6 @@ AREA_PLANNING = "planning"
 AREA_COMPLETED = "completed"
 
 _PLANNING_STATUSES = frozenset({"draft", "planning", "ready", "in_progress"})
-_COMPLETED_STATUSES = frozenset({"completed", "reviewed"})
 
 
 def normalize_status(raw: Optional[str], *, analyzed: bool = False) -> str:
@@ -49,14 +48,6 @@ def area_for_status(status: str) -> str:
     return AREA_COMPLETED
 
 
-def is_planning(status: str) -> bool:
-    return area_for_status(status) == AREA_PLANNING
-
-
-def is_completed(status: str) -> bool:
-    return area_for_status(status) == AREA_COMPLETED
-
-
 def enrich_summary(summary: dict) -> dict:
     """Attach lifecycle fields to a ride summary dict (mutates a shallow copy)."""
     out = dict(summary)
@@ -65,16 +56,3 @@ def enrich_summary(summary: dict) -> dict:
     out["status"] = status
     out["area"] = area_for_status(status)
     return out
-
-
-def partition_by_area(rides: Iterable[dict]) -> tuple[List[dict], List[dict]]:
-    """Split enriched summaries into (planning, completed)."""
-    planning: List[dict] = []
-    completed: List[dict] = []
-    for r in rides:
-        enriched = enrich_summary(r)
-        if enriched["area"] == AREA_PLANNING:
-            planning.append(enriched)
-        else:
-            completed.append(enriched)
-    return planning, completed

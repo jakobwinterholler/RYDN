@@ -1,8 +1,13 @@
 # Ultra — Product Brain
 
-> **Living document. Single source of truth.** Supersedes the three‑product split in
+> **Living document. Long-horizon product vision.** Supersedes the three‑product split in
 > `PROJECT_BRAIN.md` (Roadbook + Companion) and `ULTRA_ANALYTICS_BRAIN.md`
 > (Analytics). Those remain as history. From here on there is **one app**.
+
+> **AI / implementation entrypoint for the living codebase:**  
+> [`ultra-analytics/RYDN_CONTEXT.md`](./ultra-analytics/RYDN_CONTEXT.md)  
+> (what ships today, freeze rules, coding philosophy). Use this brain for vision;
+> do not treat unfinished vision sections as already built.
 
 **Status:** Product vision / architecture. Written to be true in five years and
 buildable next week.

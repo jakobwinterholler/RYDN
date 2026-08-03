@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
+import bisect
 from typing import List, Optional
+
+
+def interpolate(xs: List[float], ys: List[float], x: float) -> Optional[float]:
+    """Linear interpolate ``ys`` at ``x`` along sorted ``xs`` (clamp at ends)."""
+    if not xs:
+        return None
+    if x <= xs[0]:
+        return ys[0]
+    if x >= xs[-1]:
+        return ys[-1]
+    i = bisect.bisect_left(xs, x)
+    x0, x1 = xs[i - 1], xs[i]
+    y0, y1 = ys[i - 1], ys[i]
+    if x1 == x0:
+        return y0
+    return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
 
 
 def elevation_gain_loss(

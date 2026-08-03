@@ -1,12 +1,15 @@
-# 🧠 Ultra Analytics — Phase 1
+# RYDN (`ultra-analytics`)
 
-Local-first ride analysis for ultra cyclists. Upload a training ride or an
-entire multi-day ultra and get a **question-led race report** that explains what
-happened — not just a wall of charts.
+Experience platform for ultra cyclists — plan, verify, ride, and analyze.
+Product name **RYDN**; domain [rydn.bike](https://rydn.bike).
 
-> Part of the ecosystem: **Ultra Roadbook** (plan) → **Ultra Companion**
-> (execute) → **Ultra Analytics** (learn). See `../ULTRA_ANALYTICS_BRAIN.md`
-> for the full product architecture.
+> **AI / architecture entrypoint:** [`RYDN_CONTEXT.md`](./RYDN_CONTEXT.md)  
+> Also: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`DESIGN_SYSTEM.md`](./DESIGN_SYSTEM.md) ·
+> [`COMPONENTS.md`](./COMPONENTS.md) · [`CONTRIBUTING.md`](./CONTRIBUTING.md)  
+> Long-horizon vision: [`../ULTRA_BRAIN.md`](../ULTRA_BRAIN.md) · design constitution: [`../RYDN_DESIGN.md`](../RYDN_DESIGN.md)
+
+Historical note: this package began as “Ultra Analytics” Phase 1 (local ride
+reports). It is now the full RYDN app (Planning · Trips · Library · Ride · Review).
 
 ## Run it
 
